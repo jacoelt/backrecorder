@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">BackRecorder</string>
+    <string name="audio_recording_channel_name">Audio Recording</string>
+    <string name="notification_title">Recording in progress</string>
+    <string name="notification_text">Application is recording continuously..</string>
+
+    <string name="recording_started">Recording started</string>
+    <string name="recording_stopped">Recording stopped</string>
+    <string name="max_duration">Max Duration (minutes)</string>
+
+    <string name="stop_recording_confirm_title">Recording in progress</string>
+    <string name="stop_recording_confirm_text">A recording is in progress.\nWhat do you want to do?</string>
+    <string name="stop_recording_confirm_cancel">Cancel</string>
+    <string name="stop_recording_confirm_discard">Discard</string>
+    <string name="stop_recording_confirm_save">Save</string>
+    <string name="error_on_recording_save">There was an error when saving your recording.\nPlease try again.</string>
+    <string name="calculated_weight">Maximum weight: ~%1$s</string>
+
+    <plurals name="save_recording">
+        <item quantity="one">Save recording of last %d minute</item>
+        <item quantity="other">Save recording of last %d minutes</item>
+    </plurals>
+</resources>
