@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Drive Folder Picker</title>
+    <script type="text/javascript" src="https://apis.google.com/js/api.js"></script>
+    <script type="text/javascript">
+        function getParam(name) {
+          const url = new URL(window.location.href);
+          return url.searchParams.get(name);
+        }
+
+        let oauthToken = null;
+        let developerKey = "AIzaSyAYstvq2KADQVVKaapYcI12rd1P2oXSp-4";
+        let pickerApiLoaded = false;
+
+        function onApiLoad() {
+          gapi.load('picker', {'callback': onPickerApiLoad});
+        }
+
+        function onPickerApiLoad() {
+          pickerApiLoaded = true;
+          createPicker();
+        }
+
+        function createPicker() {
+          oauthToken = getParam("token");
+          if (pickerApiLoaded && oauthToken) {
+            const view = new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+              .setSelectFolderEnabled(true)
+              .setMimeTypes("application/vnd.google-apps.folder");
+
+            const picker = new google.picker.PickerBuilder()
+              .enableFeature(google.picker.Feature.NAV_HIDDEN)
+              .enableFeature(google.picker.Feature.MULTISELECT_DISABLED)
+              .setAppId("580864635782")
+              .setOAuthToken(oauthToken)
+              .setDeveloperKey(developerKey)
+              .addView(view)
+              .setCallback(pickerCallback)
+              .build();
+            picker.setVisible(true);
+          }
+        }
+
+        function pickerCallback(data) {
+          if (data.action === google.picker.Action.PICKED) {
+            const folderId = data.docs[0].id;
+            window.location.href = "backrecorder://drivepicker?folderId=" + folderId;
+          }
+        }
+    </script>
+</head>
+<body onload="onApiLoad()">
+<p>Loading Google Picker...</p>
+</body>
+</html>
