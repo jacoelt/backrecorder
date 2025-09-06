@@ -1,6 +1,7 @@
 package com.backrecorder
 
 import android.Manifest.permission
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -190,6 +191,14 @@ class MainActivity : ComponentActivity() {
                     onSetupGDrive = { setupGDrive() },
                 )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val folderId = intent.data?.getQueryParameter("folderId")
+        if (folderId != null) {
+            Log.d("DrivePicker", "User selected folderId=$folderId")
         }
     }
 

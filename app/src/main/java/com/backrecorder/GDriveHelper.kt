@@ -25,16 +25,24 @@ class GDriveHelper(
     companion object {
         private const val TAG = "GDriveHelper"
         private const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+        private const val WEB_CLIENT_ID = "580864635782-hod1dh3beh84b9ckcv0fjdqfg47svu5g.apps.googleusercontent.com"
     }
 
     private var accessToken: String? = null
 
-    private val signInOptions = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-        .requestEmail()
-        .requestScopes(Scope(DRIVE_SCOPE))
+    private val googleIdOption: GetGoogleIdOption = GetGoogleIdOption.Builder()
+        .setFilterByAuthorizedAccounts(true)
+        .setServerClientId(WEB_CLIENT_ID)
+        .setAutoSelectEnabled(true)
+        // nonce string to use when generating a Google ID token
+        .setNonce()
         .build()
+//    private val signInOptions = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+//        .requestEmail()
+//        .requestScopes(Scope(DRIVE_SCOPE))
+//        .build()
 
-    private val googleSignInClient: GoogleSignInClient = GoogleSignIn.getClient(context, signInOptions)
+//    private val googleSignInClient: GoogleSignInClient = GoogleSignIn.getClient(context, signInOptions)
 
     fun launchSignIn() {
 //        val account = GoogleSignIn.getLastSignedInAccount(context)
