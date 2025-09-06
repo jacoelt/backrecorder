@@ -32,7 +32,7 @@ class AudioRecordingService : Service() {
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000
         const val AUDIO_RECORDINGS_DIR = "audio_recordings"
-        const val DURATION_KEY = "duration"
+        const val DURATION_INTENT_KEY = "duration"
         const val DEFAULT_DURATION = 10
     }
 
@@ -49,7 +49,7 @@ class AudioRecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("AudioRecordingService", "Started")
-        maxDurationMinutes = intent?.getIntExtra(DURATION_KEY, DEFAULT_DURATION)!!
+        maxDurationMinutes = intent?.getIntExtra(DURATION_INTENT_KEY, DEFAULT_DURATION)!!
         startForegroundService()
         startNewRecording()
         return START_STICKY
