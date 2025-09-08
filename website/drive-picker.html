@@ -32,7 +32,7 @@
             const picker = new google.picker.PickerBuilder()
               .enableFeature(google.picker.Feature.NAV_HIDDEN)
               .enableFeature(google.picker.Feature.MULTISELECT_DISABLED)
-              .setAppId("580864635782")
+              .setAppId("backrecorder")
               .setOAuthToken(oauthToken)
               .setDeveloperKey(developerKey)
               .addView(view)
@@ -44,8 +44,9 @@
 
         function pickerCallback(data) {
           if (data.action === google.picker.Action.PICKED) {
+            folderType = getParam("folderType");
             const folderId = data.docs[0].id;
-            window.location.href = "backrecorder://drivepicker?folderId=" + folderId;
+            window.location.href = "com.backrecorder://drivepicker?folderId=" + folderId + "&folderType=" + folderType;
           }
         }
     </script>
