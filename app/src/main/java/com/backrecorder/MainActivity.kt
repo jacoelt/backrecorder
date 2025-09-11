@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
@@ -39,7 +40,11 @@ import kotlinx.coroutines.flow.map
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.backrecorder.ui.theme.BackRecorderTheme
-import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.UserRecoverableAuthException
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.android.libraries.identity.googleid.GoogleIdTokenParsingException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
@@ -52,7 +57,7 @@ import java.util.Locale
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 val DURATION_PREFS_KEY = intPreferencesKey("duration")
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var saveAudioLauncher: ActivityResultLauncher<Intent>
     private var recordingService: AudioRecordingService? = null
@@ -65,8 +70,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var gDriveHelper: GDriveHelper
 
 
-//    companion object {
-//    }
+    companion object {
+        private const val TAG = "MainActivity"
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -94,35 +100,39 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    private var signInLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        if (task.isSuccessful) {
-            val account = task.result
-            lifecycleScope.launch {
-                gDriveHelper.getAccessToken(account)
-            }
-        } else {
-            Log.e("SignIn", "Sign-in failed")
-        }
-    }
-
-    private val folderPickerLauncher = registerForActivityResult(
+    private val authResultLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        var folderUri: String? = null
-        if (result.resultCode == Activity.RESULT_OK) {
-            val uri: Uri? = result.data?.data
-            folderUri = uri?.toString()
-        }
-
-        if (folderUri != null) {
-            Log.d("MainActivity", "Folder chosen: $folderUri")
+        if (result.resultCode == RESULT_OK || result.data != null) {
+            gDriveHelper.handleAuthResponse(result.data)
+        } else {
+            Log.e("MainActivity", "Auth canceled or failed")
         }
     }
+
+//    private var pendingCredential: GoogleIdTokenCredential? = null
+//    private var recoverAuthLauncher = registerForActivityResult(
+//        ActivityResultContracts.StartActivityForResult()
+//    ) { result ->
+//        if (result.resultCode == RESULT_OK && pendingCredential != null) {
+//            Log.d(TAG, "User granted Drive permission, retrying...")
+//            CoroutineScope(Dispatchers.IO).launch {
+//                try {
+//                    gDriveHelper.getGoogleAccessToken(pendingCredential!!)
+//                } catch (e: UserRecoverableAuthException) {
+//                    Log.w("DriveAuth", "User action required for Drive permission")
+//                } catch (e: Exception) {
+//                    Log.e("DriveAuth", "Failed to get Drive token", e)
+//                }
+//            }
+//        } else {
+//            Log.w("DriveAuth", "User denied Drive permission")
+//        }
+//    }
 
     override fun onStart() {
         super.onStart()
-        gDriveHelper = GDriveHelper(this, signInLauncher, folderPickerLauncher)
+        gDriveHelper = GDriveHelper(this, authResultLauncher) { success -> afterGoogleSignIn(success) }
 
         lifecycleScope.launch {
             duration.intValue = getSavedDuration()
@@ -192,6 +202,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+//    override fun onNewIntent(intent: Intent) {
+//        super.onNewIntent(intent)
+//        gDriveHelper.handleRedirect(intent)
+//    }
 
     private fun startRecording(duration: Int) {
         if (ContextCompat.checkSelfPermission(this, permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -302,9 +317,16 @@ class MainActivity : ComponentActivity() {
 
     private fun setupGDrive() {
         gDriveHelper.launchSignIn()
-        // get location for staging
-        gDriveHelper.launchFolderPicker(folderPickerLauncher, "Choose staging folder")
-        // get location for final
+    }
+
+    private fun afterGoogleSignIn(success: Boolean) {
+        if (success) {
+            Log.d(TAG, "Successful login, picking staging folder")
+            // get location for staging
+            gDriveHelper.pickDriveFolder(GDriveHelper.Companion.FolderType.STAGING)
+
+            // get location for final
+        }
     }
 
     private suspend fun saveDuration() {
