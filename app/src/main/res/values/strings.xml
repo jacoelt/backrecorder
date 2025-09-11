@@ -13,12 +13,16 @@
     <string name="stop_recording_confirm_cancel">Cancel</string>
     <string name="stop_recording_confirm_discard">Discard</string>
     <string name="stop_recording_confirm_save">Save</string>
-    <string name="error_on_recording_save">There was an error when saving your recording.\nPlease try again.</string>
     <string name="calculated_weight">Maximum weight: ~%1$s</string>
-    <string name="setup_gdrive">Setup Google Drive</string>
+
+    <string name="setup_folder">Setup destination folders</string>
 
     <plurals name="save_recording">
         <item quantity="one">Save recording of last %d minute</item>
         <item quantity="other">Save recording of last %d minutes</item>
     </plurals>
+
+    <string name="error_on_recording_save">There was an error when saving your recording.\nPlease try again.</string>
+    <string name="error_folder_picker_open">Impossible to open folder selector. Please make sure Google Drive or a file manager is installed.</string>
+
 </resources>

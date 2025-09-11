@@ -39,7 +39,6 @@ import kotlinx.coroutines.flow.map
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.backrecorder.ui.theme.BackRecorderTheme
-import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
@@ -54,7 +53,6 @@ val DURATION_PREFS_KEY = intPreferencesKey("duration")
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var saveAudioLauncher: ActivityResultLauncher<Intent>
     private var recordingService: AudioRecordingService? = null
     private var isBound = false
     private val isRecording = mutableStateOf(false)
@@ -62,11 +60,12 @@ class MainActivity : ComponentActivity() {
     private var duration = mutableIntStateOf(AudioRecordingService.DEFAULT_DURATION)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var totalWeight = mutableStateOf("")
-    private lateinit var gDriveHelper: GDriveHelper
+    private lateinit var folderPicker: FolderPicker
 
 
-//    companion object {
-//    }
+    companion object {
+        private const val TAG = "MainActivity"
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -83,6 +82,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+    private var saveAudioLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data?.data != null) {
+            saveRecording(result.data!!.data!!, saveCallback)
+        }
+    }
+
     private val requestAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
             if (isGranted) {
@@ -94,35 +100,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    private var signInLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        if (task.isSuccessful) {
-            val account = task.result
-            lifecycleScope.launch {
-                gDriveHelper.getAccessToken(account)
-            }
-        } else {
-            Log.e("SignIn", "Sign-in failed")
-        }
-    }
-
-    private val folderPickerLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        var folderUri: String? = null
-        if (result.resultCode == Activity.RESULT_OK) {
-            val uri: Uri? = result.data?.data
-            folderUri = uri?.toString()
-        }
-
-        if (folderUri != null) {
-            Log.d("MainActivity", "Folder chosen: $folderUri")
-        }
-    }
-
     override fun onStart() {
         super.onStart()
-        gDriveHelper = GDriveHelper(this, signInLauncher, folderPickerLauncher)
+        folderPicker = FolderPicker(this)
 
         lifecycleScope.launch {
             duration.intValue = getSavedDuration()
@@ -149,12 +129,6 @@ class MainActivity : ComponentActivity() {
             ActivityCompat.requestPermissions(this@MainActivity, arrayOf(permission.READ_EXTERNAL_STORAGE, permission.WRITE_EXTERNAL_STORAGE), 2222)
         } else if (ContextCompat.checkSelfPermission(applicationContext, permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this@MainActivity, arrayOf(permission.READ_EXTERNAL_STORAGE, permission.WRITE_EXTERNAL_STORAGE), 2222)
-        }
-
-        saveAudioLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK && result.data?.data != null) {
-                saveRecording(result.data!!.data!!, saveCallback)
-            }
         }
 
         setContent {
@@ -187,7 +161,7 @@ class MainActivity : ComponentActivity() {
                             saveDuration()
                         }
                     },
-                    onSetupGDrive = { setupGDrive() },
+                    onSetupFolder = { setupFolder() },
                 )
             }
         }
@@ -208,7 +182,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopRecording() {
-        Log.d("MainActivity", "stopRecording")
+        Log.d(TAG, "stopRecording")
         recordingService?.stopRecording()
         isRecording.value = false
 
@@ -300,11 +274,8 @@ class MainActivity : ComponentActivity() {
         currentRecordingDuration.intValue = duration
     }
 
-    private fun setupGDrive() {
-        gDriveHelper.launchSignIn()
-        // get location for staging
-        gDriveHelper.launchFolderPicker(folderPickerLauncher, "Choose staging folder")
-        // get location for final
+    private fun setupFolder() {
+        folderPicker.pickFolder(FolderPicker.Companion.FolderType.STAGING)
     }
 
     private suspend fun saveDuration() {
@@ -331,7 +302,7 @@ fun RecordingScreen(
     totalWeight: MutableState<String>,
     onSaveRecording: (callback: (Boolean) -> Unit) -> Unit,
     onDurationChange: (duration: Int) -> Unit,
-    onSetupGDrive: () -> Unit,
+    onSetupFolder: () -> Unit,
 ) {
     val context = LocalContext.current
     var showStopDialog by remember { mutableStateOf(false) }
@@ -398,12 +369,12 @@ fun RecordingScreen(
             Text(text = pluralStringResource(R.plurals.save_recording, currentRecordingDuration.value, currentRecordingDuration.value))
         }
 
-        // GDrive setup
+        // Folder setup
         Button(
-            onClick = { onSetupGDrive() },
+            onClick = { onSetupFolder() },
             enabled = !isRecording.value,
         ) {
-            Text(text = context.resources.getString(R.string.setup_gdrive))
+            Text(text = context.resources.getString(R.string.setup_folder))
         }
 
 

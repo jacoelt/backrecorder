@@ -50,8 +50,6 @@ dependencies {
     implementation(libs.ffmpeg.kit.full)
     implementation(libs.androidx.datastore.preferences)
     implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.play.services.auth)
-    implementation(libs.androidx.browser)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
