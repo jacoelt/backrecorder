@@ -1,10 +1,7 @@
 package com.backrecorder
 
 import android.Manifest.permission
-import android.content.ComponentName
-import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
+import android.content.*
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
@@ -23,37 +20,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
-import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import com.backrecorder.services.AudioRecordingService
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.MutablePreferences
-import androidx.datastore.preferences.preferencesDataStore
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.flow.map
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
+import com.backrecorder.data.SettingsDataStore
+import com.backrecorder.services.AudioRecordingService
 import com.backrecorder.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.io.FileInputStream
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
-val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
-val PREF_DURATION = intPreferencesKey("duration")
-val PREF_USE_GDRIVE = booleanPreferencesKey("use_gdrive")
+import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -66,7 +49,7 @@ class MainActivity : AppCompatActivity() {
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var totalWeight = mutableStateOf("")
     private lateinit var gDriveHelper: GDriveHelper
-
+    private lateinit var settings: SettingsDataStore
 
     companion object {
         private const val TAG = "MainActivity"
@@ -91,10 +74,8 @@ class MainActivity : AppCompatActivity() {
     private val requestAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
             if (isGranted) {
-                // Permission granted, start recording
                 startRecording(this.duration.intValue)
             } else {
-                // Permission denied, show a message
                 Toast.makeText(this, "Permission denied. Cannot record audio.", Toast.LENGTH_SHORT).show()
             }
         }
@@ -112,12 +93,14 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         TinkConfig.register()
-        gDriveHelper = GDriveHelper(this, authResultLauncher) { success -> afterGoogleSignIn(success) }
+        settings = SettingsDataStore.getInstance(this.applicationContext)
+        gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
 
         lifecycleScope.launch {
-            duration.intValue = getSavedDuration()
+            duration.intValue = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
             totalWeight.value = generateTotalWeightString(duration.intValue)
         }
+
         Intent(this, AudioRecordingService::class.java).also { intent ->
             bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
         }
@@ -134,11 +117,14 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        //Ask for permissions
-        if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this@MainActivity, arrayOf(permission.READ_EXTERNAL_STORAGE, permission.WRITE_EXTERNAL_STORAGE), 2222)
-        } else if (ContextCompat.checkSelfPermission(applicationContext, permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this@MainActivity, arrayOf(permission.READ_EXTERNAL_STORAGE, permission.WRITE_EXTERNAL_STORAGE), 2222)
+        if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this@MainActivity,
+                arrayOf(permission.READ_EXTERNAL_STORAGE, permission.WRITE_EXTERNAL_STORAGE),
+                2222
+            )
         }
 
         saveAudioLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -149,10 +135,10 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             BackRecorderTheme {
+                val useGDrive by settings.getUseGDriveFlow().collectAsState(initial = false)
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 val audioFileName = "record_$timeStamp.ogg"
 
-                // Passing callbacks as parameters to RecordingScreen
                 RecordingScreen(
                     startRecording = { duration -> startRecording(duration) },
                     stopRecording = { stopRecording() },
@@ -165,22 +151,23 @@ class MainActivity : AppCompatActivity() {
                             type = "audio/ogg"
                             putExtra(Intent.EXTRA_TITLE, audioFileName)
                         }
-
                         saveCallback = callback
                         saveAudioLauncher.launch(intent)
                     },
                     onDurationChange = {
                         this.duration.intValue = it
                         this.totalWeight.value = this.generateTotalWeightString(this.duration.intValue)
-
                         lifecycleScope.launch {
-                            saveDuration()
+                            settings.setRecordingDuration(this@MainActivity.duration.intValue)
                         }
                     },
-                    onSetupGDrive = { setupGDrive() },
-                    saveGDrivePreference = { enabled -> saveGDrivePreference(enabled) },
-                    loadGDrivePreference = { loadGDrivePreference() },
-
+                    useGDrive = useGDrive,
+                    onToggleGDrive = { enabled ->
+                        lifecycleScope.launch {
+                            settings.setUseGDrive(enabled)
+                            if (enabled) setupGDrive()
+                        }
+                    }
                 )
             }
         }
@@ -188,14 +175,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun startRecording(duration: Int) {
         if (ContextCompat.checkSelfPermission(this, permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            // Permission already granted, start recording
             val intent = Intent(this, AudioRecordingService::class.java)
             intent.putExtra(AudioRecordingService.DURATION_INTENT_KEY, duration)
             ContextCompat.startForegroundService(this, intent)
-
             this.isRecording.value = true
         } else {
-            // Request permission
             requestAudioPermissionLauncher.launch(permission.RECORD_AUDIO)
         }
     }
@@ -204,30 +188,21 @@ class MainActivity : AppCompatActivity() {
         Log.d("MainActivity", "stopRecording")
         recordingService?.stopRecording()
         isRecording.value = false
-
-        // Stop the foreground service
-        val intent = Intent(this, AudioRecordingService::class.java)
-        stopService(intent)
+        stopService(Intent(this, AudioRecordingService::class.java))
     }
 
     private fun saveRecording(uri: Uri, callback: ((Boolean) -> Unit)?) {
-        // Step 1: Get all the audio files
         val audioFiles = recordingService?.getFileList() ?: return
-
-        // Step 2: Merge the audio files into a single file
         val mergedFile = File(getExternalFilesDir(null), "merged_audio.ogg")
-        if (mergedFile.exists()) { mergedFile.delete() }
+        if (mergedFile.exists()) mergedFile.delete()
 
         mergeAudioFiles(audioFiles, mergedFile) { isSuccess: Boolean, tempFile: File ->
             fun cleanUp() {
-                if (mergedFile.exists()) { mergedFile.delete() }
-                if (tempFile.exists()) { tempFile.delete() }
-
-                if (callback != null) {
-                    callback(isSuccess)
-                }
+                mergedFile.delete()
+                tempFile.delete()
+                callback?.invoke(isSuccess)
             }
-            // Step 3: Write the file
+
             if (isSuccess) {
                 contentResolver.openOutputStream(uri)?.use { outputStream ->
                     FileInputStream(mergedFile).use { inputStream ->
@@ -236,21 +211,22 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                gDriveHelper.uploadFile(mergedFile, GDriveHelper.FolderType.FINAL, fileName = "record_$timeStamp.ogg") {
-                    cleanUp()
+                lifecycleScope.launch {
+                    if (settings.getUseGDrive()) {
+                        gDriveHelper.uploadFile(
+                            mergedFile,
+                            GDriveHelper.FolderType.FINAL,
+                            fileName = "record_$timeStamp.ogg"
+                        ) { cleanUp() }
+                    } else cleanUp()
                 }
-
-            } else {
-                Log.e("FFmpeg", "File merge failed")
-                cleanUp()
-            }
+            } else cleanUp()
         }
     }
 
     private fun mergeAudioFiles(inputFiles: MutableList<File>, outputFile: File, onComplete: (Boolean, File) -> Unit) {
-        // Create a temporary file list
         val tempFileList = File(outputFile.parent, "file_list.txt")
-        if (tempFileList.exists()) { tempFileList.delete() }
+        if (tempFileList.exists()) tempFileList.delete()
 
         tempFileList.bufferedWriter().use { writer ->
             inputFiles.forEach { file ->
@@ -259,7 +235,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         val command = "-f concat -safe 0 -i ${tempFileList.absolutePath} -c copy ${outputFile.absolutePath}"
-
         FFmpegKit.executeAsync(command) { session ->
             val returnCode = session.returnCode
             if (ReturnCode.isSuccess(returnCode)) {
@@ -273,16 +248,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateRecordingState() {
-        // Update UI based on recording state
         isRecording.value = recordingService?.isRecording() ?: false
     }
 
     private fun generateTotalWeightString(duration: Int): String {
-        if (duration <= 0) {
-            return "0 B"
-        }
-
-        var weight = AudioRecordingService.BIT_RATE.toDouble() / 8 * duration * 60 / 1024 // Always at least in KB
+        if (duration <= 0) return "0 B"
+        var weight = AudioRecordingService.BIT_RATE.toDouble() / 8 * duration * 60 / 1024
         var unit = "KB"
 
         if (weight > 1024 * 1024) {
@@ -305,40 +276,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun afterGoogleSignIn(success: Boolean) {
-        if (success) {
-            gDriveHelper.setupDrive()
-        }
-    }
-
-    private suspend fun saveDuration() {
-        this.dataStore.edit { settings: MutablePreferences ->
-            settings[PREF_DURATION] = this.duration.intValue
-        }
-    }
-
-    private suspend fun getSavedDuration(): Int {
-        return (this.dataStore.data.map { settings: Preferences ->
-            settings[PREF_DURATION] ?: AudioRecordingService.DEFAULT_DURATION
-        }).first()
-    }
-
-
-    fun loadGDrivePreference(): Boolean {
-        return runBlocking {
-            val prefs = dataStore.data.first()
-            prefs[PREF_USE_GDRIVE] ?: false
-        }
-    }
-
-    private fun saveGDrivePreference(enabled: Boolean) {
-        runBlocking {
-            dataStore.edit { prefs ->
-                prefs[PREF_USE_GDRIVE] = enabled
-            }
-        }
+        if (success) gDriveHelper.setupDrive()
     }
 }
-
 
 @Composable
 fun RecordingScreen(
@@ -350,93 +290,75 @@ fun RecordingScreen(
     totalWeight: MutableState<String>,
     onSaveRecording: (callback: (Boolean) -> Unit) -> Unit,
     onDurationChange: (duration: Int) -> Unit,
-    onSetupGDrive: () -> Unit,
-    saveGDrivePreference: (Boolean) -> Unit,
-    loadGDrivePreference: () -> Boolean,
+    useGDrive: Boolean,
+    onToggleGDrive: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var showStopDialog by remember { mutableStateOf(false) }
-    val weightString by remember { mutableStateOf(totalWeight) }
-    var useGDrive by remember { mutableStateOf(loadGDrivePreference()) }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // Status message
         Text(
-            text = if (isRecording.value) context.resources.getString(R.string.recording_started) else context.resources.getString(R.string.recording_stopped),
+            text = if (isRecording.value)
+                stringResource(R.string.recording_started)
+            else
+                stringResource(R.string.recording_stopped),
             style = MaterialTheme.typography.titleMedium
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Switch to control recording
         Switch(
             checked = isRecording.value,
             enabled = duration.value > 0,
             onCheckedChange = { checked ->
-                if (checked) {
-                    startRecording(duration.value)
-                } else {
-                    showStopDialog = true
-                }
+                if (checked) startRecording(duration.value)
+                else showStopDialog = true
             }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // TextField for maximum duration
         OutlinedTextField(
             value = duration.value.toString(),
             enabled = !isRecording.value,
             onValueChange = {
-                duration.value = if (it != "") it.toInt() else 0
+                duration.value = it.toIntOrNull() ?: 0
                 onDurationChange(duration.value)
             },
             label = { Text(stringResource(R.string.max_duration)) },
-            keyboardOptions = KeyboardOptions.Default.copy(
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-            ),
+            keyboardOptions = KeyboardOptions.Default.copy(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
             modifier = Modifier.fillMaxWidth()
         )
-        Text(text = stringResource(R.string.calculated_weight, weightString.value), style = MaterialTheme.typography.titleMedium)
+
+        Text(
+            text = stringResource(R.string.calculated_weight, totalWeight.value),
+            style = MaterialTheme.typography.titleMedium
+        )
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Save Recording Button
         Button(
-            onClick = { onSaveRecording { isSuccess: Boolean ->
-                if (!isSuccess) {
-                    Toast.makeText(context, context.resources.getString(R.string.error_on_recording_save), Toast.LENGTH_SHORT).show()
-                }
-
+            onClick = { onSaveRecording { isSuccess ->
+                if (!isSuccess)
+                    Toast.makeText(context, R.string.error_on_recording_save, Toast.LENGTH_SHORT).show()
             } },
-            enabled = isRecording.value,
+            enabled = isRecording.value
         ) {
             Text(text = pluralStringResource(R.plurals.save_recording, currentRecordingDuration.value, currentRecordingDuration.value))
         }
 
-        // GDrive setup
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Text(text = context.resources.getString(R.string.setup_gdrive), modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(16.dp)) {
+            Text(text = stringResource(R.string.setup_gdrive), modifier = Modifier.weight(1f))
             Switch(
                 checked = useGDrive,
-                onCheckedChange = { enabled ->
-                    useGDrive = enabled
-                    saveGDrivePreference(enabled)
-
-                    if (enabled) {
-                        onSetupGDrive()
-                    }
-                },
-                enabled = !isRecording.value,
+                onCheckedChange = onToggleGDrive,
+                enabled = !isRecording.value
             )
         }
     }
@@ -453,20 +375,14 @@ fun RecordingScreen(
                 ) {
                     TextButton(onClick = {
                         showStopDialog = false
-                        onSaveRecording { isSuccess: Boolean ->
-                            if (isSuccess) {
-                                stopRecording()
-                            }
-                        }
-                    }) {
-                        Text(stringResource(R.string.stop_recording_confirm_save))
-                    }
+                        onSaveRecording { if (it) stopRecording() }
+                    }) { Text(stringResource(R.string.stop_recording_confirm_save)) }
+
                     TextButton(onClick = {
                         showStopDialog = false
                         stopRecording()
-                    }) {
-                        Text(stringResource(R.string.stop_recording_confirm_discard))
-                    }
+                    }) { Text(stringResource(R.string.stop_recording_confirm_discard)) }
+
                     TextButton(onClick = { showStopDialog = false }) {
                         Text(stringResource(R.string.stop_recording_confirm_cancel))
                     }
@@ -476,4 +392,3 @@ fun RecordingScreen(
         )
     }
 }
-

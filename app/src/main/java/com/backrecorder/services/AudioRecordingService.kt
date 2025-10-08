@@ -120,10 +120,7 @@ class AudioRecordingService : Service() {
         while (fileList.size > maxDurationMinutes) {
             fileList.removeAt(0).delete()
         }
-        gDriveHelper?.deleteOldestFromStaging(
-            maxDurationMinutes,
-            callback = null,
-        )
+        gDriveHelper?.deleteOldestFromStaging(maxDurationMinutes)
     }
 
     override fun onDestroy() {

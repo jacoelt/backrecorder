@@ -5,12 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
+import com.backrecorder.data.SettingsDataStore
 import kotlinx.coroutines.*
-import net.openid.appauth.AuthorizationException
-import net.openid.appauth.AuthorizationRequest
-import net.openid.appauth.AuthorizationResponse
-import net.openid.appauth.AuthorizationService
-import net.openid.appauth.AuthorizationServiceConfiguration
+import net.openid.appauth.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -44,10 +41,10 @@ class GDriveHelper(
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
 
-    private val internalContext: Context = context
-    private val authService: AuthorizationService = AuthorizationService(context)
+    private val authService = AuthorizationService(context)
     private val httpClient = OkHttpClient()
     private val securePrefs = SecurePreferences(context)
+    private val settingsDataStore = SettingsDataStore.getInstance(context)
 
     private val serviceConfig = AuthorizationServiceConfiguration(
         Uri.parse("https://accounts.google.com/o/oauth2/auth"),
@@ -55,20 +52,25 @@ class GDriveHelper(
     )
 
     fun launchSignIn() {
-        if (!isEnabled()) {
-            Log.d(TAG, "GDrive disabled, skipping GDrive Signin")
-            return
+        scope.launch {
+            val enabled = settingsDataStore.getUseGDrive()
+            if (!enabled) {
+                Log.d(TAG, "GDrive disabled, skipping Sign-in")
+                return@launch
+            }
+
+            withContext(Dispatchers.Main) {
+                val request = AuthorizationRequest.Builder(
+                    serviceConfig,
+                    ANDROID_CLIENT_ID,
+                    "code",
+                    Uri.parse(REDIRECT_URI)
+                ).setScopes("openid", "profile", DRIVE_SCOPE).build()
+
+                val authIntent = authService.getAuthorizationRequestIntent(request)
+                authLauncher.launch(authIntent)
+            }
         }
-
-        val request = AuthorizationRequest.Builder(
-            serviceConfig,
-            ANDROID_CLIENT_ID,
-            "code",
-            Uri.parse(REDIRECT_URI)
-        ).setScopes("openid", "profile", DRIVE_SCOPE).build()
-
-        val authIntent = authService.getAuthorizationRequestIntent(request)
-        authLauncher.launch(authIntent)
     }
 
     fun handleAuthResponse(data: Intent?) {
@@ -94,12 +96,13 @@ class GDriveHelper(
     }
 
     fun setupDrive() {
-        if (!isEnabled()) {
-            Log.d(TAG, "GDrive disabled, skipping GDrive setup")
-            return
-        }
-
         scope.launch {
+            val enabled = settingsDataStore.getUseGDrive()
+            if (!enabled) {
+                Log.d(TAG, "GDrive disabled, skipping Drive setup")
+                return@launch
+            }
+
             val finalId = getOrCreateFolder("BackRecorder", null)
             val stagingId = getOrCreateFolder("staging", finalId)
 
@@ -155,16 +158,14 @@ class GDriveHelper(
     }
 
     fun uploadFile(file: File, folderType: FolderType, fileName: String?, callback: ((Boolean) -> Unit)?) {
-        if (!isEnabled()) {
-            Log.d(TAG, "GDrive disabled, skipping upload")
-
-            if (callback != null) {
-                callback(true)
-            }
-            return
-        }
-
         scope.launch {
+            val enabled = settingsDataStore.getUseGDrive()
+            if (!enabled) {
+                Log.d(TAG, "GDrive disabled, skipping upload")
+                callback?.invoke(true)
+                return@launch
+            }
+
             val token = getValidAccessToken() ?: return@launch
             val folderId = when (folderType) {
                 FolderType.FINAL -> securePrefs.getString(PREF_KEY_FINAL_FOLDER)
@@ -200,63 +201,55 @@ class GDriveHelper(
                 } else {
                     Log.e(TAG, "Upload failed: ${response.code} ${response.message}")
                 }
-
-                if (callback != null) {
-                    callback(response.isSuccessful)
-                }
+                callback?.invoke(response.isSuccessful)
             }
         }
     }
 
-    fun deleteOldestFromStaging(maxNFiles: Int, callback: ((Boolean) -> Unit)?) {
-        if (!isEnabled()) {
-            Log.d(TAG, "GDrive disabled, skipping deletion")
-
-            if (callback != null) {
-                callback(true)
-            }
-            return
-        }
+    fun deleteOldestFromStaging(maxFiles: Int = 10) {
         scope.launch {
-            val token = getValidAccessToken() ?: return@launch
-            val folderId = securePrefs.getString(PREF_KEY_STAGING_FOLDER) ?: return@launch
+            val enabled = settingsDataStore.getUseGDrive()
+            if (!enabled) {
+                Log.d(TAG, "GDrive disabled, skipping cleanup")
+                return@launch
+            }
 
-            val query = "'$folderId' in parents and trashed=false"
+            val token = getValidAccessToken() ?: return@launch
+            val stagingId = securePrefs.getString(PREF_KEY_STAGING_FOLDER) ?: return@launch
+
             val request = Request.Builder()
-                .url("https://www.googleapis.com/drive/v3/files?q=${Uri.encode(query)}&orderBy=name asc")
+                .url(
+                    "https://www.googleapis.com/drive/v3/files?" +
+                            "q='${stagingId}' in parents and trashed=false&orderBy=createdTime"
+                )
                 .addHeader("Authorization", "Bearer $token")
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: return@use
-                val files = JSONObject(body).optJSONArray("files") ?: return@use
-                if (files.length() > maxNFiles) {
-                    val toDelete = (0 until (files.length() - maxNFiles)).map {
-                        files.getJSONObject(it).getString("id")
-                    }
-                    for (fileId in toDelete) {
-                        val deleteRequest = Request.Builder()
-                            .url("https://www.googleapis.com/drive/v3/files/$fileId")
-                            .delete()
-                            .addHeader("Authorization", "Bearer $token")
-                            .build()
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Failed to list staging files: ${response.code}")
+                    return@launch
+                }
 
-                        httpClient.newCall(deleteRequest).execute().use { delResp ->
-                            if (delResp.isSuccessful) {
-                                Log.d(TAG, "Deleted old staging file: $fileId")
-                            } else {
-                                Log.e(TAG, "Delete failed: ${delResp.code} ${delResp.message}")
-                            }
+                val body = response.body?.string() ?: return@launch
+                val files = JSONObject(body).optJSONArray("files") ?: return@launch
+                if (files.length() <= maxFiles) return@launch
 
-                            if (callback != null) {
-                                callback(delResp.isSuccessful)
-                            }
-                        }
-                    }
+                val toDeleteCount = files.length() - maxFiles
+                for (i in 0 until toDeleteCount) {
+                    val fileId = files.getJSONObject(i).getString("id")
+                    val deleteRequest = Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files/$fileId")
+                        .delete()
+                        .addHeader("Authorization", "Bearer $token")
+                        .build()
+                    httpClient.newCall(deleteRequest).execute().close()
+                    Log.d(TAG, "Deleted old staging file $fileId")
                 }
             }
         }
     }
+
 
     private suspend fun getValidAccessToken(): String? {
         var token = securePrefs.getString(PREF_KEY_ACCESS_TOKEN)
@@ -288,16 +281,12 @@ class GDriveHelper(
             val respBody = response.body?.string() ?: return@withContext null
             val json = JSONObject(respBody)
             val newAccessToken = json.optString("access_token", "")
-            if (newAccessToken != "") {
+            if (newAccessToken.isNotEmpty()) {
                 securePrefs.saveString(PREF_KEY_ACCESS_TOKEN, newAccessToken)
                 Log.d(TAG, "Access token refreshed")
             }
             return@withContext newAccessToken
         }
-    }
-
-    fun isEnabled(): Boolean {
-        return (internalContext as MainActivity).loadGDrivePreference()
     }
 
     fun clear() {
