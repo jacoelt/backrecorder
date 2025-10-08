@@ -15,7 +15,7 @@
     <string name="stop_recording_confirm_save">Save</string>
     <string name="error_on_recording_save">There was an error when saving your recording.\nPlease try again.</string>
     <string name="calculated_weight">Maximum weight: ~%1$s</string>
-    <string name="setup_gdrive">Setup Google Drive</string>
+    <string name="setup_gdrive">Save recordings in Google Drive</string>
 
     <plurals name="save_recording">
         <item quantity="one">Save recording of last %d minute</item>

@@ -6,10 +6,11 @@ plugins {
 
 android {
     namespace = "com.backrecorder"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.backrecorder"
+        manifestPlaceholders["appAuthRedirectScheme"] = "com.backrecorder"
         minSdk = 31
         targetSdk = 35
         versionCode = 1
@@ -49,9 +50,20 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.ffmpeg.kit.full)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.credentials)
+    implementation(libs.appauth)
+    implementation(libs.okhttp)
+    implementation(libs.tink.android)
     implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.play.services.auth.base)
+    implementation(libs.androidx.browser) {
+        version {
+            strictly("1.8.0")
+        }
+    }
+    implementation(libs.google.googleid)
     implementation(libs.play.services.auth)
-    implementation(libs.androidx.browser)
+    implementation(libs.material)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

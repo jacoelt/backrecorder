@@ -8,15 +8,18 @@ import android.os.IBinder
 import android.os.Handler
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.backrecorder.GDriveHelper
 import com.backrecorder.R
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.max
 import kotlin.properties.Delegates
 
 
 class AudioRecordingService : Service() {
 
+    private var gDriveHelper: GDriveHelper? = null
     private var mediaRecorder: MediaRecorder? = null
     private lateinit var outputDir: File
     private var maxDurationMinutes by Delegates.notNull<Int>()
@@ -76,6 +79,11 @@ class AudioRecordingService : Service() {
     private fun startNewRecording() {
         Log.d("AudioRecordingService", "Start new recording")
 
+        if (fileList.size > 0) {
+            val lastFile = fileList.last()
+            gDriveHelper?.uploadFile(lastFile, GDriveHelper.FolderType.STAGING, fileName = null, callback = null)
+        }
+
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val audioFile = File(outputDir, "record_$timeStamp.ogg")
         fileList.add(audioFile)
@@ -112,6 +120,10 @@ class AudioRecordingService : Service() {
         while (fileList.size > maxDurationMinutes) {
             fileList.removeAt(0).delete()
         }
+        gDriveHelper?.deleteOldestFromStaging(
+            maxDurationMinutes,
+            callback = null,
+        )
     }
 
     override fun onDestroy() {
@@ -157,5 +169,9 @@ class AudioRecordingService : Service() {
         if (isRecording) {
             currentDurationCallback?.let { it((fileList.size - 1).coerceAtLeast(0)) }
         }
+    }
+
+    fun registerGDriveHelper(gDriveHelper: GDriveHelper) {
+        this.gDriveHelper = gDriveHelper
     }
 }
