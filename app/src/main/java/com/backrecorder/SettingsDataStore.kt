@@ -59,8 +59,8 @@ class SettingsDataStore private constructor(private val context: Context) {
 
     suspend fun getRecordingDuration(defaultValue: Int): Int {
         return dataStore.data.map { prefs ->
-            prefs[PREF_DURATION] ?: defaultValue
-        }.first()
+            prefs[PREF_DURATION]
+        }.first() ?: defaultValue
     }
 
     suspend fun saveTermsAccepted(accepted: Boolean) {

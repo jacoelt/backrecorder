@@ -6,7 +6,6 @@
 
     <string name="recording_started">Recording started</string>
     <string name="recording_stopped">Recording stopped</string>
-    <string name="max_duration">Max Duration (minutes)</string>
 
     <string name="stop_recording_confirm_title">Recording in progress</string>
     <string name="stop_recording_confirm_text">A recording is in progress.\nWhat do you want to do?</string>
@@ -17,9 +16,9 @@
     <string name="calculated_weight">Maximum weight: ~%1$s</string>
     <string name="setup_gdrive">Save recordings in Google Drive</string>
     <string name="view_terms">View Terms Of Service</string>
+    <string name="enable_recording">Enable recording</string>
+    <string name="max_duration">Max duration:</string>
+    <string name="save_recording">Save recording of last %s</string>
+    <string name="current_duration">Current duration: %s</string>
 
-    <plurals name="save_recording">
-        <item quantity="one">Save recording of last %d minute</item>
-        <item quantity="other">Save recording of last %d minutes</item>
-    </plurals>
 </resources>

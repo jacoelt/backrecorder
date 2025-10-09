@@ -1,6 +1,7 @@
 package com.backrecorder
 
 import android.Manifest.permission
+import android.annotation.SuppressLint
 import android.content.*
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -9,17 +10,17 @@ import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.setContent
-import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
@@ -43,11 +44,11 @@ class MainActivity : AppCompatActivity() {
     private var isBound = false
     private val isRecording = mutableStateOf(false)
     private var saveCallback: ((Boolean) -> Unit)? = null
-    private var duration = mutableIntStateOf(AudioRecordingService.DEFAULT_DURATION)
+    private var duration = mutableStateOf<Int?>(null)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var totalWeight = mutableStateOf("")
-    private lateinit var gDriveHelper: GDriveHelper
     private lateinit var settings: SettingsDataStore
+    private lateinit var gDriveHelper: GDriveHelper
 
     companion object {
         private const val TAG = "MainActivity"
@@ -78,7 +79,7 @@ class MainActivity : AppCompatActivity() {
     private val requestAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
             if (isGranted) {
-                startRecording(this.duration.intValue)
+                startRecording(this.duration.value!!)
             } else {
                 Toast.makeText(this, "Permission denied. Cannot record audio.", Toast.LENGTH_SHORT).show()
             }
@@ -96,14 +97,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        TinkConfig.register()
-        settings = SettingsDataStore.getInstance(this.applicationContext)
-        gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
-
-        lifecycleScope.launch {
-            duration.intValue = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
-            totalWeight.value = generateTotalWeightString(duration.intValue)
-        }
 
         Intent(this, AudioRecordingService::class.java).also { intent ->
             bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -120,6 +113,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        TinkConfig.register()
+        settings = SettingsDataStore.getInstance(this.applicationContext)
+        gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
 
         if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE)
             != PackageManager.PERMISSION_GRANTED
@@ -141,65 +137,78 @@ class MainActivity : AppCompatActivity() {
                 var showTerms by remember { mutableStateOf(false) }
                 var mustAcceptTerms by remember { mutableStateOf(false) }
 
-                // Load acceptance state
+
+
+                // Load state
                 LaunchedEffect(Unit) {
                     hasAcceptedTerms = settings.isTermsAccepted()
                     if (hasAcceptedTerms == false) {
                         showTerms = true
                         mustAcceptTerms = true
                     }
+
+                    val storedDuration = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
+                    duration.value = storedDuration
+                    totalWeight.value = generateTotalWeightString(storedDuration)
                 }
 
-                // Display either Terms screen or main content
-                if (showTerms && mustAcceptTerms) {
-                    TermsOfUseScreen(
-                        onAccepted = {
-                            hasAcceptedTerms = true
-                            showTerms = false
-                            mustAcceptTerms = false
-                        },
-                        onDeclined = { finish() },
-                        readOnly = false
-                    )
-
-                } else if (showTerms && !mustAcceptTerms) {
-                    TermsOfUseScreen(
-                        onClosed = { showTerms = false },
-                        readOnly = true
-                    )
-
+                if (duration.value == null) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 } else {
-                    RecordingScreen(
-                        startRecording = { duration -> startRecording(duration) },
-                        stopRecording = { stopRecording() },
-                        isRecording = isRecording,
-                        currentRecordingDuration,
-                        duration,
-                        totalWeight,
-                        onSaveRecording = { callback: (Boolean) -> Unit ->
-                            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                type = "audio/ogg"
-                                putExtra(Intent.EXTRA_TITLE, audioFileName)
-                            }
-                            saveCallback = callback
-                            saveAudioLauncher.launch(intent)
-                        },
-                        onDurationChange = {
-                            this.duration.intValue = it
-                            this.totalWeight.value = this.generateTotalWeightString(this.duration.intValue)
-                            lifecycleScope.launch {
-                                settings.setRecordingDuration(this@MainActivity.duration.intValue)
-                            }
-                        },
-                        useGDrive = useGDrive,
-                        onToggleGDrive = { enabled ->
-                            lifecycleScope.launch {
-                                settings.setUseGDrive(enabled)
-                                if (enabled) setupGDrive()
-                            }
-                        },
-                        onShowTerms = { showTerms = true }
-                    )
+
+                    // Display either Terms screen or main content
+                    if (showTerms && mustAcceptTerms) {
+                        TermsOfUseScreen(
+                            onAccepted = {
+                                hasAcceptedTerms = true
+                                showTerms = false
+                                mustAcceptTerms = false
+                            },
+                            onDeclined = { finish() },
+                            readOnly = false
+                        )
+
+                    } else if (showTerms && !mustAcceptTerms) {
+                        TermsOfUseScreen(
+                            onClosed = { showTerms = false },
+                            readOnly = true
+                        )
+
+                    } else {
+                        RecordingScreen(
+                            startRecording = { duration -> startRecording(duration) },
+                            stopRecording = { stopRecording() },
+                            isRecording = isRecording,
+                            currentRecordingDuration,
+                            duration,
+                            totalWeight,
+                            onSaveRecording = { callback: (Boolean) -> Unit ->
+                                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                    type = "audio/ogg"
+                                    putExtra(Intent.EXTRA_TITLE, audioFileName)
+                                }
+                                saveCallback = callback
+                                saveAudioLauncher.launch(intent)
+                            },
+                            onDurationChange = {
+                                this.duration.value = it
+                                this.totalWeight.value = this.generateTotalWeightString(this.duration.value!!)
+                                lifecycleScope.launch {
+                                    settings.setRecordingDuration(this@MainActivity.duration.value!!)
+                                }
+                            },
+                            useGDrive = useGDrive,
+                            onToggleGDrive = { enabled ->
+                                lifecycleScope.launch {
+                                    settings.setUseGDrive(enabled)
+                                    if (enabled) setupGDrive()
+                                }
+                            },
+                            onShowTerms = { showTerms = true }
+                        )
+                    }
                 }
             }
         }
@@ -318,7 +327,7 @@ fun RecordingScreen(
     stopRecording: () -> Unit,
     isRecording: MutableState<Boolean>,
     currentRecordingDuration: MutableState<Int>,
-    duration: MutableState<Int>,
+    duration: MutableState<Int?>,
     totalWeight: MutableState<String>,
     onSaveRecording: (callback: (Boolean) -> Unit) -> Unit,
     onDurationChange: (duration: Int) -> Unit,
@@ -329,79 +338,197 @@ fun RecordingScreen(
     val context = LocalContext.current
     var showStopDialog by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = if (isRecording.value)
-                stringResource(R.string.recording_started)
-            else
-                stringResource(R.string.recording_stopped),
-            style = MaterialTheme.typography.titleMedium
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Switch(
-            checked = isRecording.value,
-            enabled = duration.value > 0,
-            onCheckedChange = { checked ->
-                if (checked) startRecording(duration.value)
-                else showStopDialog = true
-            }
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        OutlinedTextField(
-            value = duration.value.toString(),
-            enabled = !isRecording.value,
-            onValueChange = {
-                duration.value = it.toIntOrNull() ?: 0
-                onDurationChange(duration.value)
-            },
-            label = { Text(stringResource(R.string.max_duration)) },
-            keyboardOptions = KeyboardOptions.Default.copy(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Text(
-            text = stringResource(R.string.calculated_weight, totalWeight.value),
-            style = MaterialTheme.typography.titleMedium
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(
-            onClick = { onSaveRecording { isSuccess ->
-                if (!isSuccess)
-                    Toast.makeText(context, R.string.error_on_recording_save, Toast.LENGTH_SHORT).show()
-            } },
-            enabled = isRecording.value
-        ) {
-            Text(text = pluralStringResource(R.plurals.save_recording, currentRecordingDuration.value, currentRecordingDuration.value))
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(16.dp)) {
-            Text(text = stringResource(R.string.setup_gdrive), modifier = Modifier.weight(1f))
-            Switch(
-                checked = useGDrive,
-                onCheckedChange = onToggleGDrive,
-                enabled = !isRecording.value
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(onClick = onShowTerms) {
-            Text(stringResource(R.string.view_terms))
-        }
+    // ===== Format minutes to hh:mm =====
+    @SuppressLint("DefaultLocale")
+    fun formatMinutesToHHMM(minutes: Int): String {
+        val h = minutes / 60
+        val m = minutes % 60
+        return String.format("%dh%02d", h, m)
     }
 
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // ===== Header =====
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(4.dp)
+        ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = stringResource(R.string.app_name),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .padding(16.dp)
+                        .align(Alignment.Center)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // ===== Scrollable content =====
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+        ) {
+            // ===== Status card =====
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = if (isRecording.value)
+                            stringResource(R.string.recording_started)
+                        else
+                            stringResource(R.string.recording_stopped),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = stringResource(
+                            R.string.current_duration,
+                            formatMinutesToHHMM(currentRecordingDuration.value)
+                        ),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ===== Controls card =====
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(8.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Recording switch
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = stringResource(R.string.enable_recording),
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = isRecording.value,
+                            onCheckedChange = { checked ->
+                                if (checked) startRecording(duration.value!!)
+                                else showStopDialog = true
+                            },
+                            enabled = duration.value!! > 0
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // ===== Native NumberPicker =====
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = stringResource(R.string.max_duration),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+
+                        Spacer(modifier = Modifier.width(24.dp))
+
+                        DurationPicker(
+                            duration = duration.value!!,
+                            onDurationChange = {
+                                duration.value = it
+                                onDurationChange(it)
+                            },
+                            enabled = !isRecording.value,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Calculated weight
+                    Text(
+                        text = stringResource(R.string.calculated_weight, totalWeight.value),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // ===== Actions card =====
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.cardElevation(8.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    // Save button
+                    Button(
+                        onClick = {
+                            onSaveRecording { isSuccess ->
+                                if (!isSuccess)
+                                    Toast.makeText(
+                                        context,
+                                        R.string.error_on_recording_save,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                            }
+                        },
+                        enabled = isRecording.value,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = stringResource(
+                                R.string.save_recording,
+                                formatMinutesToHHMM(currentRecordingDuration.value)
+                            ),
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // GDrive toggle
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(text = stringResource(R.string.setup_gdrive), modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = useGDrive,
+                            onCheckedChange = onToggleGDrive,
+                            enabled = !isRecording.value
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // ===== Terms of Service Link =====
+        Text(
+            text = stringResource(R.string.view_terms),
+            style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary),
+            modifier = Modifier
+                .align(Alignment.CenterHorizontally)
+                .clickable { onShowTerms() }
+        )
+    }
+
+    // ===== Stop recording dialog =====
     if (showStopDialog) {
         AlertDialog(
             onDismissRequest = { showStopDialog = false },
