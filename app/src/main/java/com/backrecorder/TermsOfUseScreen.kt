@@ -1,6 +1,8 @@
 package com.backrecorder
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -72,7 +74,6 @@ fun parseMarkdown(markdown: String): List<@Composable () -> Unit> {
     }
     return composables
 }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TermsOfUseScreen(
@@ -84,17 +85,22 @@ fun TermsOfUseScreen(
     val context = LocalContext.current
     val dataStore = SettingsDataStore.getInstance(context)
     val coroutineScope = rememberCoroutineScope()
-    val scrollState = rememberScrollState()
-    var hasReachedBottom by remember { mutableStateOf(false) }
 
+    // Load TOS content once
     val tosMarkdown = remember {
         context.resources.openRawResource(R.raw.terms_of_use)
             .bufferedReader().use { it.readText() }
     }
-    val tosLines = parseMarkdown(tosMarkdown)
+    val tosLines = remember { parseMarkdown(tosMarkdown) }
 
-    LaunchedEffect(scrollState.value) {
-        hasReachedBottom = scrollState.value >= scrollState.maxValue
+    var hasReachedBottom by remember { mutableStateOf(false) }
+
+    // LazyColumn state
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(listState.firstVisibleItemIndex, listState.layoutInfo.totalItemsCount) {
+        hasReachedBottom =
+            listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index == tosLines.lastIndex
     }
 
     Surface(
@@ -103,44 +109,46 @@ fun TermsOfUseScreen(
     ) {
         Column(
             modifier = Modifier
+                .fillMaxSize()
                 .padding(24.dp)
-                .fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                text = stringResource(R.string.terms_warning),
-                color = MaterialTheme.colorScheme.error,
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
+            // Header
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = stringResource(R.string.terms_warning),
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
 
-            Text(
-                text = stringResource(R.string.terms_title),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 16.dp)
-            )
+                Text(
+                    text = stringResource(R.string.terms_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+            }
 
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .verticalScroll(scrollState)
-                    .padding(8.dp)
+            // Content
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                state = listState,
+                contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-                Column {
-                    tosLines.forEach { lineComposable ->
-                        lineComposable()
-                    }
+                items(tosLines.size) { index ->
+                    tosLines[index]()
                 }
             }
 
+            // Actions
             if (!readOnly) {
                 Text(
                     text = stringResource(R.string.terms_scroll_to_accept),
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
@@ -169,7 +177,9 @@ fun TermsOfUseScreen(
             } else {
                 Button(
                     onClick = { onClosed?.invoke() },
-                    modifier = Modifier.padding(top = 12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp)
                 ) {
                     Text(stringResource(R.string.terms_close))
                 }

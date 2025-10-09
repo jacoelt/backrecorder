@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="terms_title">Terms of Use</string>
-    <string name="terms_warning">⚠️ The use of this app may be illegal where you are</string>
+    <string name="terms_warning">⚠️ The use of this app may be illegal where you are ⚠️</string>
     <string name="terms_accept">I Accept</string>
     <string name="terms_decline">Decline</string>
     <string name="terms_close">Close</string>
