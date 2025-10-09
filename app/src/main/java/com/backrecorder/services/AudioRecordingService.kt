@@ -13,7 +13,6 @@ import com.backrecorder.R
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.max
 import kotlin.properties.Delegates
 
 

@@ -27,7 +27,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
-import com.backrecorder.data.SettingsDataStore
 import com.backrecorder.services.AudioRecordingService
 import com.backrecorder.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
@@ -40,7 +39,6 @@ import java.util.*
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var saveAudioLauncher: ActivityResultLauncher<Intent>
     private var recordingService: AudioRecordingService? = null
     private var isBound = false
     private val isRecording = mutableStateOf(false)
@@ -68,6 +66,12 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceDisconnected(name: ComponentName?) {
             recordingService = null
             isBound = false
+        }
+    }
+
+    private val saveAudioLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK && result.data?.data != null) {
+            saveRecording(result.data!!.data!!, saveCallback)
         }
     }
 
@@ -127,48 +131,76 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        saveAudioLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK && result.data?.data != null) {
-                saveRecording(result.data!!.data!!, saveCallback)
-            }
-        }
-
         setContent {
             BackRecorderTheme {
                 val useGDrive by settings.getUseGDriveFlow().collectAsState(initial = false)
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 val audioFileName = "record_$timeStamp.ogg"
 
-                RecordingScreen(
-                    startRecording = { duration -> startRecording(duration) },
-                    stopRecording = { stopRecording() },
-                    isRecording = isRecording,
-                    currentRecordingDuration,
-                    duration,
-                    totalWeight,
-                    onSaveRecording = { callback: (Boolean) -> Unit ->
-                        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                            type = "audio/ogg"
-                            putExtra(Intent.EXTRA_TITLE, audioFileName)
-                        }
-                        saveCallback = callback
-                        saveAudioLauncher.launch(intent)
-                    },
-                    onDurationChange = {
-                        this.duration.intValue = it
-                        this.totalWeight.value = this.generateTotalWeightString(this.duration.intValue)
-                        lifecycleScope.launch {
-                            settings.setRecordingDuration(this@MainActivity.duration.intValue)
-                        }
-                    },
-                    useGDrive = useGDrive,
-                    onToggleGDrive = { enabled ->
-                        lifecycleScope.launch {
-                            settings.setUseGDrive(enabled)
-                            if (enabled) setupGDrive()
-                        }
+                var hasAcceptedTerms by remember { mutableStateOf<Boolean?>(null) }
+                var showTerms by remember { mutableStateOf(false) }
+                var mustAcceptTerms by remember { mutableStateOf(false) }
+
+                // Load acceptance state
+                LaunchedEffect(Unit) {
+                    hasAcceptedTerms = settings.isTermsAccepted()
+                    if (hasAcceptedTerms == false) {
+                        showTerms = true
+                        mustAcceptTerms = true
                     }
-                )
+                }
+
+                // Display either Terms screen or main content
+                if (showTerms && mustAcceptTerms) {
+                    TermsOfUseScreen(
+                        onAccepted = {
+                            hasAcceptedTerms = true
+                            showTerms = false
+                            mustAcceptTerms = false
+                        },
+                        onDeclined = { finish() },
+                        readOnly = false
+                    )
+
+                } else if (showTerms && !mustAcceptTerms) {
+                    TermsOfUseScreen(
+                        onClosed = { showTerms = false },
+                        readOnly = true
+                    )
+
+                } else {
+                    RecordingScreen(
+                        startRecording = { duration -> startRecording(duration) },
+                        stopRecording = { stopRecording() },
+                        isRecording = isRecording,
+                        currentRecordingDuration,
+                        duration,
+                        totalWeight,
+                        onSaveRecording = { callback: (Boolean) -> Unit ->
+                            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                type = "audio/ogg"
+                                putExtra(Intent.EXTRA_TITLE, audioFileName)
+                            }
+                            saveCallback = callback
+                            saveAudioLauncher.launch(intent)
+                        },
+                        onDurationChange = {
+                            this.duration.intValue = it
+                            this.totalWeight.value = this.generateTotalWeightString(this.duration.intValue)
+                            lifecycleScope.launch {
+                                settings.setRecordingDuration(this@MainActivity.duration.intValue)
+                            }
+                        },
+                        useGDrive = useGDrive,
+                        onToggleGDrive = { enabled ->
+                            lifecycleScope.launch {
+                                settings.setUseGDrive(enabled)
+                                if (enabled) setupGDrive()
+                            }
+                        },
+                        onShowTerms = { showTerms = true }
+                    )
+                }
             }
         }
     }
@@ -291,7 +323,8 @@ fun RecordingScreen(
     onSaveRecording: (callback: (Boolean) -> Unit) -> Unit,
     onDurationChange: (duration: Int) -> Unit,
     useGDrive: Boolean,
-    onToggleGDrive: (Boolean) -> Unit
+    onToggleGDrive: (Boolean) -> Unit,
+    onShowTerms: () -> Unit,
 ) {
     val context = LocalContext.current
     var showStopDialog by remember { mutableStateOf(false) }
@@ -360,6 +393,12 @@ fun RecordingScreen(
                 onCheckedChange = onToggleGDrive,
                 enabled = !isRecording.value
             )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = onShowTerms) {
+            Text(stringResource(R.string.view_terms))
         }
     }
 

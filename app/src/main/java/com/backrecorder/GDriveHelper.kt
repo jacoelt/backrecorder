@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
-import com.backrecorder.data.SettingsDataStore
 import kotlinx.coroutines.*
 import net.openid.appauth.*
 import okhttp3.*

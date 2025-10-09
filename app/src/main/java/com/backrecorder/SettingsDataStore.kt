@@ -1,8 +1,6 @@
-package com.backrecorder.data
+package com.backrecorder
 
-import android.annotation.SuppressLint
 import android.content.Context
-import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -18,6 +16,7 @@ class SettingsDataStore private constructor(private val context: Context) {
 
         private val PREF_USE_GDRIVE = booleanPreferencesKey("use_gdrive")
         private val PREF_DURATION = intPreferencesKey("recording_duration")
+        private val PREF_TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
 
         // Singleton instance
         @Suppress("StaticFieldLeak") // Not a problem if the context parameter is an application context and not an activity context, checked in getInstance
@@ -61,6 +60,18 @@ class SettingsDataStore private constructor(private val context: Context) {
     suspend fun getRecordingDuration(defaultValue: Int): Int {
         return dataStore.data.map { prefs ->
             prefs[PREF_DURATION] ?: defaultValue
+        }.first()
+    }
+
+    suspend fun saveTermsAccepted(accepted: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[PREF_TERMS_ACCEPTED] = accepted
+        }
+    }
+
+    suspend fun isTermsAccepted(): Boolean {
+        return dataStore.data.map { prefs ->
+            prefs[PREF_TERMS_ACCEPTED] ?: false
         }.first()
     }
 }
