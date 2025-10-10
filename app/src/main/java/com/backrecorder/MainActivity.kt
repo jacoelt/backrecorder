@@ -129,85 +129,90 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             BackRecorderTheme {
-                val useGDrive by settings.getUseGDriveFlow().collectAsState(initial = false)
-                val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                val audioFileName = "record_$timeStamp.ogg"
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    val useGDrive by settings.getUseGDriveFlow().collectAsState(initial = false)
+                    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                    val audioFileName = "record_$timeStamp.ogg"
 
-                var hasAcceptedTerms by remember { mutableStateOf<Boolean?>(null) }
-                var showTerms by remember { mutableStateOf(false) }
-                var mustAcceptTerms by remember { mutableStateOf(false) }
+                    var hasAcceptedTerms by remember { mutableStateOf<Boolean?>(null) }
+                    var showTerms by remember { mutableStateOf(false) }
+                    var mustAcceptTerms by remember { mutableStateOf(false) }
 
 
+                    // Load state
+                    LaunchedEffect(Unit) {
+                        hasAcceptedTerms = settings.isTermsAccepted()
+                        if (hasAcceptedTerms == false) {
+                            showTerms = true
+                            mustAcceptTerms = true
+                        }
 
-                // Load state
-                LaunchedEffect(Unit) {
-                    hasAcceptedTerms = settings.isTermsAccepted()
-                    if (hasAcceptedTerms == false) {
-                        showTerms = true
-                        mustAcceptTerms = true
+                        val storedDuration = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
+                        duration.value = storedDuration
+                        totalWeight.value = generateTotalWeightString(storedDuration)
                     }
 
-                    val storedDuration = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
-                    duration.value = storedDuration
-                    totalWeight.value = generateTotalWeightString(storedDuration)
-                }
-
-                if (duration.value == null) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                } else {
-
-                    // Display either Terms screen or main content
-                    if (showTerms && mustAcceptTerms) {
-                        TermsOfUseScreen(
-                            onAccepted = {
-                                hasAcceptedTerms = true
-                                showTerms = false
-                                mustAcceptTerms = false
-                            },
-                            onDeclined = { finish() },
-                            readOnly = false
-                        )
-
-                    } else if (showTerms && !mustAcceptTerms) {
-                        TermsOfUseScreen(
-                            onClosed = { showTerms = false },
-                            readOnly = true
-                        )
-
+                    if (duration.value == null) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
                     } else {
-                        RecordingScreen(
-                            startRecording = { duration -> startRecording(duration) },
-                            stopRecording = { stopRecording() },
-                            isRecording = isRecording,
-                            currentRecordingDuration,
-                            duration,
-                            totalWeight,
-                            onSaveRecording = { callback: (Boolean) -> Unit ->
-                                val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                    type = "audio/ogg"
-                                    putExtra(Intent.EXTRA_TITLE, audioFileName)
-                                }
-                                saveCallback = callback
-                                saveAudioLauncher.launch(intent)
-                            },
-                            onDurationChange = {
-                                this.duration.value = it
-                                this.totalWeight.value = this.generateTotalWeightString(this.duration.value!!)
-                                lifecycleScope.launch {
-                                    settings.setRecordingDuration(this@MainActivity.duration.value!!)
-                                }
-                            },
-                            useGDrive = useGDrive,
-                            onToggleGDrive = { enabled ->
-                                lifecycleScope.launch {
-                                    settings.setUseGDrive(enabled)
-                                    if (enabled) setupGDrive()
-                                }
-                            },
-                            onShowTerms = { showTerms = true }
-                        )
+
+                        // Display either Terms screen or main content
+                        if (showTerms && mustAcceptTerms) {
+                            TermsOfUseScreen(
+                                onAccepted = {
+                                    hasAcceptedTerms = true
+                                    showTerms = false
+                                    mustAcceptTerms = false
+                                },
+                                onDeclined = { finish() },
+                                readOnly = false
+                            )
+
+                        } else if (showTerms && !mustAcceptTerms) {
+                            TermsOfUseScreen(
+                                onClosed = { showTerms = false },
+                                readOnly = true
+                            )
+
+                        } else {
+                            RecordingScreen(
+                                startRecording = { duration -> startRecording(duration) },
+                                stopRecording = { stopRecording() },
+                                isRecording = isRecording,
+                                currentRecordingDuration,
+                                duration,
+                                totalWeight,
+                                onSaveRecording = { callback: (Boolean) -> Unit ->
+                                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                        type = "audio/ogg"
+                                        putExtra(Intent.EXTRA_TITLE, audioFileName)
+                                    }
+                                    saveCallback = callback
+                                    saveAudioLauncher.launch(intent)
+                                },
+                                onDurationChange = {
+                                    this.duration.value = it
+                                    this.totalWeight.value =
+                                        this.generateTotalWeightString(this.duration.value!!)
+                                    lifecycleScope.launch {
+                                        settings.setRecordingDuration(this@MainActivity.duration.value!!)
+                                    }
+                                },
+                                useGDrive = useGDrive,
+                                onToggleGDrive = { enabled ->
+                                    lifecycleScope.launch {
+                                        settings.setUseGDrive(enabled)
+                                        if (enabled) setupGDrive()
+                                    }
+                                },
+                                onShowTerms = { showTerms = true }
+                            )
+                        }
                     }
                 }
             }
