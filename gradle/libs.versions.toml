@@ -1,6 +1,7 @@
 [versions]
 agp = "8.8.0"
 appauth = "0.11.1"
+billingKtx = "8.0.0"
 credentials = "1.5.0"
 datastorePreferences = "1.1.6"
 datastorePreferencesVersion = "1.1.1"
@@ -29,15 +30,10 @@ wheelpickercompose = "1.1.11"
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-credentials = { module = "androidx.credentials:credentials", version.ref = "credentials" }
-androidx-credentials-play-services-auth = { module = "androidx.credentials:credentials-play-services-auth", version.ref = "credentials" }
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
-androidx-datastore-preferences-v111 = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferencesVersion" }
-androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
 appauth = { module = "net.openid:appauth", version.ref = "appauth" }
+billing-ktx = { module = "com.android.billingclient:billing-ktx", version.ref = "billingKtx" }
 ffmpeg-kit-full = { module = "com.arthenica:ffmpeg-kit-full", version.ref = "ffmpegKitFull" }
-ffmpegandroid = { module = "com.writingminds:FFmpegAndroid", version.ref = "ffmpegandroid" }
-googleid = { module = "com.google.android.libraries.identity.googleid:googleid", version.ref = "googleid" }
-googleid-vlatestversion = { module = "com.google.android.libraries.identity.googleid:googleid", version.ref = "googleidVersion" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

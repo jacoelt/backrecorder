@@ -65,6 +65,7 @@ dependencies {
     implementation(libs.play.services.auth)
     implementation(libs.material)
     implementation(libs.wheelpickercompose)
+    implementation(libs.billing.ktx)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
