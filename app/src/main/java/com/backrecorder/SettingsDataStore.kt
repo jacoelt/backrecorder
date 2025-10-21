@@ -17,6 +17,8 @@ class SettingsDataStore private constructor(private val context: Context) {
         private val PREF_USE_GDRIVE = booleanPreferencesKey("use_gdrive")
         private val PREF_DURATION = intPreferencesKey("recording_duration")
         private val PREF_TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
+        private val PREF_FIRST_LAUNCH = booleanPreferencesKey("first_launch")
+
 
         // Singleton instance
         @Suppress("StaticFieldLeak") // Not a problem if the context parameter is an application context and not an activity context, checked in getInstance
@@ -72,6 +74,18 @@ class SettingsDataStore private constructor(private val context: Context) {
     suspend fun isTermsAccepted(): Boolean {
         return dataStore.data.map { prefs ->
             prefs[PREF_TERMS_ACCEPTED] ?: false
+        }.first()
+    }
+
+    suspend fun resetFirstLaunch() {
+        dataStore.edit { prefs ->
+            prefs[PREF_FIRST_LAUNCH] = false
+        }
+    }
+
+    suspend fun isFirstLaunch(): Boolean {
+        return dataStore.data.map { prefs ->
+            prefs[PREF_FIRST_LAUNCH] ?: true
         }.first()
     }
 }

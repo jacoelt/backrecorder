@@ -21,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
@@ -31,12 +32,17 @@ import com.arthenica.ffmpegkit.ReturnCode
 import com.backrecorder.services.AudioRecordingService
 import com.backrecorder.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
+
+const val PACKAGE_NAME = "com.backrecorder"
+const val SKU_ID = "com.backrecorder.subscription"
 
 class MainActivity : AppCompatActivity() {
 
@@ -47,8 +53,12 @@ class MainActivity : AppCompatActivity() {
     private var duration = mutableStateOf<Int?>(null)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var totalWeight = mutableStateOf("")
+    private var trialDaysRemaining: Int = 30
+    private var isSubscriptionActive: Boolean = false
+    private var isFullVersionActive: Boolean = false
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
+    private lateinit var billingManager: BillingManager
 
     companion object {
         private const val TAG = "MainActivity"
@@ -116,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         TinkConfig.register()
         settings = SettingsDataStore.getInstance(this.applicationContext)
         gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
+        billingManager = BillingManager(this.applicationContext)
 
         if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE)
             != PackageManager.PERMISSION_GRANTED
@@ -126,6 +137,17 @@ class MainActivity : AppCompatActivity() {
                 2222
             )
         }
+
+        trialDaysRemaining = TrialManager.trialDaysRemaining(this.applicationContext).toInt()
+
+        // Start billing connection, then evaluate subscription state
+        billingManager.startConnection(onConnected = {
+            lifecycleScope.launch {
+                isSubscriptionActive = billingManager.hasActiveSubscription()
+            }
+        })
+
+        isFullVersionActive = trialDaysRemaining > 0 || isSubscriptionActive
 
         setContent {
             BackRecorderTheme {
@@ -140,7 +162,7 @@ class MainActivity : AppCompatActivity() {
                     var hasAcceptedTerms by remember { mutableStateOf<Boolean?>(null) }
                     var showTerms by remember { mutableStateOf(false) }
                     var mustAcceptTerms by remember { mutableStateOf(false) }
-
+                    var isFirstLaunch by remember { mutableStateOf(true) }
 
                     // Load state
                     LaunchedEffect(Unit) {
@@ -153,6 +175,8 @@ class MainActivity : AppCompatActivity() {
                         val storedDuration = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
                         duration.value = storedDuration
                         totalWeight.value = generateTotalWeightString(storedDuration)
+
+                        isFirstLaunch = settings.isFirstLaunch()
                     }
 
                     if (duration.value == null) {
@@ -210,7 +234,16 @@ class MainActivity : AppCompatActivity() {
                                         if (enabled) setupGDrive()
                                     }
                                 },
-                                onShowTerms = { showTerms = true }
+                                onShowTerms = { showTerms = true },
+                                isFirstLaunch = isFirstLaunch,
+                                onTrialDialogClose = {
+                                    lifecycleScope.launch {
+                                        settings.resetFirstLaunch()
+                                    }
+                                    isFirstLaunch = false
+                                },
+                                trialDaysRemaining = trialDaysRemaining,
+                                isFullVersionActive = isFullVersionActive,
                             )
                         }
                     }
@@ -324,6 +357,11 @@ class MainActivity : AppCompatActivity() {
     private fun afterGoogleSignIn(success: Boolean) {
         if (success) gDriveHelper.setupDrive()
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        billingManager.endConnection()
+    }
 }
 
 @Composable
@@ -339,6 +377,10 @@ fun RecordingScreen(
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
     onShowTerms: () -> Unit,
+    isFirstLaunch: Boolean,
+    onTrialDialogClose: () -> Unit,
+    trialDaysRemaining: Int,
+    isFullVersionActive: Boolean,
 ) {
     val context = LocalContext.current
     var showStopDialog by remember { mutableStateOf(false) }
@@ -356,6 +398,24 @@ fun RecordingScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // ===== Trial Banner =====
+        if (!isFullVersionActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp, horizontal = 16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = pluralStringResource(
+                        R.plurals.days_remaining,
+                        trialDaysRemaining,
+                        trialDaysRemaining
+                    ),
+                )
+            }
+        }
+
         // ===== Header =====
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -453,12 +513,14 @@ fun RecordingScreen(
                         Spacer(modifier = Modifier.width(24.dp))
 
                         DurationPicker(
-                            duration = duration.value!!,
+                            duration = if (isFullVersionActive) duration.value!! else AudioRecordingService.DEFAULT_DURATION,
                             onDurationChange = {
-                                duration.value = it
-                                onDurationChange(it)
+                                if (isFullVersionActive) {
+                                    duration.value = it
+                                    onDurationChange(it)
+                                }
                             },
-                            enabled = !isRecording.value,
+                            enabled = isFullVersionActive && !isRecording.value,
                         )
                     }
 
@@ -514,7 +576,7 @@ fun RecordingScreen(
                         Switch(
                             checked = useGDrive,
                             onCheckedChange = onToggleGDrive,
-                            enabled = !isRecording.value
+                            enabled = isFullVersionActive && !isRecording.value
                         )
                     }
                 }
@@ -561,5 +623,13 @@ fun RecordingScreen(
             },
             dismissButton = {}
         )
+    }
+
+    if (isFirstLaunch) {
+        TrialDialog(
+            "https://play.google.com/store/account/subscriptions?sku=$SKU_ID&package=$PACKAGE_NAME"
+        ) {
+            onTrialDialogClose()
+        }
     }
 }

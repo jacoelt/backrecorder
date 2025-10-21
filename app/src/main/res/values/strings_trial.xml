@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <string name="trial_title">Welcome to BackRecorder Premium</string>
+    <string name="trial_message">
+        You have a 30-day free trial with all premium features:
+        \n\n• Unlimited recording
+        \n• Automatic cloud backup
+        \n\nAfter the trial ends, recording duration will be limited to 10 minutes and cloud save will be disabled.
+        \n\nYou can subscribe to a monthly or yearly plan anytime to keep full access.
+    </string>
+    <string name="trial_button_subscribe">View subscriptions</string>
+    <string name="trial_button_continue">Continue</string>
+
+    <plurals name="days_remaining">
+        <item quantity="one">1 day left in your free trial</item>
+        <item quantity="other">%d days left in your free trial</item>
+    </plurals>
+
+</resources>
