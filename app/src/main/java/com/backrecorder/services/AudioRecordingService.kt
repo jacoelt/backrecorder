@@ -30,6 +30,7 @@ class AudioRecordingService : Service() {
     private var currentDurationCallback: ((duration: Int) -> Unit)? = null
 
     companion object {
+        private const val TAG = "AudioRecordingService"
         const val CHANNELS = 1
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000
@@ -79,8 +80,17 @@ class AudioRecordingService : Service() {
         Log.d("AudioRecordingService", "Start new recording")
 
         if (fileList.size > 0) {
-            val lastFile = fileList.last()
-            gDriveHelper?.uploadFile(lastFile, GDriveHelper.FolderType.STAGING, fileName = null, callback = null)
+            try {
+                val lastFile = fileList.last()
+                gDriveHelper?.uploadFile(
+                    lastFile,
+                    GDriveHelper.FolderType.STAGING,
+                    fileName = null,
+                    callback = null
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to upload to Drive", e)
+            }
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -93,19 +103,25 @@ class AudioRecordingService : Service() {
             mediaRecorder = MediaRecorder(this)
         }
 
-        mediaRecorder?.apply {
-            reset()
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.OGG)
-            setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
-            setAudioChannels(CHANNELS)
-            setAudioSamplingRate(SAMPLING_RATE)
-            setAudioEncodingBitRate(BIT_RATE)
-            setOutputFile(audioFile.absolutePath)
-            prepare()
-            start()
+        try {
+            mediaRecorder?.apply {
+                reset()
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.OGG)
+                setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+                setAudioChannels(CHANNELS)
+                setAudioSamplingRate(SAMPLING_RATE)
+                setAudioEncodingBitRate(BIT_RATE)
+                setOutputFile(audioFile.absolutePath)
+                prepare()
+                start()
+            }
+            isRecording = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start MediaRecorder", e)
+            stopSelf()
+            return
         }
-        isRecording = true
 
         // Restart recording after 1 minute
         looper.postDelayed({ startNewRecording() }, 60_000)

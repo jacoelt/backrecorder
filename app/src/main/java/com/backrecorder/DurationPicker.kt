@@ -8,14 +8,13 @@ import com.commandiron.wheel_picker_compose.WheelTimePicker
 import java.time.LocalTime
 import androidx.compose.ui.input.pointer.pointerInput
 
-const val TAG = "DurationPicker"
-
 @Composable
 fun DurationPicker(
     enabled: Boolean,
     duration: Int,
     onDurationChange: (Int) -> Unit
 ) {
+
     val localTime = LocalTime.of(duration / 60, duration % 60)
 
     Box(

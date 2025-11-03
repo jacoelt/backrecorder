@@ -123,10 +123,21 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        TinkConfig.register()
-        settings = SettingsDataStore.getInstance(this.applicationContext)
-        gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
-        billingManager = BillingManager(this.applicationContext)
+        // ===== Global exception handler =====
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e("GlobalError", "Uncaught exception in thread ${thread.name}", throwable)
+            Toast.makeText(applicationContext, "Unexpected error: ${throwable.message}", Toast.LENGTH_LONG).show()
+        }
+
+        try {
+            TinkConfig.register()
+            settings = SettingsDataStore.getInstance(this.applicationContext)
+            gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
+            billingManager = BillingManager(this.applicationContext)
+        } catch (e: Exception) {
+            Log.e(TAG, "Initialization failed", e)
+            Toast.makeText(this, "Initialization error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
 
         if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE)
             != PackageManager.PERMISSION_GRANTED
@@ -155,7 +166,8 @@ class MainActivity : AppCompatActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val useGDrive by settings.getUseGDriveFlow().collectAsState(initial = false)
+                    val useGDrivePref by settings.getUseGDriveFlow().collectAsState(initial = false)
+                    val useGDrive = isFullVersionActive && useGDrivePref
                     val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                     val audioFileName = "record_$timeStamp.ogg"
 
@@ -254,10 +266,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun startRecording(duration: Int) {
         if (ContextCompat.checkSelfPermission(this, permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            val intent = Intent(this, AudioRecordingService::class.java)
-            intent.putExtra(AudioRecordingService.DURATION_INTENT_KEY, duration)
-            ContextCompat.startForegroundService(this, intent)
-            this.isRecording.value = true
+            try {
+                val intent = Intent(this, AudioRecordingService::class.java)
+                intent.putExtra(AudioRecordingService.DURATION_INTENT_KEY, duration)
+                ContextCompat.startForegroundService(this, intent)
+                this.isRecording.value = true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start recording", e)
+                Toast.makeText(this, "Unable to start recording: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
         } else {
             requestAudioPermissionLauncher.launch(permission.RECORD_AUDIO)
         }
@@ -265,9 +282,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopRecording() {
         Log.d("MainActivity", "stopRecording")
-        recordingService?.stopRecording()
-        isRecording.value = false
-        stopService(Intent(this, AudioRecordingService::class.java))
+        try {
+            recordingService?.stopRecording()
+            isRecording.value = false
+            stopService(Intent(this, AudioRecordingService::class.java))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error while stopping recording", e)
+            Toast.makeText(this, "Error while stopping recording: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun saveRecording(uri: Uri, callback: ((Boolean) -> Unit)?) {
