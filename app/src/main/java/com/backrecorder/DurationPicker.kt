@@ -1,5 +1,6 @@
 package com.backrecorder
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -12,6 +13,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 fun DurationPicker(
     enabled: Boolean,
     duration: Int,
+    onDisabledClick: () -> Unit,
     onDurationChange: (Int) -> Unit
 ) {
 
@@ -35,7 +37,8 @@ fun DurationPicker(
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .pointerInput(Unit) { /* consume all touches */ }
+                    .clickable { onDisabledClick() }
+                    .pointerInput(Unit) {  },
             )
         }
     }

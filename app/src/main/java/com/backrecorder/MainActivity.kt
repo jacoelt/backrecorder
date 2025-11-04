@@ -18,8 +18,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -32,9 +35,7 @@ import com.arthenica.ffmpegkit.ReturnCode
 import com.backrecorder.services.AudioRecordingService
 import com.backrecorder.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.text.DecimalFormat
@@ -43,6 +44,7 @@ import java.util.*
 
 const val PACKAGE_NAME = "com.backrecorder"
 const val SKU_ID = "com.backrecorder.subscription"
+const val STORE_URL = "https://play.google.com/store/account/subscriptions?sku=$SKU_ID&package=$PACKAGE_NAME"
 
 class MainActivity : AppCompatActivity() {
 
@@ -171,10 +173,11 @@ class MainActivity : AppCompatActivity() {
                     val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                     val audioFileName = "record_$timeStamp.ogg"
 
-                    var hasAcceptedTerms by remember { mutableStateOf<Boolean?>(null) }
-                    var showTerms by remember { mutableStateOf(false) }
-                    var mustAcceptTerms by remember { mutableStateOf(false) }
-                    var isFirstLaunch by remember { mutableStateOf(true) }
+                    var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
+                    var showTerms by rememberSaveable { mutableStateOf(false) }
+                    var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
+                    var isFirstLaunch by rememberSaveable { mutableStateOf(true) }
+                    var showPremiumDialog by rememberSaveable { mutableStateOf(false) }
 
                     // Load state
                     LaunchedEffect(Unit) {
@@ -216,6 +219,21 @@ class MainActivity : AppCompatActivity() {
                             )
 
                         } else {
+
+                            // Display dialogs
+                            if (isFirstLaunch) {
+                                TrialDialog(STORE_URL) {
+                                    lifecycleScope.launch { settings.resetFirstLaunch() }
+                                    isFirstLaunch = false
+                                }
+                            }
+
+                            if (showPremiumDialog) {
+                                PremiumRequiredDialog(
+                                    storeUrl = STORE_URL,
+                                    onDismiss = { showPremiumDialog = false }
+                                )
+                            }
                             RecordingScreen(
                                 startRecording = { duration -> startRecording(duration) },
                                 stopRecording = { stopRecording() },
@@ -247,13 +265,7 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 },
                                 onShowTerms = { showTerms = true },
-                                isFirstLaunch = isFirstLaunch,
-                                onTrialDialogClose = {
-                                    lifecycleScope.launch {
-                                        settings.resetFirstLaunch()
-                                    }
-                                    isFirstLaunch = false
-                                },
+                                onShowPremiumDialog = { showPremiumDialog = true },
                                 trialDaysRemaining = trialDaysRemaining,
                                 isFullVersionActive = isFullVersionActive,
                             )
@@ -399,8 +411,7 @@ fun RecordingScreen(
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
     onShowTerms: () -> Unit,
-    isFirstLaunch: Boolean,
-    onTrialDialogClose: () -> Unit,
+    onShowPremiumDialog: () -> Unit,
     trialDaysRemaining: Int,
     isFullVersionActive: Boolean,
 ) {
@@ -434,6 +445,7 @@ fun RecordingScreen(
                         trialDaysRemaining,
                         trialDaysRemaining
                     ),
+                    modifier = Modifier.clickable { onShowPremiumDialog() }
                 )
             }
         }
@@ -543,6 +555,7 @@ fun RecordingScreen(
                                 }
                             },
                             enabled = isFullVersionActive && !isRecording.value,
+                            onDisabledClick = { onShowPremiumDialog() }
                         )
                     }
 
@@ -592,13 +605,25 @@ fun RecordingScreen(
                     // GDrive toggle
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(true) {
+                                if (!isFullVersionActive) {
+                                    onShowPremiumDialog()
+                                }
+                            },
                     ) {
                         Text(text = stringResource(R.string.setup_gdrive), modifier = Modifier.weight(1f))
                         Switch(
                             checked = useGDrive,
-                            onCheckedChange = onToggleGDrive,
-                            enabled = isFullVersionActive && !isRecording.value
+                            onCheckedChange = {
+                                if (!isFullVersionActive) {
+                                    onShowPremiumDialog()
+                                } else if (!isRecording.value) {
+                                    onToggleGDrive(it)
+                                }
+                            },
+                            modifier = Modifier.alpha(if (isFullVersionActive && !isRecording.value) 1f else 0.5f),
                         )
                     }
                 }
@@ -645,13 +670,5 @@ fun RecordingScreen(
             },
             dismissButton = {}
         )
-    }
-
-    if (isFirstLaunch) {
-        TrialDialog(
-            "https://play.google.com/store/account/subscriptions?sku=$SKU_ID&package=$PACKAGE_NAME"
-        ) {
-            onTrialDialogClose()
-        }
     }
 }
