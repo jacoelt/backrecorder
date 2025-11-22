@@ -1,4 +1,4 @@
-package com.backrecorder
+package com.back_recorder
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box

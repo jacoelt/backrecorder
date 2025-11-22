@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">BackRecorder</string>
+    <string name="app_name">Back Recorder</string>
     <string name="audio_recording_channel_name">Audio Recording</string>
     <string name="notification_title">Recording in progress</string>
     <string name="notification_text">Application is recording continuously..</string>
@@ -20,5 +20,9 @@
     <string name="max_duration">Max duration:</string>
     <string name="save_recording">Save recording of last %s</string>
     <string name="current_duration">Current duration: %s</string>
+
+    <string name="error_no_duration">Duration must be > 0</string>
+    <string name="error_no_recording_in_progress">No recording in progress.</string>
+    <string name="error_cannot_change_while_recording">This cannot be changed while recording.</string>
 
 </resources>

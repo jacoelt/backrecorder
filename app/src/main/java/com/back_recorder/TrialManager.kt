@@ -1,4 +1,4 @@
-package com.backrecorder
+package com.back_recorder
 
 import android.content.Context
 import android.content.pm.PackageManager
@@ -13,6 +13,7 @@ object TrialManager {
      * Returns remaining trial days (>= 0).
      */
     fun trialDaysRemaining(context: Context): Long {
+//        return 30
         val installTime = getInstallTime(context)
         val now = System.currentTimeMillis()
         val elapsed = (now - installTime).toDuration(DurationUnit.MILLISECONDS)

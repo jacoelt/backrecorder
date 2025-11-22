@@ -1,4 +1,4 @@
-package com.backrecorder
+package com.back_recorder
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn

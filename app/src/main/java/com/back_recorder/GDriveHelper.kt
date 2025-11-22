@@ -1,4 +1,4 @@
-package com.backrecorder
+package com.back_recorder
 
 import android.content.Context
 import android.content.Intent
@@ -23,7 +23,7 @@ class GDriveHelper(
         private const val TAG = "GDriveHelper"
         private const val ANDROID_CLIENT_ID =
             "580864635782-kspun7adi7q2743bsfmun2u40taauu76.apps.googleusercontent.com"
-        private const val REDIRECT_URI = "com.backrecorder:/oauth2redirect"
+        private const val REDIRECT_URI = "com.back_recorder:/oauth2redirect"
         private const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 
         private const val PREF_KEY_ACCESS_TOKEN = "drive_access_token"

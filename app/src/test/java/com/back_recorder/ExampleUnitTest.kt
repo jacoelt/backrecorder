@@ -1,4 +1,4 @@
-package com.backrecorder
+package com.back_recorder
 
 import org.junit.Test
 

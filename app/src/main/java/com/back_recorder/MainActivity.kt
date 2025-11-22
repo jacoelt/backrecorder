@@ -1,4 +1,4 @@
-package com.backrecorder
+package com.back_recorder
 
 import android.Manifest.permission
 import android.annotation.SuppressLint
@@ -22,7 +22,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -32,8 +31,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
-import com.backrecorder.services.AudioRecordingService
-import com.backrecorder.ui.theme.BackRecorderTheme
+import com.back_recorder.services.AudioRecordingService
+import com.back_recorder.ui.theme.BackRecorderTheme
+
 import com.google.crypto.tink.config.TinkConfig
 import kotlinx.coroutines.launch
 import java.io.File
@@ -42,9 +42,10 @@ import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
 
-const val PACKAGE_NAME = "com.backrecorder"
-const val SKU_ID = "com.backrecorder.subscription"
+const val PACKAGE_NAME = "com.back_recorder"
+const val SKU_ID = "com.back_recorder.subscription"
 const val STORE_URL = "https://play.google.com/store/account/subscriptions?sku=$SKU_ID&package=$PACKAGE_NAME"
+const val ALPHA_DISABLED = 0.5f
 
 class MainActivity : AppCompatActivity() {
 
@@ -176,7 +177,7 @@ class MainActivity : AppCompatActivity() {
                     var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
                     var showTerms by rememberSaveable { mutableStateOf(false) }
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
-                    var isFirstLaunch by rememberSaveable { mutableStateOf(true) }
+                    var isFirstLaunch by rememberSaveable { mutableStateOf(false) }
                     var showPremiumDialog by rememberSaveable { mutableStateOf(false) }
 
                     // Load state
@@ -187,7 +188,11 @@ class MainActivity : AppCompatActivity() {
                             mustAcceptTerms = true
                         }
 
-                        val storedDuration = settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
+                        val storedDuration = if (isFullVersionActive) {
+                            settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
+                        } else {
+                            AudioRecordingService.DEFAULT_DURATION
+                        }
                         duration.value = storedDuration
                         totalWeight.value = generateTotalWeightString(storedDuration)
 
@@ -267,6 +272,7 @@ class MainActivity : AppCompatActivity() {
                                 onShowTerms = { showTerms = true },
                                 onShowPremiumDialog = { showPremiumDialog = true },
                                 trialDaysRemaining = trialDaysRemaining,
+                                isSubscriptionActive = isSubscriptionActive,
                                 isFullVersionActive = isFullVersionActive,
                             )
                         }
@@ -315,6 +321,8 @@ class MainActivity : AppCompatActivity() {
                 tempFile.delete()
                 callback?.invoke(isSuccess)
             }
+
+            Log.d(TAG, "Writing merged file")
 
             if (isSuccess) {
                 contentResolver.openOutputStream(uri)?.use { outputStream ->
@@ -413,6 +421,7 @@ fun RecordingScreen(
     onShowTerms: () -> Unit,
     onShowPremiumDialog: () -> Unit,
     trialDaysRemaining: Int,
+    isSubscriptionActive: Boolean,
     isFullVersionActive: Boolean,
 ) {
     val context = LocalContext.current
@@ -432,7 +441,7 @@ fun RecordingScreen(
             .padding(16.dp)
     ) {
         // ===== Trial Banner =====
-        if (!isFullVersionActive) {
+        if (!isSubscriptionActive) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -525,10 +534,18 @@ fun RecordingScreen(
                         Switch(
                             checked = isRecording.value,
                             onCheckedChange = { checked ->
-                                if (checked) startRecording(duration.value!!)
-                                else showStopDialog = true
+                                if (duration.value!! > 0) {
+                                    if (checked) startRecording(duration.value!!)
+                                    else showStopDialog = true
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        R.string.error_no_duration,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
                             },
-                            enabled = duration.value!! > 0
+                            modifier = Modifier.alpha(if (duration.value!! > 0) 1f else ALPHA_DISABLED),
                         )
                     }
 
@@ -555,7 +572,17 @@ fun RecordingScreen(
                                 }
                             },
                             enabled = isFullVersionActive && !isRecording.value,
-                            onDisabledClick = { onShowPremiumDialog() }
+                            onDisabledClick = {
+                                if (!isFullVersionActive) {
+                                    onShowPremiumDialog()
+                                } else { // isRecording.value == true
+                                    Toast.makeText(
+                                        context,
+                                        R.string.error_cannot_change_while_recording,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
                         )
                     }
 
@@ -580,17 +607,26 @@ fun RecordingScreen(
                     // Save button
                     Button(
                         onClick = {
+                            if (isRecording.value) {
                             onSaveRecording { isSuccess ->
-                                if (!isSuccess)
-                                    Toast.makeText(
-                                        context,
-                                        R.string.error_on_recording_save,
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    if (!isSuccess)
+                                        Toast.makeText(
+                                            context,
+                                            R.string.error_on_recording_save,
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                }
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    R.string.error_no_recording_in_progress,
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         },
-                        enabled = isRecording.value,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .alpha(if (isRecording.value) 1f else ALPHA_DISABLED),
                     ) {
                         Text(
                             text = stringResource(
@@ -621,6 +657,12 @@ fun RecordingScreen(
                                     onShowPremiumDialog()
                                 } else if (!isRecording.value) {
                                     onToggleGDrive(it)
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        R.string.error_cannot_change_while_recording,
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
                             },
                             modifier = Modifier.alpha(if (isFullVersionActive && !isRecording.value) 1f else 0.5f),
