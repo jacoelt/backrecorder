@@ -1,4 +1,4 @@
-package com.back_recorder.ui.theme
+package com.backrecorderapp.ui.theme
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*

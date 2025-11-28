@@ -5,12 +5,12 @@ plugins {
 }
 
 android {
-    namespace = "com.back_recorder"
+    namespace = "com.backrecorderapp"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.back_recorder"
-        manifestPlaceholders["appAuthRedirectScheme"] = "com.back_recorder"
+        applicationId = "com.backrecorderapp"
+        manifestPlaceholders["appAuthRedirectScheme"] = "com.backrecorderapp"
         minSdk = 31
         targetSdk = 35
         versionCode = 1

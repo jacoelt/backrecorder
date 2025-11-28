@@ -1,4 +1,4 @@
-package com.back_recorder.services
+package com.backrecorderapp.services
 
 import android.app.*
 import android.content.Intent
@@ -8,8 +8,8 @@ import android.os.IBinder
 import android.os.Handler
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.back_recorder.GDriveHelper
-import com.back_recorder.R
+import com.backrecorderapp.GDriveHelper
+import com.backrecorderapp.R
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*

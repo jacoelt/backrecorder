@@ -1,4 +1,4 @@
-package com.back_recorder
+package com.backrecorderapp
 
 import android.content.Intent
 import android.net.Uri

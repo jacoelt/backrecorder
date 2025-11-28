@@ -1,4 +1,4 @@
-package com.back_recorder
+package com.backrecorderapp
 
 import android.Manifest.permission
 import android.annotation.SuppressLint
@@ -31,8 +31,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
-import com.back_recorder.services.AudioRecordingService
-import com.back_recorder.ui.theme.BackRecorderTheme
+import com.backrecorderapp.services.AudioRecordingService
+import com.backrecorderapp.ui.theme.BackRecorderTheme
 
 import com.google.crypto.tink.config.TinkConfig
 import kotlinx.coroutines.launch
@@ -42,8 +42,8 @@ import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
 
-const val PACKAGE_NAME = "com.back_recorder"
-const val SKU_ID = "com.back_recorder.subscription"
+const val PACKAGE_NAME = "com.backrecorderapp"
+const val SKU_ID = "com.backrecorderapp.subscription"
 const val STORE_URL = "https://play.google.com/store/account/subscriptions?sku=$SKU_ID&package=$PACKAGE_NAME"
 const val ALPHA_DISABLED = 0.5f
 
@@ -397,7 +397,26 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun afterGoogleSignIn(success: Boolean) {
-        if (success) gDriveHelper.setupDrive()
+        fun onFail() {
+            lifecycleScope.launch {
+                settings.setUseGDrive(false)
+            }
+            Toast.makeText(
+                this.applicationContext,
+                R.string.error_setup_gdrive,
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        if (success) {
+            try {
+                gDriveHelper.setupDrive()
+            } catch (e: IllegalStateException) {
+                onFail()
+            }
+        } else {
+            onFail()
+        }
     }
 
     override fun onDestroy() {
@@ -573,14 +592,14 @@ fun RecordingScreen(
                             },
                             enabled = isFullVersionActive && !isRecording.value,
                             onDisabledClick = {
-                                if (!isFullVersionActive) {
-                                    onShowPremiumDialog()
-                                } else { // isRecording.value == true
+                                if (isRecording.value) {
                                     Toast.makeText(
                                         context,
                                         R.string.error_cannot_change_while_recording,
                                         Toast.LENGTH_SHORT
                                     ).show()
+                                } else if (!isFullVersionActive) {
+                                    onShowPremiumDialog()
                                 }
                             }
                         )
@@ -653,16 +672,16 @@ fun RecordingScreen(
                         Switch(
                             checked = useGDrive,
                             onCheckedChange = {
-                                if (!isFullVersionActive) {
-                                    onShowPremiumDialog()
-                                } else if (!isRecording.value) {
-                                    onToggleGDrive(it)
-                                } else {
+                                if (isRecording.value) {
                                     Toast.makeText(
                                         context,
                                         R.string.error_cannot_change_while_recording,
                                         Toast.LENGTH_SHORT
                                     ).show()
+                                } else if (!isFullVersionActive) {
+                                    onShowPremiumDialog()
+                                } else {
+                                    onToggleGDrive(it)
                                 }
                             },
                             modifier = Modifier.alpha(if (isFullVersionActive && !isRecording.value) 1f else 0.5f),

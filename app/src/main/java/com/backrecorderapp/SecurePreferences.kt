@@ -1,4 +1,4 @@
-package com.back_recorder
+package com.backrecorderapp
 
 import android.content.Context
 import android.util.Base64
