@@ -86,10 +86,16 @@ class GDriveHelper(
     }
 
     fun handleAuthResponse(data: Intent?) {
-        val response = AuthorizationResponse.fromIntent(data!!)
+        val response = data?.let { AuthorizationResponse.fromIntent(it) }
+        if (response == null) {
+            Log.e(TAG, "Authorization data is null")
+            signInCallback(false)
+            return
+        }
+
         val ex = AuthorizationException.fromIntent(data)
 
-        if (response != null) {
+        if (ex == null) {
             authService.performTokenRequest(response.createTokenExchangeRequest()) { tokenResponse, exception ->
                 if (tokenResponse != null) {
                     securePrefs.saveString(PREF_KEY_ACCESS_TOKEN, tokenResponse.accessToken ?: "")
