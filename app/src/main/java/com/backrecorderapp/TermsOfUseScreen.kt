@@ -90,14 +90,13 @@ fun TermsOfUseScreen(
     }
     val tosLines = remember { parseMarkdown(tosMarkdown) }
 
-    var hasReachedBottom by remember { mutableStateOf(false) }
-
     // LazyColumn state
     val listState = rememberLazyListState()
 
-    LaunchedEffect(listState.firstVisibleItemIndex, listState.layoutInfo.totalItemsCount) {
-        hasReachedBottom =
+    val hasReachedBottom by remember {
+        derivedStateOf {
             listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index == tosLines.lastIndex
+        }
     }
 
     Surface(
