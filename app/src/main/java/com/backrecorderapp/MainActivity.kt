@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var totalWeight = mutableStateOf("")
     private var trialDaysRemaining: Int = 30
-    private var isSubscriptionActive: Boolean = false
+    private var isSubscriptionActive = mutableStateOf(false)
     private var isFullVersionActive: Boolean = false
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity() {
     private val requestAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
             if (isGranted) {
-                startRecording(this.duration.value!!)
+                startRecording(this.duration.value ?: AudioRecordingService.DEFAULT_DURATION)
             } else {
                 Toast.makeText(this, "Permission denied. Cannot record audio.", Toast.LENGTH_SHORT).show()
             }
@@ -158,7 +158,7 @@ class MainActivity : AppCompatActivity() {
         try {
             billingManager.startConnection(onConnected = {
                 lifecycleScope.launch {
-                    isSubscriptionActive = billingManager.hasActiveSubscription()
+                    isSubscriptionActive.value = billingManager.hasActiveSubscription()
                 }
             })
         } catch (e: Exception) {
@@ -170,7 +170,7 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
 
-        isFullVersionActive = trialDaysRemaining > 0 || isSubscriptionActive
+        isFullVersionActive = trialDaysRemaining > 0 || isSubscriptionActive.value
 
         setContent {
             BackRecorderTheme {
@@ -266,9 +266,9 @@ class MainActivity : AppCompatActivity() {
                                 onDurationChange = {
                                     this.duration.value = it
                                     this.totalWeight.value =
-                                        this.generateTotalWeightString(this.duration.value!!)
+                                        this.generateTotalWeightString(this.duration.value ?: AudioRecordingService.DEFAULT_DURATION)
                                     lifecycleScope.launch {
-                                        settings.setRecordingDuration(this@MainActivity.duration.value!!)
+                                        settings.setRecordingDuration(this@MainActivity.duration.value ?: AudioRecordingService.DEFAULT_DURATION)
                                     }
                                 },
                                 useGDrive = useGDrive,
@@ -281,7 +281,7 @@ class MainActivity : AppCompatActivity() {
                                 onShowTerms = { showTerms = true },
                                 onShowPremiumDialog = { showPremiumDialog = true },
                                 trialDaysRemaining = trialDaysRemaining,
-                                isSubscriptionActive = isSubscriptionActive,
+                                isSubscriptionActive = isSubscriptionActive.value,
                                 isFullVersionActive = isFullVersionActive,
                             )
                         }
@@ -559,11 +559,12 @@ fun RecordingScreen(
                             text = stringResource(R.string.enable_recording),
                             modifier = Modifier.weight(1f)
                         )
+                        val durationValue = duration.value ?: AudioRecordingService.DEFAULT_DURATION
                         Switch(
                             checked = isRecording.value,
                             onCheckedChange = { checked ->
-                                if (duration.value!! > 0) {
-                                    if (checked) startRecording(duration.value!!)
+                                if (durationValue > 0) {
+                                    if (checked) startRecording(durationValue)
                                     else showStopDialog = true
                                 } else {
                                     Toast.makeText(
@@ -573,7 +574,7 @@ fun RecordingScreen(
                                     ).show()
                                 }
                             },
-                            modifier = Modifier.alpha(if (duration.value!! > 0) 1f else ALPHA_DISABLED),
+                            modifier = Modifier.alpha(if (durationValue > 0) 1f else ALPHA_DISABLED),
                         )
                     }
 
@@ -592,7 +593,7 @@ fun RecordingScreen(
                         Spacer(modifier = Modifier.width(24.dp))
 
                         DurationPicker(
-                            duration = if (isFullVersionActive) duration.value!! else AudioRecordingService.DEFAULT_DURATION,
+                            duration = if (isFullVersionActive) duration.value ?: AudioRecordingService.DEFAULT_DURATION else AudioRecordingService.DEFAULT_DURATION,
                             onDurationChange = {
                                 if (isFullVersionActive) {
                                     duration.value = it
