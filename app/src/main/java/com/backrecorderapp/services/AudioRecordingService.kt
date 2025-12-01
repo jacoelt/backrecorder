@@ -10,6 +10,7 @@ import android.os.HandlerThread
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.backrecorderapp.GDriveHelper
+import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import java.io.File
 import java.text.SimpleDateFormat
@@ -58,7 +59,7 @@ class AudioRecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("AudioRecordingService", "Started")
-        maxDurationMinutes = intent?.getIntExtra(DURATION_INTENT_KEY, DEFAULT_DURATION)!!
+        maxDurationMinutes = intent?.getIntExtra(DURATION_INTENT_KEY, DEFAULT_DURATION) ?: DEFAULT_DURATION
         startForegroundService()
         startNewRecording()
         return START_STICKY
@@ -73,10 +74,15 @@ class AudioRecordingService : Service() {
         )
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
 
+        val intent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val notification = NotificationCompat.Builder(this, notificationChannelId)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(getString(R.string.notification_text))
             .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentIntent(pendingIntent)
             .build()
 
         startForeground(1, notification)
@@ -165,8 +171,8 @@ class AudioRecordingService : Service() {
         return isRecording
     }
 
-    fun getFileList(): MutableList<File> {
-        return fileList
+    fun getFileList(): List<File> {
+        return fileList.toList() // Make a readonly copy
     }
 
     fun stopRecording() {
@@ -188,7 +194,7 @@ class AudioRecordingService : Service() {
         mediaRecorder = null
         isRecording = false
         stopForeground(STOP_FOREGROUND_REMOVE)
-        fileList.removeAll(fileList)
+        fileList.clear()
         workerThread.quitSafely()
     }
 
