@@ -4,7 +4,10 @@ import android.content.Context
 import android.util.Log
 import android.widget.Toast
 import com.android.billingclient.api.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -21,7 +24,7 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
         private const val TAG = "BillingManager"
     }
 
-    private val billingClient: BillingClient = BillingClient.newBuilder(context)
+    private val billingClient: BillingClient = BillingClient.newBuilder(context.applicationContext)
         .setListener(this)
         .enablePendingPurchases(
             PendingPurchasesParams
@@ -31,24 +34,19 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
         .build()
 
     fun startConnection(onConnected: () -> Unit, onDisconnected: (() -> Unit)? = null) {
-        try {
-            billingClient.startConnection(object : BillingClientStateListener {
-                override fun onBillingSetupFinished(billingResult: BillingResult) {
-                    if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                        onConnected()
-                    } else {
-                        // Optionally log or handle non-OK result codes
-                    }
+        billingClient.startConnection(object : BillingClientStateListener {
+            override fun onBillingSetupFinished(billingResult: BillingResult) {
+                if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    onConnected()
+                } else {
+                    Log.e(TAG, "Billing setup failed: ${billingResult.responseCode}")
                 }
+            }
 
-                override fun onBillingServiceDisconnected() {
-                    onDisconnected?.invoke()
-                }
-            })
-        } catch (e: Exception) {
-            Log.e(TAG, "Error when connecting to google billing", e)
-            Toast.makeText(context, "Error when connecting to google billing, cannot check current subscription.", Toast.LENGTH_SHORT).show()
-        }
+            override fun onBillingServiceDisconnected() {
+                onDisconnected?.invoke()
+            }
+        })
     }
 
     override fun onPurchasesUpdated(billingResult: BillingResult, purchases: MutableList<Purchase>?) {
@@ -60,13 +58,9 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
      * Returns true if there is at least one active (PURCHASED & acknowledged) subscription.
      */
     suspend fun hasActiveSubscription(): Boolean {
-        return try {
-            val purchases = querySubscriptions()
-            purchases.any { p ->
-                p.purchaseState == Purchase.PurchaseState.PURCHASED && p.isAcknowledged
-            }
-        } catch (e: Exception) {
-            false
+        val purchases = withTimeout(5000) { querySubscriptions() }
+        return purchases.any { p ->
+            p.purchaseState == Purchase.PurchaseState.PURCHASED && p.isAcknowledged
         }
     }
 
@@ -74,6 +68,11 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.SUBS)
             .build()
+
+        cont.invokeOnCancellation {
+            Log.d(TAG, "Subscription query cancelled")
+        }
+
         try {
             billingClient.queryPurchasesAsync(params) { billingResult, purchasesList ->
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
@@ -84,7 +83,7 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error when connecting to google billing", e)
-            Toast.makeText(context, "Error when connecting to google billing, cannot check current subscription.", Toast.LENGTH_SHORT).show()
+            cont.resumeWithException(e)
         }
     }
 
