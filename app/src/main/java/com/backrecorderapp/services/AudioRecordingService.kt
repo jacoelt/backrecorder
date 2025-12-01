@@ -6,6 +6,7 @@ import android.media.MediaRecorder
 import android.os.Binder
 import android.os.IBinder
 import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.backrecorderapp.GDriveHelper
@@ -23,7 +24,8 @@ class AudioRecordingService : Service() {
     private lateinit var outputDir: File
     private var maxDurationMinutes by Delegates.notNull<Int>()
     private val fileList = mutableListOf<File>()
-    private lateinit var looper: Handler
+    private lateinit var workerThread: HandlerThread
+    private lateinit var workerHandler: Handler
 
     private val binder = LocalBinder()
     private var isRecording = false  // Track recording status
@@ -47,7 +49,11 @@ class AudioRecordingService : Service() {
         super.onCreate()
         Log.d("AudioRecordingService", "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
-        looper = Handler(mainLooper)
+
+        // Dedicated thread for recurring recording tasks
+        workerThread = HandlerThread("AudioRecorderWorker")
+        workerThread.start()
+        workerHandler = Handler(workerThread.looper)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -124,7 +130,7 @@ class AudioRecordingService : Service() {
         }
 
         // Restart recording after 1 minute
-        looper.postDelayed({ startNewRecording() }, 60_000)
+        workerHandler.postDelayed({ startNewRecording() }, 60_000)
 
         if (currentDurationCallback != null) {
             currentDurationCallback?.let { it((fileList.size - 1).coerceAtLeast(0)) }
@@ -165,15 +171,25 @@ class AudioRecordingService : Service() {
 
     fun stopRecording() {
         Log.d("AudioRecordingService", "stopRecording")
-        looper.removeCallbacksAndMessages(null)
+        workerHandler.removeCallbacksAndMessages(null)
         mediaRecorder?.apply {
-            reset()
-            release()
+            try {
+                stop()
+            } catch (_: Exception) {}
+            finally {
+                try {
+                    reset()
+                } catch (_: Exception) {}
+                try {
+                    release()
+                } catch (_: Exception) {}
+            }
         }
         mediaRecorder = null
         isRecording = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         fileList.removeAll(fileList)
+        workerThread.quitSafely()
     }
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
