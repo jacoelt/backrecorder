@@ -13,13 +13,11 @@ object TrialManager {
      * Returns remaining trial days (>= 0).
      */
     fun trialDaysRemaining(context: Context): Long {
-//        return 30
-        return 0
-//        val installTime = getInstallTime(context)
-//        val now = System.currentTimeMillis()
-//        val elapsed = (now - installTime).toDuration(DurationUnit.MILLISECONDS)
-//        val remaining = TRIAL_PERIOD - elapsed
-//        return if (remaining.isPositive()) remaining.inWholeDays else 0
+        val installTime = getInstallTime(context)
+        val now = System.currentTimeMillis()
+        val elapsed = (now - installTime).toDuration(DurationUnit.MILLISECONDS)
+        val remaining = TRIAL_PERIOD - elapsed
+        return if (remaining.isPositive()) remaining.inWholeDays else 0
     }
 
     /**
@@ -32,7 +30,6 @@ object TrialManager {
             val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
             } else {
-                @Suppress("DEPRECATION")
                 packageManager.getPackageInfo(packageName, 0)
             }
             packageInfo.firstInstallTime

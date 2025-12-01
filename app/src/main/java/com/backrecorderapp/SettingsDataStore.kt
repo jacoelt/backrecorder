@@ -77,7 +77,7 @@ class SettingsDataStore private constructor(private val context: Context) {
         }.first()
     }
 
-    suspend fun resetFirstLaunch() {
+    suspend fun markFirstLaunchDone() {
         dataStore.edit { prefs ->
             prefs[PREF_FIRST_LAUNCH] = false
         }

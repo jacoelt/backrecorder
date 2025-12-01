@@ -59,7 +59,7 @@ class AudioRecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("AudioRecordingService", "Started")
-        maxDurationMinutes = intent?.getIntExtra(DURATION_INTENT_KEY, DEFAULT_DURATION) ?: DEFAULT_DURATION
+        maxDurationMinutes = (intent?.getIntExtra(DURATION_INTENT_KEY, DEFAULT_DURATION) ?: DEFAULT_DURATION).coerceAtLeast(1)
         startForegroundService()
         startNewRecording()
         return START_STICKY
