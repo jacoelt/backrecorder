@@ -3,6 +3,7 @@ package com.backrecorderapp
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import com.commandiron.wheel_picker_compose.WheelTimePicker
@@ -17,7 +18,7 @@ fun DurationPicker(
     onDurationChange: (Int) -> Unit
 ) {
 
-    val localTime = LocalTime.of(duration / 60, duration % 60)
+    val localTime = remember(duration) { LocalTime.of(duration / 60, duration % 60) }
 
     Box(
         modifier = Modifier.alpha(if (enabled) 1f else 0.5f) // make it look disabled
