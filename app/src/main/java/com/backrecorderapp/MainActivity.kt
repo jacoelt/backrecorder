@@ -155,11 +155,20 @@ class MainActivity : AppCompatActivity() {
         trialDaysRemaining = TrialManager.trialDaysRemaining(this.applicationContext).toInt()
 
         // Start billing connection, then evaluate subscription state
-        billingManager.startConnection(onConnected = {
-            lifecycleScope.launch {
-                isSubscriptionActive = billingManager.hasActiveSubscription()
-            }
-        })
+        try {
+            billingManager.startConnection(onConnected = {
+                lifecycleScope.launch {
+                    isSubscriptionActive = billingManager.hasActiveSubscription()
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "Error when connecting to google billing", e)
+            Toast.makeText(
+                this.applicationContext,
+                "Error when connecting to google billing, cannot check current subscription.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
 
         isFullVersionActive = trialDaysRemaining > 0 || isSubscriptionActive
 
@@ -228,7 +237,7 @@ class MainActivity : AppCompatActivity() {
                             // Display dialogs
                             if (isFirstLaunch) {
                                 TrialDialog(STORE_URL) {
-                                    lifecycleScope.launch { settings.resetFirstLaunch() }
+                                    lifecycleScope.launch { settings.markFirstLaunchDone() }
                                     isFirstLaunch = false
                                 }
                             }
@@ -345,7 +354,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun mergeAudioFiles(inputFiles: MutableList<File>, outputFile: File, onComplete: (Boolean, File) -> Unit) {
+    private fun mergeAudioFiles(inputFiles: List<File>, outputFile: File, onComplete: (Boolean, File) -> Unit) {
         val tempFileList = File(outputFile.parent, "file_list.txt")
         if (tempFileList.exists()) tempFileList.delete()
 
