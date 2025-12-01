@@ -25,5 +25,7 @@
     <string name="error_no_recording_in_progress">No recording in progress.</string>
     <string name="error_cannot_change_while_recording">This cannot be changed while recording.</string>
     <string name="error_setup_gdrive">There was a problem connecting to Google Drive.</string>
+    <string name="star_icon_description">Star icon</string>
+    <string name="error_open_subscriptions">Error when trying to open subscriptions</string>
 
 </resources>
