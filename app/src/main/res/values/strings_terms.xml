@@ -6,4 +6,5 @@
     <string name="terms_decline">Decline</string>
     <string name="terms_close">Close</string>
     <string name="terms_scroll_to_accept">Scroll to the end to enable the Accept button</string>
+    <string name="terms_scroll_down">Please scroll down before accepting.</string>
 </resources>

@@ -26,7 +26,6 @@ class SettingsDataStore private constructor(private val context: Context) {
         private var INSTANCE: SettingsDataStore? = null
 
         fun getInstance(context: Context): SettingsDataStore {
-            val appContext = context.applicationContext // Making sure the reference is an application context and not an activity context
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: SettingsDataStore(context.applicationContext).also { INSTANCE = it }
             }

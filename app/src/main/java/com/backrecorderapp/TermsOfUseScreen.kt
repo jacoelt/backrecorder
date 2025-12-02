@@ -1,11 +1,13 @@
 package com.backrecorderapp
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -160,12 +162,20 @@ fun TermsOfUseScreen(
 
                     Button(
                         onClick = {
-                            coroutineScope.launch {
-                                dataStore.saveTermsAccepted(true)
-                                onAccepted?.invoke()
+                            if (hasReachedBottom) {
+                                coroutineScope.launch {
+                                    dataStore.saveTermsAccepted(true)
+                                    onAccepted?.invoke()
+                                }
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    R.string.terms_scroll_down,
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         },
-                        enabled = hasReachedBottom
+                        modifier = Modifier.alpha(if (hasReachedBottom) 1f else 0.5f),
                     ) {
                         Text(stringResource(R.string.terms_accept))
                     }
