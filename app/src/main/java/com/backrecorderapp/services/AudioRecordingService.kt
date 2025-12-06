@@ -154,6 +154,7 @@ class AudioRecordingService : Service() {
         Log.d("AudioRecordingService", "Destroy")
         cleanupTemporaryFiles()
         stopRecording()
+        workerThread.quitSafely()
         super.onDestroy()
     }
 
@@ -195,7 +196,6 @@ class AudioRecordingService : Service() {
         isRecording = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         fileList.clear()
-        workerThread.quitSafely()
     }
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {

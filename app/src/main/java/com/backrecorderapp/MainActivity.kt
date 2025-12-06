@@ -29,8 +29,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import com.backrecorderapp.services.AudioRecordingService
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 
@@ -324,56 +322,34 @@ class MainActivity : AppCompatActivity() {
         val mergedFile = File(getExternalFilesDir(null), "merged_audio.ogg")
         if (mergedFile.exists()) mergedFile.delete()
 
-        mergeAudioFiles(audioFiles, mergedFile) { isSuccess: Boolean, tempFile: File ->
-            fun cleanUp() {
-                mergedFile.delete()
-                tempFile.delete()
-                callback?.invoke(isSuccess)
-            }
-
-            Log.d(TAG, "Writing merged file")
-
-            if (isSuccess) {
-                contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    FileInputStream(mergedFile).use { inputStream ->
-                        inputStream.copyTo(outputStream)
-                    }
-                }
-
-                val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                lifecycleScope.launch {
-                    if (settings.getUseGDrive()) {
-                        gDriveHelper.uploadFile(
-                            mergedFile,
-                            GDriveHelper.FolderType.FINAL,
-                            fileName = "record_$timeStamp.ogg"
-                        ) { cleanUp() }
-                    } else cleanUp()
-                }
-            } else cleanUp()
+        fun cleanUp(isSuccess: Boolean) {
+            mergedFile.delete()
+            callback?.invoke(isSuccess)
         }
-    }
 
-    private fun mergeAudioFiles(inputFiles: List<File>, outputFile: File, onComplete: (Boolean, File) -> Unit) {
-        val tempFileList = File(outputFile.parent, "file_list.txt")
-        if (tempFileList.exists()) tempFileList.delete()
+        Log.d(TAG, "Writing merged file")
+        try {
+            concatAudioFiles(audioFiles, mergedFile)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error when merging audio files", e)
+            cleanUp(false)
+        }
 
-        tempFileList.bufferedWriter().use { writer ->
-            inputFiles.forEach { file ->
-                writer.write("file '${file.absolutePath}'\n")
+        contentResolver.openOutputStream(uri)?.use { outputStream ->
+            FileInputStream(mergedFile).use { inputStream ->
+                inputStream.copyTo(outputStream)
             }
         }
 
-        val command = "-f concat -safe 0 -i ${tempFileList.absolutePath} -c copy ${outputFile.absolutePath}"
-        FFmpegKit.executeAsync(command) { session ->
-            val returnCode = session.returnCode
-            if (ReturnCode.isSuccess(returnCode)) {
-                Log.d("FFmpeg", "Merging successful!")
-                onComplete(true, tempFileList)
-            } else {
-                Log.e("FFmpeg", "Merging failed: ${session.failStackTrace}")
-                onComplete(false, tempFileList)
-            }
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        lifecycleScope.launch {
+            if (settings.getUseGDrive()) {
+                gDriveHelper.uploadFile(
+                    mergedFile,
+                    GDriveHelper.FolderType.FINAL,
+                    fileName = "record_$timeStamp.ogg"
+                ) { cleanUp(it) }
+            } else cleanUp(true)
         }
     }
 
