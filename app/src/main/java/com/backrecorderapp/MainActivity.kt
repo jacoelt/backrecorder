@@ -29,11 +29,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import com.backrecorderapp.services.AudioRecordingService
 import com.backrecorderapp.ui.theme.BackRecorderTheme
-
 import com.google.crypto.tink.config.TinkConfig
 import kotlinx.coroutines.launch
 import java.io.File
@@ -52,7 +49,7 @@ class MainActivity : AppCompatActivity() {
     private var recordingService: AudioRecordingService? = null
     private var isBound = false
     private val isRecording = mutableStateOf(false)
-    private var saveCallback: ((Boolean) -> Unit)? = null
+    private var saveCallback: ((Boolean) -> Boolean)? = null
     private var duration = mutableStateOf<Int?>(null)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var totalWeight = mutableStateOf("")
@@ -180,8 +177,6 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     val useGDrivePref by settings.getUseGDriveFlow().collectAsState(initial = false)
                     val useGDrive = isFullVersionActive && useGDrivePref
-                    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                    val audioFileName = "record_$timeStamp.ogg"
 
                     var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
                     var showTerms by rememberSaveable { mutableStateOf(false) }
@@ -255,9 +250,11 @@ class MainActivity : AppCompatActivity() {
                                 currentRecordingDuration,
                                 duration,
                                 totalWeight,
-                                onSaveRecording = { callback: (Boolean) -> Unit ->
+                                onSaveRecording = { callback: (Boolean) -> Boolean ->
+                                    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                                    val audioFileName = "record_$timeStamp.m4a"
                                     val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                        type = "audio/ogg"
+                                        type = "audio/m4a"
                                         putExtra(Intent.EXTRA_TITLE, audioFileName)
                                     }
                                     saveCallback = callback
@@ -319,60 +316,59 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun saveRecording(uri: Uri, callback: ((Boolean) -> Unit)?) {
+    private fun saveRecording(uri: Uri, callback: ((isSuccess: Boolean) -> /* needRestart ?*/ Boolean)?) {
         val audioFiles = recordingService?.getFileList() ?: return
-        val mergedFile = File(getExternalFilesDir(null), "merged_audio.ogg")
+        recordingService?.pauseRecording()
+        val mergedFile = File(getExternalFilesDir(null), "merged_audio.m4a")
         if (mergedFile.exists()) mergedFile.delete()
 
-        mergeAudioFiles(audioFiles, mergedFile) { isSuccess: Boolean, tempFile: File ->
-            fun cleanUp() {
-                mergedFile.delete()
-                tempFile.delete()
-                callback?.invoke(isSuccess)
+        fun cleanUp(isSuccess: Boolean) {
+            mergedFile.delete()
+            val needRestart = callback?.invoke(isSuccess)
+            if (needRestart == true) {
+                recordingService?.startNewRecording()
+                isRecording.value = true
             }
+        }
 
-            Log.d(TAG, "Writing merged file")
+        try {
+            concatAudioFiles(audioFiles, mergedFile)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error when concatenating", e)
+            cleanUp(false)
+            return
+        }
 
-            if (isSuccess) {
-                contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    FileInputStream(mergedFile).use { inputStream ->
-                        inputStream.copyTo(outputStream)
+        Log.d(TAG, "Writing merged file")
+
+        contentResolver.openOutputStream(uri)?.use { outputStream ->
+            FileInputStream(mergedFile).use { inputStream ->
+                inputStream.copyTo(outputStream)
+            }
+        }
+
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val context = this.applicationContext
+        lifecycleScope.launch {
+            if (settings.getUseGDrive()) {
+                gDriveHelper.uploadFile(
+                    mergedFile,
+                    GDriveHelper.FolderType.FINAL,
+                    fileName = "record_$timeStamp.m4a"
+                ) { isSuccess ->
+                    if (!isSuccess) {
+                        Toast.makeText(
+                            context,
+                            R.string.error_save_gdrive,
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
+
+                    cleanUp(true)
                 }
 
-                val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                lifecycleScope.launch {
-                    if (settings.getUseGDrive()) {
-                        gDriveHelper.uploadFile(
-                            mergedFile,
-                            GDriveHelper.FolderType.FINAL,
-                            fileName = "record_$timeStamp.ogg"
-                        ) { cleanUp() }
-                    } else cleanUp()
-                }
-            } else cleanUp()
-        }
-    }
-
-    private fun mergeAudioFiles(inputFiles: List<File>, outputFile: File, onComplete: (Boolean, File) -> Unit) {
-        val tempFileList = File(outputFile.parent, "file_list.txt")
-        if (tempFileList.exists()) tempFileList.delete()
-
-        tempFileList.bufferedWriter().use { writer ->
-            inputFiles.forEach { file ->
-                writer.write("file '${file.absolutePath}'\n")
-            }
-        }
-
-        val command = "-f concat -safe 0 -i ${tempFileList.absolutePath} -c copy ${outputFile.absolutePath}"
-        FFmpegKit.executeAsync(command) { session ->
-            val returnCode = session.returnCode
-            if (ReturnCode.isSuccess(returnCode)) {
-                Log.d("FFmpeg", "Merging successful!")
-                onComplete(true, tempFileList)
             } else {
-                Log.e("FFmpeg", "Merging failed: ${session.failStackTrace}")
-                onComplete(false, tempFileList)
+                cleanUp(true)
             }
         }
     }
@@ -442,7 +438,7 @@ fun RecordingScreen(
     currentRecordingDuration: MutableState<Int>,
     duration: MutableState<Int?>,
     totalWeight: MutableState<String>,
-    onSaveRecording: (callback: (Boolean) -> Unit) -> Unit,
+    onSaveRecording: (callback: (Boolean) -> Boolean) -> Unit,
     onDurationChange: (duration: Int) -> Unit,
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
@@ -637,13 +633,15 @@ fun RecordingScreen(
                     Button(
                         onClick = {
                             if (isRecording.value) {
-                            onSaveRecording { isSuccess ->
-                                    if (!isSuccess)
+                                onSaveRecording { isSuccess ->
+                                    if (!isSuccess) {
                                         Toast.makeText(
                                             context,
                                             R.string.error_on_recording_save,
                                             Toast.LENGTH_SHORT
                                         ).show()
+                                    }
+                                    return@onSaveRecording true  // Do restart recording after save
                                 }
                             } else {
                                 Toast.makeText(
@@ -726,7 +724,18 @@ fun RecordingScreen(
                 ) {
                     TextButton(onClick = {
                         showStopDialog = false
-                        onSaveRecording { if (it) stopRecording() }
+                        onSaveRecording { isSuccess:Boolean ->
+                            if (isSuccess) {
+                                stopRecording()
+                                return@onSaveRecording false // Do not restart recording after save
+                            }
+                            Toast.makeText(
+                                context,
+                                R.string.error_on_recording_save,
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@onSaveRecording true // Continue recording if save failed
+                        }
                     }) { Text(stringResource(R.string.stop_recording_confirm_save)) }
 
                     TextButton(onClick = {

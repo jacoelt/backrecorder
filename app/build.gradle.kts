@@ -13,8 +13,8 @@ android {
         manifestPlaceholders["appAuthRedirectScheme"] = "com.backrecorderapp"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.3.0"
+        versionCode = 7
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -53,7 +53,6 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.ffmpeg.kit.full)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.credentials)
     implementation(libs.appauth)

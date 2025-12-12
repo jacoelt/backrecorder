@@ -5,8 +5,6 @@ billingKtx = "8.0.0"
 credentials = "1.5.0"
 datastorePreferences = "1.1.6"
 datastorePreferencesVersion = "1.1.1"
-ffmpegandroid = "0.3.2"
-ffmpegKitFull = "6.0-2"
 googleid = "1.5.0"
 googleidVersion = "<latest-version>"
 kotlin = "2.0.0"
@@ -33,7 +31,6 @@ androidx-credentials = { module = "androidx.credentials:credentials", version.re
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastorePreferences" }
 appauth = { module = "net.openid:appauth", version.ref = "appauth" }
 billing-ktx = { module = "com.android.billingclient:billing-ktx", version.ref = "billingKtx" }
-ffmpeg-kit-full = { module = "com.arthenica:ffmpeg-kit-full", version.ref = "ffmpegKitFull" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }

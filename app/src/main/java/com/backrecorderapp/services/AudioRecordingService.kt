@@ -88,7 +88,7 @@ class AudioRecordingService : Service() {
         startForeground(1, notification)
     }
 
-    private fun startNewRecording() {
+    fun startNewRecording() {
         Log.d("AudioRecordingService", "Start new recording")
 
         if (fileList.size > 0) {
@@ -106,8 +106,10 @@ class AudioRecordingService : Service() {
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val audioFile = File(outputDir, "record_$timeStamp.ogg")
+        val audioFile = File(outputDir, "record_$timeStamp.m4a")
         fileList.add(audioFile)
+
+        Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
 
         cleanOldFiles()
 
@@ -119,8 +121,8 @@ class AudioRecordingService : Service() {
             mediaRecorder?.apply {
                 reset()
                 setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.OGG)
-                setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setAudioChannels(CHANNELS)
                 setAudioSamplingRate(SAMPLING_RATE)
                 setAudioEncodingBitRate(BIT_RATE)
@@ -154,6 +156,7 @@ class AudioRecordingService : Service() {
         Log.d("AudioRecordingService", "Destroy")
         cleanupTemporaryFiles()
         stopRecording()
+        workerThread.quitSafely()
         super.onDestroy()
     }
 
@@ -175,27 +178,33 @@ class AudioRecordingService : Service() {
         return fileList.toList() // Make a readonly copy
     }
 
-    fun stopRecording() {
-        Log.d("AudioRecordingService", "stopRecording")
+    fun pauseRecording() {
+        Log.d(TAG, "pauseRecording")
         workerHandler.removeCallbacksAndMessages(null)
         mediaRecorder?.apply {
             try {
                 stop()
-            } catch (_: Exception) {}
-            finally {
+            } catch (_: Exception) {
+            } finally {
                 try {
                     reset()
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                }
                 try {
                     release()
-                } catch (_: Exception) {}
+                } catch (_: Exception) {
+                }
             }
         }
         mediaRecorder = null
         isRecording = false
+    }
+
+    fun stopRecording() {
+        Log.d(TAG, "stopRecording")
+        pauseRecording()
         stopForeground(STOP_FOREGROUND_REMOVE)
         fileList.clear()
-        workerThread.quitSafely()
     }
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {

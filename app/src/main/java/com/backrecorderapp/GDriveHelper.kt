@@ -209,7 +209,7 @@ class GDriveHelper(
                     )
                     .addFormDataPart(
                         "file", file.name,
-                        file.readBytes().toRequestBody("audio/ogg".toMediaTypeOrNull())
+                        file.readBytes().toRequestBody("audio/m4a".toMediaTypeOrNull())
                     )
                     .build()
 
