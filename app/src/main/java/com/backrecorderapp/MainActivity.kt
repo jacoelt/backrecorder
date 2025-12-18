@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.backrecorderapp.BillingManager.Companion
 import com.backrecorderapp.services.AudioRecordingService
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
@@ -40,7 +41,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 const val PACKAGE_NAME = "com.backrecorderapp"
-const val SKU_ID = "com.backrecorderapp.subscription"
+const val SKU_ID = "main_subscription"
 const val STORE_URL = "https://play.google.com/store/account/subscriptions?sku=$SKU_ID&package=$PACKAGE_NAME"
 const val ALPHA_DISABLED = 0.5f
 
@@ -59,6 +60,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
     private lateinit var billingManager: BillingManager
+    private var securePreferences = SecurePreferences(this)
+    private lateinit var subscriptionOfferList: List<SubscriptionOffer>
 
     companion object {
         private const val TAG = "MainActivity"
@@ -113,6 +116,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+
+        lifecycleScope.launch {
+            billingManager.syncSubscriptionState()
+            isSubscriptionActive.value = isPremium()
+            try {
+                subscriptionOfferList = billingManager.getSubscriptionOffers(SKU_ID)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error while getting subscriptions offers", e)
+            }
+        }
+    }
+
     override fun onStop() {
         super.onStop()
         if (isBound) {
@@ -132,8 +149,8 @@ class MainActivity : AppCompatActivity() {
         try {
             TinkConfig.register()
             settings = SettingsDataStore.getInstance(this.applicationContext)
-            gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher) { success -> afterGoogleSignIn(success) }
-            billingManager = BillingManager(this.applicationContext)
+            gDriveHelper = GDriveHelper(this.applicationContext, authResultLauncher, securePreferences) { success -> afterGoogleSignIn(success) }
+            billingManager = BillingManager(this.applicationContext, securePreferences)
         } catch (e: Exception) {
             Log.e(TAG, "Initialization failed", e)
             Toast.makeText(this, "Initialization error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -155,7 +172,8 @@ class MainActivity : AppCompatActivity() {
         try {
             billingManager.startConnection(onConnected = {
                 lifecycleScope.launch {
-                    isSubscriptionActive.value = billingManager.hasActiveSubscription()
+                    billingManager.syncSubscriptionState()
+                    isSubscriptionActive.value = isPremium()
                 }
             })
         } catch (e: Exception) {
@@ -167,6 +185,7 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
 
+        isSubscriptionActive.value = isPremium()
         isFullVersionActive = trialDaysRemaining > 0 || isSubscriptionActive.value
 
         setContent {
@@ -183,6 +202,8 @@ class MainActivity : AppCompatActivity() {
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
                     var isFirstLaunch by rememberSaveable { mutableStateOf(false) }
                     var showPremiumDialog by rememberSaveable { mutableStateOf(false) }
+                    var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
+                    var selectedOffer by remember { mutableStateOf<SubscriptionOffer?>(null) }
 
                     // Load state
                     LaunchedEffect(Unit) {
@@ -231,18 +252,43 @@ class MainActivity : AppCompatActivity() {
 
                             // Display dialogs
                             if (isFirstLaunch) {
-                                TrialDialog(STORE_URL) {
-                                    lifecycleScope.launch { settings.markFirstLaunchDone() }
-                                    isFirstLaunch = false
-                                }
+                                TrialDialog(
+                                    onOpenSubscriptions = {
+                                        Log.d(TAG, "TrialDialog: onOpenSubscriptions")
+                                        showSubscriptionPicker = true
+                                        isFirstLaunch = false
+                                    },
+                                    onDismiss = {
+                                        lifecycleScope.launch { settings.markFirstLaunchDone() }
+                                        isFirstLaunch = false
+                                    }
+                                )
                             }
 
                             if (showPremiumDialog) {
-                                PremiumRequiredDialog(
-                                    storeUrl = STORE_URL,
+                                PremiumRequiredDialog (
+                                    onOpenSubscriptions = {
+                                        Log.d(TAG, "PremiumRequiredDialog: onOpenSubscriptions")
+                                        showPremiumDialog = false
+                                        showSubscriptionPicker = true
+                                    },
                                     onDismiss = { showPremiumDialog = false }
                                 )
                             }
+
+                            if (showSubscriptionPicker){
+                                SubscriptionPicker(
+                                    offers = subscriptionOfferList,
+                                    selectedOffer = selectedOffer,
+                                    onOfferSelected = { selectedOffer = it },
+                                    onDismiss = { showSubscriptionPicker = false },
+                                    onSubscribeClicked = { offer ->
+                                        billingManager.launchSubscriptionPurchase(this@MainActivity, offer)
+                                        showSubscriptionPicker = false
+                                    }
+                                )
+                            }
+
                             RecordingScreen(
                                 startRecording = { duration -> startRecording(duration) },
                                 stopRecording = { stopRecording() },
@@ -286,6 +332,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun isPremium(): Boolean {
+        return securePreferences.getString(PREF_PREMIUM_ACTIVE)?.toBoolean() == true
     }
 
     private fun startRecording(duration: Int) {

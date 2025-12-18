@@ -28,7 +28,7 @@ The author of this application shall not be held responsible for any direct, ind
 ---
 
 ### 5. Data and Privacy
-this application records and stores audio locally on your device.
+This application records and stores audio locally on your device.
 If you enable Google Drive integration, the app will upload files to your own Drive account under your sole control.
 No data is sent to any other server owned or operated by the author.
 

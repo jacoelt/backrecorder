@@ -28,5 +28,8 @@
     <string name="star_icon_description">Star icon</string>
     <string name="error_open_subscriptions">Error when trying to open subscriptions</string>
     <string name="error_save_gdrive">There was a problem when saving the file on Google Drive</string>
+    <string name="monthly">Monthly</string>
+    <string name="yearly">Yearly</string>
+    <string name="best_value">(Best value, 15% cheaper!)</string>
 
 </resources>

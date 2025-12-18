@@ -1,21 +1,94 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+############################################
+# Jetpack Compose – REQUIRED
+############################################
+-keep class androidx.compose.runtime.** { *; }
+-keep class androidx.compose.ui.** { *; }
+-keep class androidx.compose.foundation.** { *; }
+-keep class androidx.compose.material.** { *; }
+-keep class androidx.compose.material3.** { *; }
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keepclassmembers class * {
+    @androidx.compose.runtime.Composable <methods>;
+}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+############################################
+# Kotlin metadata (CRITICAL)
+############################################
+-keep class kotlin.Metadata { *; }
+-keepclassmembers class * {
+    @kotlin.Metadata *;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+############################################
+# Kotlin Coroutines
+############################################
+-keep class kotlinx.coroutines.** { *; }
+
+############################################
+# kotlinx.serialization (if used)
+############################################
+-keep class kotlinx.serialization.** { *; }
+-keepclassmembers class * {
+    @kotlinx.serialization.Serializable <fields>;
+}
+
+############################################
+# App UI (Compose)
+############################################
+-keep class com.backrecorderapp.** { *; }
+
+############################################
+# AndroidX DataStore (Preferences)
+############################################
+-keep class androidx.datastore.** { *; }
+
+############################################
+# Google Play Billing & Licensing
+############################################
+-keep class com.android.billingclient.api.** { *; }
+-keep class com.android.vending.licensing.** { *; }
+
+############################################
+# wheel-picker-compose
+############################################
+-keep class com.commandiron.wheel_picker_compose.** { *; }
+
+############################################
+# Keep foreground service for MediaRecorder
+############################################
+-keep class com.backrecorderapp.services.AudioRecordingService { *; }
+
+############################################
+# Tink (AES, AEAD, Keyset, etc.)
+############################################
+-keep class com.google.crypto.tink.** { *; }
+-keep class com.google.crypto.tink.aead.** { *; }
+-keep class com.google.crypto.tink.integration.android.** { *; }
+-keep class com.google.crypto.tink.integration.android.AndroidKeysetManager { *; }
+
+############################################
+# Kotlin reflection
+############################################
+-keepclassmembers class kotlin.reflect.** { *; }
+-keepclassmembers class kotlin.jvm.internal.** { *; }
+
+############################################
+# Keep generated classes that use reflection (common pattern in obfuscated libs)
+############################################
+-keep class r1.** { *; }
+-keep class t1.** { *; }
+-keep class s1.** { *; }
+-keep class p1.** { *; }
+-keep class j4.** { *; }
+-keep class q4.** { *; }
+-keep class F1.** { *; }
+
+############################################
+# Protobuf – REQUIRED
+############################################
+-keep class com.google.protobuf.** { *; }
+-dontwarn com.google.protobuf.**
+
+############################################
+# General note: adjust above keep rules if you know the actual package of the lib causing reflection issues
+############################################

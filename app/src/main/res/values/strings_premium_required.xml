@@ -3,8 +3,8 @@
     <string name="premium_required_title">Premium Feature</string>
     <string name="premium_required_message">
     This feature is available only in the Premium version.
-    \n\nSubscribe to unlock:
-    \n• Unlock long recording sessions (up to 24 hours)
+    \n\nSubscribe for only 0.49 USD per month to unlock:
+    \n• Long recording sessions (up to 24 hours)
     \n• Cloud backup and sync
 </string>
     <string name="premium_required_button_subscribe">Subscribe</string>

@@ -13,8 +13,8 @@ android {
         manifestPlaceholders["appAuthRedirectScheme"] = "com.backrecorderapp"
         minSdk = 31
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.0.0"
+        versionCode = 22
+        versionName = "0.1.$versionCode"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

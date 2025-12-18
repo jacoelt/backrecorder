@@ -1,15 +1,15 @@
 package com.backrecorderapp
 
+import android.app.Activity
 import android.content.Context
 import android.util.Log
-import android.widget.Toast
 import com.android.billingclient.api.*
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+const val PREF_PREMIUM_ACTIVE = "premium_active"
 
 /**
  * Simple BillingManager that:
@@ -18,7 +18,12 @@ import kotlin.coroutines.resumeWithException
  *
  * Note: enablePendingPurchases(...) requires a PendingPurchasesParams instance.
  */
-class BillingManager(private val context: Context) : PurchasesUpdatedListener {
+class BillingManager(
+    private val context: Context,
+    private val securePreferences: SecurePreferences
+) : PurchasesUpdatedListener {
+
+    private val productDetailsMap = mutableMapOf<String, ProductDetails>()
 
     companion object {
         private const val TAG = "BillingManager"
@@ -49,22 +54,113 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
         })
     }
 
-    override fun onPurchasesUpdated(billingResult: BillingResult, purchases: MutableList<Purchase>?) {
-        // Handle purchase updates if you initiate purchase flows here.
-        // For subscription state checks we rely on queryPurchasesAsync().
+    fun launchSubscriptionPurchase(
+        activity: Activity,
+        offer: SubscriptionOffer
+    ) {
+        Log.e(TAG, "launchSubscriptionPurchase: Start")
+        val productDetails = productDetailsMap[offer.productId]
+        if (productDetails == null) {
+            Log.e(TAG, "launchSubscriptionPurchase: ProductDetails not found for ${offer.productId}")
+            return
+        }
+
+        val params =
+            BillingFlowParams.ProductDetailsParams.newBuilder()
+                .setProductDetails(productDetails)
+                .setOfferToken(offer.offerToken)
+                .build()
+
+        val billingFlowParams = BillingFlowParams.newBuilder()
+            .setProductDetailsParamsList(listOf(params))
+            .build()
+
+        Log.e(TAG, "launchSubscriptionPurchase: launch billing flow $billingFlowParams")
+        billingClient.launchBillingFlow(activity, billingFlowParams)
+    }
+
+    override fun onPurchasesUpdated(
+        billingResult: BillingResult,
+        purchases: MutableList<Purchase>?
+    ) {
+        when (billingResult.responseCode) {
+
+            BillingClient.BillingResponseCode.OK -> {
+                if (purchases.isNullOrEmpty()) return
+
+                purchases.forEach { purchase ->
+                    handlePurchase(purchase)
+                }
+            }
+
+            BillingClient.BillingResponseCode.USER_CANCELED -> {
+                Log.d(TAG, "Purchase canceled by user")
+            }
+
+            else -> {
+                Log.e(
+                    TAG,
+                    "Purchase failed: ${billingResult.responseCode} - ${billingResult.debugMessage}"
+                )
+            }
+        }
+    }
+
+    private fun handlePurchase(purchase: Purchase) {
+        if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) {
+            return
+        }
+
+        // IMPORTANT: acknowledge subscriptions
+        if (!purchase.isAcknowledged) {
+            val acknowledgeParams = AcknowledgePurchaseParams.newBuilder()
+                .setPurchaseToken(purchase.purchaseToken)
+                .build()
+
+            billingClient.acknowledgePurchase(acknowledgeParams) { billingResult ->
+                if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    Log.d(TAG, "Purchase acknowledged")
+                    onSubscriptionActivated()
+                } else {
+                    Log.e(TAG, "Failed to acknowledge purchase: ${billingResult.responseCode}")
+                }
+            }
+        } else {
+            // Already acknowledged (e.g. restored purchase)
+            onSubscriptionActivated()
+        }
+    }
+
+    private fun onSubscriptionActivated() {
+        Log.d(TAG, "Subscription activated")
+
+        securePreferences.saveString(PREF_PREMIUM_ACTIVE, "true")
+    }
+
+    suspend fun syncSubscriptionState() {
+        val hasSubscription = hasActiveSubscription()
+        securePreferences.saveString(
+            PREF_PREMIUM_ACTIVE,
+            hasSubscription.toString()
+        )
     }
 
     /**
      * Returns true if there is at least one active (PURCHASED & acknowledged) subscription.
      */
-    suspend fun hasActiveSubscription(): Boolean {
-        val purchases = withTimeout(5000) { querySubscriptions() }
+    private suspend fun hasActiveSubscription(): Boolean {
+        val purchases = try {
+            withTimeout(5000) { getActiveSubscriptions() }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error while getting subscriptions", e)
+            return false
+        }
         return purchases.any { p ->
             p.purchaseState == Purchase.PurchaseState.PURCHASED && p.isAcknowledged
         }
     }
 
-    private suspend fun querySubscriptions(): List<Purchase> = suspendCancellableCoroutine { cont ->
+    private suspend fun getActiveSubscriptions(): List<Purchase> = suspendCancellableCoroutine { cont ->
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.SUBS)
             .build()
@@ -86,6 +182,70 @@ class BillingManager(private val context: Context) : PurchasesUpdatedListener {
             cont.resumeWithException(e)
         }
     }
+
+    suspend fun getSubscriptionOffers(
+        productId: String
+    ): List<SubscriptionOffer> = suspendCancellableCoroutine { cont ->
+
+        Log.d(TAG, "getSubscriptionOffers: Start")
+
+        if (!billingClient.isReady) {
+            Log.d(TAG, "getSubscriptionOffers: Billing client not ready")
+            cont.resumeWithException(IllegalStateException("Billing client not ready"))
+            return@suspendCancellableCoroutine
+        }
+
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(
+                listOf(
+                    QueryProductDetailsParams.Product.newBuilder()
+                        .setProductId(productId)
+                        .setProductType(BillingClient.ProductType.SUBS)
+                        .build()
+                )
+            )
+            .build()
+
+        billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
+
+            if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
+                Log.d(TAG, "getSubscriptionOffers: Product query failed: ${billingResult.responseCode}")
+                cont.resumeWithException(
+                    RuntimeException("Product query failed: ${billingResult.responseCode}")
+                )
+                return@queryProductDetailsAsync
+            }
+
+            val productDetails = productDetailsList.productDetailsList.firstOrNull()
+            if (productDetails == null) {
+                cont.resume(emptyList())
+                return@queryProductDetailsAsync
+            }
+
+            productDetailsMap[productDetails.productId] = productDetails
+
+            val offers = productDetails.subscriptionOfferDetails.orEmpty()
+                .flatMap { offer ->
+                    val pricingPhases = offer.pricingPhases.pricingPhaseList
+
+                    pricingPhases.map { phase ->
+                        SubscriptionOffer(
+                            productId = productDetails.productId,
+                            offerToken = offer.offerToken,
+                            basePlanId = offer.basePlanId,
+                            billingPeriod = phase.billingPeriod,
+                            priceAmountMicros = phase.priceAmountMicros,
+                            priceCurrencyCode = phase.priceCurrencyCode,
+                            formattedPrice = phase.formattedPrice
+                        )
+                    }
+                }
+
+            Log.d(TAG, "getSubscriptionOffers: Result $offers")
+            cont.resume(offers)
+        }
+    }
+
 
     fun endConnection() {
         if (billingClient.isReady) billingClient.endConnection()

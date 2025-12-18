@@ -13,6 +13,8 @@ const val TAG = "AudioUtils"
 
 fun concatAudioFiles(inputFiles: List<File>, outputFile: File) {
 
+    Log.d(TAG, "Concat: Start")
+
     if (inputFiles.isEmpty()) return
 
     val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
@@ -87,4 +89,6 @@ fun concatAudioFiles(inputFiles: List<File>, outputFile: File) {
 
     if (isMuxerStarted) muxer.stop()
     muxer.release()
+
+    Log.d(TAG, "Concat: End")
 }

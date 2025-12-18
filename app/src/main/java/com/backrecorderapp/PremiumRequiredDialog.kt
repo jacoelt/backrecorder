@@ -1,9 +1,5 @@
 package com.backrecorderapp
 
-import android.app.Activity
-import android.content.Intent
-import android.net.Uri
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,7 +10,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -23,10 +18,9 @@ import androidx.compose.ui.window.Dialog
 
 @Composable
 fun PremiumRequiredDialog(
-    storeUrl: String,
+    onOpenSubscriptions: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val context = LocalContext.current
 
     Dialog(onDismissRequest = { onDismiss() }) {
         Surface(
@@ -90,26 +84,7 @@ fun PremiumRequiredDialog(
 
                     Button(
                         onClick = {
-                            if (context !is Activity) return@Button
-
-                            if (storeUrl.isBlank()) {
-                                Toast.makeText(context,R.string.error_open_subscriptions,Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-
-                            val url = try {
-                                Uri.parse(storeUrl)
-                            } catch (_: Exception) {
-                                Toast.makeText(context,R.string.error_open_subscriptions,Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-
-                            val intent = Intent(Intent.ACTION_VIEW, url)
-                            if (intent.resolveActivity(context.packageManager) != null) {
-                                context.startActivity(intent)
-                            } else {
-                                Toast.makeText(context, R.string.error_open_subscriptions, Toast.LENGTH_SHORT).show()
-                            }
+                            onOpenSubscriptions()
                         },
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -120,3 +95,13 @@ fun PremiumRequiredDialog(
         }
     }
 }
+
+data class SubscriptionOffer(
+    val productId: String,
+    val offerToken: String,
+    val basePlanId: String,
+    val billingPeriod: String, // P1M, P1Y, etc.
+    val priceAmountMicros: Long,
+    val priceCurrencyCode: String,
+    val formattedPrice: String
+)

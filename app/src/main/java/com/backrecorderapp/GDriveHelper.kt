@@ -17,6 +17,7 @@ import java.io.File
 class GDriveHelper(
     private val context: Context,
     private val authLauncher: ActivityResultLauncher<Intent>,
+    private val securePreferences: SecurePreferences,
     private val signInCallback: (Boolean) -> Unit
 ) {
     companion object {
@@ -42,7 +43,6 @@ class GDriveHelper(
 
     private val authService = AuthorizationService(context)
     private val httpClient = OkHttpClient()
-    private val securePrefs = SecurePreferences(context)
     private val settingsDataStore = SettingsDataStore.getInstance(context)
 
     private val serviceConfig = AuthorizationServiceConfiguration(
@@ -98,8 +98,8 @@ class GDriveHelper(
         if (ex == null) {
             authService.performTokenRequest(response.createTokenExchangeRequest()) { tokenResponse, exception ->
                 if (tokenResponse != null) {
-                    securePrefs.saveString(PREF_KEY_ACCESS_TOKEN, tokenResponse.accessToken ?: "")
-                    securePrefs.saveString(PREF_KEY_REFRESH_TOKEN, tokenResponse.refreshToken ?: "")
+                    securePreferences.saveString(PREF_KEY_ACCESS_TOKEN, tokenResponse.accessToken ?: "")
+                    securePreferences.saveString(PREF_KEY_REFRESH_TOKEN, tokenResponse.refreshToken ?: "")
                     Log.d(TAG, "AccessToken stored: ${tokenResponse.accessToken}")
                     signInCallback(true)
                 } else {
@@ -127,8 +127,8 @@ class GDriveHelper(
             val stagingId = getOrCreateFolder("staging", finalId)
             checkNotNull(stagingId)
 
-            securePrefs.saveString(PREF_KEY_FINAL_FOLDER, finalId ?: "")
-            securePrefs.saveString(PREF_KEY_STAGING_FOLDER, stagingId ?: "")
+            securePreferences.saveString(PREF_KEY_FINAL_FOLDER, finalId ?: "")
+            securePreferences.saveString(PREF_KEY_STAGING_FOLDER, stagingId ?: "")
 
             Log.d(TAG, "Drive setup done. Final=$finalId Staging=$stagingId")
         }
@@ -192,8 +192,8 @@ class GDriveHelper(
             val token = getValidAccessToken() ?: return@launch
             safeNetworkCall("uploadFile") {
                 val folderId = when (folderType) {
-                    FolderType.FINAL -> securePrefs.getString(PREF_KEY_FINAL_FOLDER)
-                    FolderType.STAGING -> securePrefs.getString(PREF_KEY_STAGING_FOLDER)
+                    FolderType.FINAL -> securePreferences.getString(PREF_KEY_FINAL_FOLDER)
+                    FolderType.STAGING -> securePreferences.getString(PREF_KEY_STAGING_FOLDER)
                 } ?: return@safeNetworkCall
 
                 val metadata = JSONObject().apply {
@@ -240,7 +240,7 @@ class GDriveHelper(
             }
 
             val token = getValidAccessToken() ?: return@launch
-            val stagingId = securePrefs.getString(PREF_KEY_STAGING_FOLDER) ?: return@launch
+            val stagingId = securePreferences.getString(PREF_KEY_STAGING_FOLDER) ?: return@launch
 
             safeNetworkCall("deleteOldestFromStaging") {
                 val request = Request.Builder()
@@ -279,7 +279,7 @@ class GDriveHelper(
 
 
     private suspend fun getValidAccessToken(): String? {
-        var token = securePrefs.getString(PREF_KEY_ACCESS_TOKEN)
+        var token = securePreferences.getString(PREF_KEY_ACCESS_TOKEN)
         if (token.isNullOrEmpty()) {
             token = refreshAccessToken()
         }
@@ -287,7 +287,7 @@ class GDriveHelper(
     }
 
     private suspend fun refreshAccessToken(): String? = withContext(Dispatchers.IO) {
-        val refreshToken = securePrefs.getString(PREF_KEY_REFRESH_TOKEN) ?: return@withContext null
+        val refreshToken = securePreferences.getString(PREF_KEY_REFRESH_TOKEN) ?: return@withContext null
 
         return@withContext safeNetworkCall("refreshAccessToken") {
             val body = FormBody.Builder()
@@ -310,7 +310,7 @@ class GDriveHelper(
                 val json = JSONObject(respBody)
                 val newAccessToken = json.optString("access_token", "")
                 if (newAccessToken.isNotEmpty()) {
-                    securePrefs.saveString(PREF_KEY_ACCESS_TOKEN, newAccessToken)
+                    securePreferences.saveString(PREF_KEY_ACCESS_TOKEN, newAccessToken)
                     Log.d(TAG, "Access token refreshed")
                 }
                 return@safeNetworkCall newAccessToken

@@ -1,14 +1,12 @@
 package com.backrecorderapp
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun TrialDialog(
-    storeUrl: String,
+    onOpenSubscriptions: () -> Unit,
     onDismiss: () -> Unit,
 ) {
 
@@ -21,12 +19,7 @@ fun TrialDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    // Open Play Store subscriptions page
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        data = Uri.parse(storeUrl)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
+                    onOpenSubscriptions()
                 }
             ) {
                 Text(text = context.getString(R.string.trial_button_subscribe))
