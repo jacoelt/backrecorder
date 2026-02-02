@@ -51,19 +51,26 @@ class SaveRecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForeground(NOTIFICATION_ID, buildNotification("Preparing save…"))
+
         if (intent?.action != ACTION_START) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        val outputUri = Uri.parse(intent.getStringExtra(EXTRA_OUTPUT_URI))
+        val outputUri: Uri? =
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(EXTRA_OUTPUT_URI, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(EXTRA_OUTPUT_URI)
+            }
+
         if (outputUri == null) {
             Log.e(TAG, "Missing output uri")
             stopSelf()
             return START_NOT_STICKY
         }
-
-        startForeground(NOTIFICATION_ID, buildNotification("Preparing save…"))
 
         startSave(outputUri)
 
@@ -148,6 +155,7 @@ class SaveRecordingService : Service() {
 
     private fun buildNotification(text: String) =
         NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.icon)
             .setContentTitle(getString(R.string.saving_recording))
             .setContentText(text)
             .setOnlyAlertOnce(true)

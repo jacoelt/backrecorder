@@ -73,7 +73,7 @@ class AudioRecordingService : Service() {
         Log.d("AudioRecordingService", "Started")
         startForegroundService()
         serviceScope.launch {
-            maxDurationMinutes = settings.getRecordingDuration(DEFAULT_DURATION)
+            maxDurationMinutes = settings.getRecordingDuration(DEFAULT_DURATION) + 1
             startNewRecording()
         }
         return START_STICKY

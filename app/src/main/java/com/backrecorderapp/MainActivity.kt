@@ -32,7 +32,9 @@ import com.backrecorderapp.services.AudioRecordingService
 import com.backrecorderapp.services.SaveRecordingService
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.DecimalFormat
 import java.text.SimpleDateFormat
 import java.util.*
@@ -86,7 +88,7 @@ class MainActivity : AppCompatActivity() {
                 putExtra(SaveRecordingService.EXTRA_OUTPUT_URI, uri)
             }
 
-            startForegroundService(intent)
+            ContextCompat.startForegroundService(this, intent)
         }
     }
 
@@ -144,7 +146,16 @@ class MainActivity : AppCompatActivity() {
         // ===== Global exception handler =====
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             Log.e("GlobalError", "Uncaught exception in thread ${thread.name}", throwable)
-            Toast.makeText(applicationContext, "Unexpected error: ${throwable.message}", Toast.LENGTH_LONG).show()
+
+            lifecycleScope.launch {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        applicationContext,
+                        "Unexpected error: ${throwable.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
         }
 
         try {
@@ -365,63 +376,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Error while stopping recording: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
-
-//    private fun saveRecording(uri: Uri, callback: ((isSuccess: Boolean) -> /* needRestart ?*/ Boolean)?) {
-//        val audioFiles = recordingService?.getFileList() ?: return
-//        recordingService?.pauseRecording()
-//        val mergedFile = File(getExternalFilesDir(null), "merged_audio.m4a")
-//        if (mergedFile.exists()) mergedFile.delete()
-//
-//        fun cleanUp(isSuccess: Boolean) {
-//            mergedFile.delete()
-//            val needRestart = callback?.invoke(isSuccess)
-//            if (needRestart == true) {
-//                recordingService?.startNewRecording()
-//                isRecording.value = true
-//            }
-//        }
-//
-//        try {
-//            concatAudioFiles(audioFiles, mergedFile)
-//        } catch (e: Exception) {
-//            Log.e(TAG, "Error when concatenating", e)
-//            cleanUp(false)
-//            return
-//        }
-//
-//        Log.d(TAG, "Writing merged file")
-//
-//        contentResolver.openOutputStream(uri)?.use { outputStream ->
-//            FileInputStream(mergedFile).use { inputStream ->
-//                inputStream.copyTo(outputStream)
-//            }
-//        }
-//
-//        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-//        val context = this.applicationContext
-//        lifecycleScope.launch {
-//            if (settings.getUseGDrive()) {
-//                gDriveHelper.uploadFile(
-//                    mergedFile,
-//                    GDriveHelper.FolderType.FINAL,
-//                    fileName = "record_$timeStamp.m4a"
-//                ) { isSuccess ->
-//                    if (!isSuccess) {
-//                        Toast.makeText(
-//                            context,
-//                            R.string.error_save_gdrive,
-//                            Toast.LENGTH_SHORT
-//                        ).show()
-//                    }
-//
-//                    cleanUp(true)
-//                }
-//
-//            } else {
-//                cleanUp(true)
-//            }
-//        }
-//    }
 
     private fun updateRecordingState() {
         isRecording.value = recordingService?.isRecording() ?: false
