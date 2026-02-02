@@ -5,7 +5,7 @@ The use of this application may be illegal depending on your country, region, or
 ---
 
 ### 1. Purpose of the Application
-This application continuously records ambient audio through the device\'s microphone, allowing users to save recent minutes of sound. This app is intended solely for personal and lawful use.
+This application continuously records ambient audio through the device's microphone, allowing users to save recent minutes of sound. This app is intended solely for personal and lawful use.
 
 ---
 

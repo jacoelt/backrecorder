@@ -550,6 +550,7 @@ fun RecordingScreen(
                 elevation = CardDefaults.cardElevation(8.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    val durationValue = duration.value ?: AudioRecordingService.DEFAULT_DURATION
                     // Recording switch
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -559,7 +560,6 @@ fun RecordingScreen(
                             text = stringResource(R.string.enable_recording),
                             modifier = Modifier.weight(1f)
                         )
-                        val durationValue = duration.value ?: AudioRecordingService.DEFAULT_DURATION
                         Switch(
                             checked = isRecording.value,
                             onCheckedChange = { checked ->
@@ -578,7 +578,17 @@ fun RecordingScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = stringResource(R.string.reminder, durationValue),
+                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary),
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .alpha(ALPHA_DISABLED)
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // ===== Native NumberPicker =====
                     Row(

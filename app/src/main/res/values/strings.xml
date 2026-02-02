@@ -34,5 +34,6 @@
     <string name="saving_recording">Saving record…</string>
     <string name="save_channel_name">Saving record</string>
     <string name="save_channel_description">Currently saving a recording</string>
+    <string name="reminder">Only the last %d minutes are kept in memory</string>
 
 </resources>
