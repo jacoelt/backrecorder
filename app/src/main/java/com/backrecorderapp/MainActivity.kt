@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
     private val requestAudioPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
             if (isGranted) {
-                startRecording(this.duration.value ?: AudioRecordingService.DEFAULT_DURATION)
+                startRecording()
             } else {
                 Toast.makeText(this, "Permission denied. Cannot record audio.", Toast.LENGTH_SHORT).show()
             }
@@ -217,6 +217,7 @@ class MainActivity : AppCompatActivity() {
                         val storedDuration = if (isFullVersionActive) {
                             settings.getRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
                         } else {
+                            settings.setRecordingDuration(AudioRecordingService.DEFAULT_DURATION)
                             AudioRecordingService.DEFAULT_DURATION
                         }
                         duration.value = storedDuration
@@ -291,7 +292,7 @@ class MainActivity : AppCompatActivity() {
                             }
 
                             RecordingScreen(
-                                startRecording = { duration -> startRecording(duration) },
+                                startRecording = { startRecording() },
                                 stopRecording = { stopRecording() },
                                 isRecording = isRecording,
                                 currentRecordingDuration,
@@ -338,11 +339,10 @@ class MainActivity : AppCompatActivity() {
         return securePreferences.getString(PREF_PREMIUM_ACTIVE)?.toBoolean() == true
     }
 
-    private fun startRecording(duration: Int) {
+    private fun startRecording() {
         if (ContextCompat.checkSelfPermission(this, permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             try {
                 val intent = Intent(this, AudioRecordingService::class.java)
-                intent.putExtra(AudioRecordingService.DURATION_INTENT_KEY, duration)
                 ContextCompat.startForegroundService(this, intent)
                 this.isRecording.value = true
             } catch (e: Exception) {
@@ -482,7 +482,7 @@ class MainActivity : AppCompatActivity() {
 
 @Composable
 fun RecordingScreen(
-    startRecording: (Int) -> Unit,
+    startRecording: () -> Unit,
     stopRecording: () -> Unit,
     isRecording: MutableState<Boolean>,
     currentRecordingDuration: MutableState<Int>,
@@ -610,7 +610,7 @@ fun RecordingScreen(
                             checked = isRecording.value,
                             onCheckedChange = { checked ->
                                 if (durationValue > 0) {
-                                    if (checked) startRecording(durationValue)
+                                    if (checked) startRecording()
                                     else showStopDialog = true
                                 } else {
                                     Toast.makeText(

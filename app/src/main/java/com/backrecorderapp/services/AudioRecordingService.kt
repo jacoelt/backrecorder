@@ -12,6 +12,12 @@ import androidx.core.app.NotificationCompat
 import com.backrecorderapp.GDriveHelper
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
+import com.backrecorderapp.SettingsDataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -22,11 +28,16 @@ class AudioRecordingService : Service() {
 
     private var gDriveHelper: GDriveHelper? = null
     private var mediaRecorder: MediaRecorder? = null
+    private lateinit var settings: SettingsDataStore
     private lateinit var outputDir: File
     private var maxDurationMinutes by Delegates.notNull<Int>()
     private val fileList = mutableListOf<File>()
+
     private lateinit var workerThread: HandlerThread
     private lateinit var workerHandler: Handler
+    private val serviceScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO
+    )
 
     private val binder = LocalBinder()
     private var isRecording = false  // Track recording status
@@ -38,7 +49,6 @@ class AudioRecordingService : Service() {
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000
         const val AUDIO_RECORDINGS_DIR = "audio_recordings"
-        const val DURATION_INTENT_KEY = "duration"
         const val DEFAULT_DURATION = 10
     }
 
@@ -51,6 +61,7 @@ class AudioRecordingService : Service() {
         RecordingServiceHolder.set(this)
         Log.d("AudioRecordingService", "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
+        settings = SettingsDataStore.getInstance(this.applicationContext)
 
         // Dedicated thread for recurring recording tasks
         workerThread = HandlerThread("AudioRecorderWorker")
@@ -60,9 +71,11 @@ class AudioRecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("AudioRecordingService", "Started")
-        maxDurationMinutes = (intent?.getIntExtra(DURATION_INTENT_KEY, DEFAULT_DURATION) ?: DEFAULT_DURATION).coerceAtLeast(1)
         startForegroundService()
-        startNewRecording()
+        serviceScope.launch {
+            maxDurationMinutes = settings.getRecordingDuration(DEFAULT_DURATION)
+            startNewRecording()
+        }
         return START_STICKY
     }
 
@@ -158,6 +171,7 @@ class AudioRecordingService : Service() {
         cleanupTemporaryFiles()
         stopRecording()
         workerThread.quitSafely()
+        serviceScope.cancel()
         super.onDestroy()
     }
 

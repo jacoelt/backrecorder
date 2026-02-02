@@ -2,7 +2,7 @@
     <string name="app_name">Back Recorder</string>
     <string name="audio_recording_channel_name">Audio Recording</string>
     <string name="notification_title">Recording in progress</string>
-    <string name="notification_text">Application is recording continuously..</string>
+    <string name="notification_text">Back Recorder is recording continuously..</string>
 
     <string name="recording_started">Recording started</string>
     <string name="recording_stopped">Recording stopped</string>
