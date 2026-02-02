@@ -48,6 +48,7 @@ class AudioRecordingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        RecordingServiceHolder.set(this)
         Log.d("AudioRecordingService", "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
 

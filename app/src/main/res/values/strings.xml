@@ -20,7 +20,7 @@
     <string name="save_recording">Save recording of last %s</string>
     <string name="current_duration">Current duration: %s</string>
 
-    <string name="error_on_recording_save">There was an error when saving your recording.\nPlease try again.</string>
+    <string name="error_on_recording_save">There was an error when saving your recording.</string>
     <string name="error_no_duration">Duration must be > 0</string>
     <string name="error_no_recording_in_progress">No recording in progress.</string>
     <string name="error_cannot_change_while_recording">This cannot be changed while recording.</string>
@@ -31,5 +31,8 @@
     <string name="monthly">Monthly</string>
     <string name="yearly">Yearly</string>
     <string name="best_value">(Best value, 15% cheaper!)</string>
+    <string name="saving_recording">Saving record…</string>
+    <string name="save_channel_name">Saving record</string>
+    <string name="save_channel_description">Currently saving a recording</string>
 
 </resources>

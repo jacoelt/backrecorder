@@ -16,9 +16,7 @@ import java.io.File
 
 class GDriveHelper(
     private val context: Context,
-    private val authLauncher: ActivityResultLauncher<Intent>,
     private val securePreferences: SecurePreferences,
-    private val signInCallback: (Boolean) -> Unit
 ) {
     companion object {
         private const val TAG = "GDriveHelper"
@@ -63,7 +61,7 @@ class GDriveHelper(
         }
     }
 
-    fun launchSignIn() {
+    fun launchSignIn(authLauncher: ActivityResultLauncher<Intent>) {
         scope.launch {
             val enabled = settingsDataStore.getUseGDrive()
             if (!enabled) {
@@ -85,7 +83,7 @@ class GDriveHelper(
         }
     }
 
-    fun handleAuthResponse(data: Intent?) {
+    fun handleAuthResponse(data: Intent?, signInCallback: (Boolean) -> Unit) {
         val response = data?.let { AuthorizationResponse.fromIntent(it) }
         if (response == null) {
             Log.e(TAG, "Authorization data is null")
