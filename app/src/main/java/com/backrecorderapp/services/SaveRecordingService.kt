@@ -9,11 +9,11 @@ import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.backrecorderapp.GDriveHelper
+import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.R
-import com.backrecorderapp.SecurePreferences
-import com.backrecorderapp.SettingsDataStore
-import com.backrecorderapp.concatAudioFiles
+import com.backrecorderapp.helpers.SecurePreferences
+import com.backrecorderapp.helpers.SettingsDataStore
+import com.backrecorderapp.helpers.concatAudioFiles
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileInputStream

@@ -1,4 +1,4 @@
-package com.backrecorderapp
+package com.backrecorderapp.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -26,6 +26,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.backrecorderapp.R
 
 @Composable
 fun SubscriptionPicker(

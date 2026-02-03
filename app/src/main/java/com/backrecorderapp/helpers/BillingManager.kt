@@ -1,9 +1,10 @@
-package com.backrecorderapp
+package com.backrecorderapp.helpers
 
 import android.app.Activity
 import android.content.Context
 import android.util.Log
 import com.android.billingclient.api.*
+import com.backrecorderapp.ui.SubscriptionOffer
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume

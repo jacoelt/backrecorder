@@ -9,10 +9,10 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.backrecorderapp.GDriveHelper
+import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
-import com.backrecorderapp.SettingsDataStore
+import com.backrecorderapp.helpers.SettingsDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,7 +24,7 @@ import java.util.*
 import kotlin.properties.Delegates
 
 
-class AudioRecordingService : Service() {
+class RecordingService : Service() {
 
     private var gDriveHelper: GDriveHelper? = null
     private var mediaRecorder: MediaRecorder? = null
@@ -53,7 +53,7 @@ class AudioRecordingService : Service() {
     }
 
     inner class LocalBinder : Binder() {
-        fun getService(): AudioRecordingService = this@AudioRecordingService
+        fun getService(): RecordingService = this@RecordingService
     }
 
     override fun onCreate() {

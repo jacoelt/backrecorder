@@ -1,4 +1,4 @@
-package com.backrecorderapp
+package com.backrecorderapp.helpers
 
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey

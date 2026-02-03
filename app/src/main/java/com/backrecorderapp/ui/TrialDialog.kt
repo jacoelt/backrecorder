@@ -1,8 +1,9 @@
-package com.backrecorderapp
+package com.backrecorderapp.ui
 
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
+import com.backrecorderapp.R
 
 @Composable
 fun TrialDialog(

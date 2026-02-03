@@ -1,11 +1,11 @@
 package com.backrecorderapp.services
 
 object RecordingServiceHolder {
-    private var service: AudioRecordingService? = null
+    private var service: RecordingService? = null
 
-    fun set(service: AudioRecordingService) {
+    fun set(service: RecordingService) {
         this.service = service
     }
 
-    fun get(): AudioRecordingService? = service
+    fun get(): RecordingService? = service
 }

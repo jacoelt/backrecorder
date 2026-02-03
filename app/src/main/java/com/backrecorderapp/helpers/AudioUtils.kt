@@ -1,4 +1,4 @@
-package com.backrecorderapp
+package com.backrecorderapp.helpers
 
 import android.annotation.SuppressLint
 import android.media.MediaCodec
