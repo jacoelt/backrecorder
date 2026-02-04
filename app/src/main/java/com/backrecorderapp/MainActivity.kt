@@ -1,7 +1,10 @@
 package com.backrecorderapp
 
 import android.Manifest.permission
-import android.content.*
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.IBinder
@@ -10,11 +13,17 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -27,8 +36,9 @@ import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.TrialManager
 import com.backrecorderapp.services.RecordingService
 import com.backrecorderapp.services.SaveRecordingService
+import com.backrecorderapp.ui.MainScreen
+import com.backrecorderapp.ui.MainScreenMode
 import com.backrecorderapp.ui.PremiumRequiredDialog
-import com.backrecorderapp.ui.RecordingScreen
 import com.backrecorderapp.ui.SubscriptionOffer
 import com.backrecorderapp.ui.SubscriptionPicker
 import com.backrecorderapp.ui.TermsOfUseScreen
@@ -38,9 +48,9 @@ import com.google.crypto.tink.config.TinkConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.DecimalFormat
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 
 const val SKU_ID = "main_subscription"
 const val ALPHA_DISABLED = 0.5f
@@ -50,9 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var recordingService: RecordingService? = null
     private var isBound = false
     private val isRecording = mutableStateOf(false)
-    private var duration = mutableStateOf<Int?>(null)
     private var currentRecordingDuration = mutableIntStateOf(0)
-    private var totalWeight = mutableStateOf("")
     private var trialDaysRemaining: Int = 30
     private var isSubscriptionActive = mutableStateOf(false)
     private var isFullVersionActive: Boolean = false
@@ -61,6 +69,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var billingManager: BillingManager
     private var securePreferences = SecurePreferences(this)
     private lateinit var subscriptionOfferList: List<SubscriptionOffer>
+    private var pendingSaveStart = mutableStateOf<Int?>(null)
+    private var pendingSaveEnd = mutableStateOf<Int?>(null)
 
     companion object {
         private const val TAG = "MainActivity"
@@ -89,9 +99,14 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(this, SaveRecordingService::class.java).apply {
                 action = SaveRecordingService.ACTION_START
                 putExtra(SaveRecordingService.EXTRA_OUTPUT_URI, uri)
+                putExtra(SaveRecordingService.EXTRA_DURATION_START, pendingSaveStart.value)
+                putExtra(SaveRecordingService.EXTRA_DURATION_END, pendingSaveEnd.value)
             }
 
             ContextCompat.startForegroundService(this, intent)
+
+            pendingSaveStart.value = null
+            pendingSaveEnd.value = null
         }
     }
 
@@ -219,6 +234,7 @@ class MainActivity : AppCompatActivity() {
                     var showPremiumDialog by rememberSaveable { mutableStateOf(false) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
                     var selectedOffer by remember { mutableStateOf<SubscriptionOffer?>(null) }
+                    var screenMode by remember { mutableStateOf(MainScreenMode.RECORDING) }
 
                     // Load state
                     LaunchedEffect(Unit) {
@@ -228,121 +244,97 @@ class MainActivity : AppCompatActivity() {
                             mustAcceptTerms = true
                         }
 
-                        val storedDuration = if (isFullVersionActive) {
-                            settings.getRecordingDuration(RecordingService.DEFAULT_DURATION)
-                        } else {
-                            settings.setRecordingDuration(RecordingService.DEFAULT_DURATION)
-                            RecordingService.DEFAULT_DURATION
-                        }
-                        duration.value = storedDuration
-                        totalWeight.value = generateTotalWeightString(storedDuration)
-
                         isFirstLaunch = settings.isFirstLaunch()
                     }
 
-                    if (duration.value == null) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator()
-                        }
+
+                    // Display either Terms screen or main content
+                    if (showTerms && mustAcceptTerms) {
+                        TermsOfUseScreen(
+                            onAccepted = {
+                                hasAcceptedTerms = true
+                                showTerms = false
+                                mustAcceptTerms = false
+                            },
+                            onDeclined = { finish() },
+                            readOnly = false
+                        )
+
+                    } else if (showTerms && !mustAcceptTerms) {
+                        TermsOfUseScreen(
+                            onClosed = { showTerms = false },
+                            readOnly = true
+                        )
+
                     } else {
 
-                        // Display either Terms screen or main content
-                        if (showTerms && mustAcceptTerms) {
-                            TermsOfUseScreen(
-                                onAccepted = {
-                                    hasAcceptedTerms = true
-                                    showTerms = false
-                                    mustAcceptTerms = false
+                        // Display dialogs
+                        if (isFirstLaunch) {
+                            TrialDialog(
+                                onOpenSubscriptions = {
+                                    Log.d(TAG, "TrialDialog: onOpenSubscriptions")
+                                    showSubscriptionPicker = true
+                                    isFirstLaunch = false
                                 },
-                                onDeclined = { finish() },
-                                readOnly = false
-                            )
-
-                        } else if (showTerms && !mustAcceptTerms) {
-                            TermsOfUseScreen(
-                                onClosed = { showTerms = false },
-                                readOnly = true
-                            )
-
-                        } else {
-
-                            // Display dialogs
-                            if (isFirstLaunch) {
-                                TrialDialog(
-                                    onOpenSubscriptions = {
-                                        Log.d(TAG, "TrialDialog: onOpenSubscriptions")
-                                        showSubscriptionPicker = true
-                                        isFirstLaunch = false
-                                    },
-                                    onDismiss = {
-                                        lifecycleScope.launch { settings.markFirstLaunchDone() }
-                                        isFirstLaunch = false
-                                    }
-                                )
-                            }
-
-                            if (showPremiumDialog) {
-                                PremiumRequiredDialog (
-                                    onOpenSubscriptions = {
-                                        Log.d(TAG, "PremiumRequiredDialog: onOpenSubscriptions")
-                                        showPremiumDialog = false
-                                        showSubscriptionPicker = true
-                                    },
-                                    onDismiss = { showPremiumDialog = false }
-                                )
-                            }
-
-                            if (showSubscriptionPicker){
-                                SubscriptionPicker(
-                                    offers = subscriptionOfferList,
-                                    selectedOffer = selectedOffer,
-                                    onOfferSelected = { selectedOffer = it },
-                                    onDismiss = { showSubscriptionPicker = false },
-                                    onSubscribeClicked = { offer ->
-                                        billingManager.launchSubscriptionPurchase(this@MainActivity, offer)
-                                        showSubscriptionPicker = false
-                                    }
-                                )
-                            }
-
-                            RecordingScreen(
-                                startRecording = { startRecording() },
-                                stopRecording = { stopRecording() },
-                                isRecording = isRecording,
-                                currentRecordingDuration,
-                                duration,
-                                totalWeight,
-                                startSaveRecording = {
-                                    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                                    val audioFileName = "record_$timeStamp.m4a"
-                                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                        type = "audio/m4a"
-                                        putExtra(Intent.EXTRA_TITLE, audioFileName)
-                                    }
-                                    saveAudioLauncher.launch(intent)
-                                },
-                                onDurationChange = {
-                                    this.duration.value = it
-                                    this.totalWeight.value =
-                                        this.generateTotalWeightString(this.duration.value ?: RecordingService.DEFAULT_DURATION)
-                                    lifecycleScope.launch {
-                                        settings.setRecordingDuration(this@MainActivity.duration.value ?: RecordingService.DEFAULT_DURATION)
-                                    }
-                                },
-                                useGDrive = useGDrive,
-                                onToggleGDrive = { enabled ->
-                                    lifecycleScope.launch {
-                                        settings.setUseGDrive(enabled)
-                                        if (enabled) setupGDrive()
-                                    }
-                                },
-                                onShowTerms = { showTerms = true },
-                                onShowPremiumDialog = { showPremiumDialog = true },
-                                trialDaysRemaining = trialDaysRemaining,
-                                isSubscriptionActive = isSubscriptionActive.value,
-                                isFullVersionActive = isFullVersionActive,
+                                onDismiss = {
+                                    lifecycleScope.launch { settings.markFirstLaunchDone() }
+                                    isFirstLaunch = false
+                                }
                             )
                         }
+
+                        if (showPremiumDialog) {
+                            PremiumRequiredDialog (
+                                onOpenSubscriptions = {
+                                    Log.d(TAG, "PremiumRequiredDialog: onOpenSubscriptions")
+                                    showPremiumDialog = false
+                                    showSubscriptionPicker = true
+                                },
+                                onDismiss = { showPremiumDialog = false }
+                            )
+                        }
+
+                        if (showSubscriptionPicker){
+                            SubscriptionPicker(
+                                offers = subscriptionOfferList,
+                                selectedOffer = selectedOffer,
+                                onOfferSelected = { selectedOffer = it },
+                                onDismiss = { showSubscriptionPicker = false },
+                                onSubscribeClicked = { offer ->
+                                    billingManager.launchSubscriptionPurchase(this@MainActivity, offer)
+                                    showSubscriptionPicker = false
+                                }
+                            )
+                        }
+
+                        MainScreen(
+                            startRecording = { startRecording() },
+                            stopRecording = { stopRecording() },
+                            isRecording = isRecording,
+                            currentRecordingDuration,
+                            startSaveRecording = { start, end ->
+                                pendingSaveStart.value = start
+                                pendingSaveEnd.value = end
+                                launchFilePicker()
+                                return@MainScreen true
+                            },
+                            useGDrive = useGDrive,
+                            onToggleGDrive = { enabled ->
+                                lifecycleScope.launch {
+                                    settings.setUseGDrive(enabled)
+                                    if (enabled) setupGDrive()
+                                }
+                            },
+                            onShowTerms = { showTerms = true },
+                            onShowPremiumDialog = { showPremiumDialog = true },
+                            trialDaysRemaining = trialDaysRemaining,
+                            isSubscriptionActive = isSubscriptionActive.value,
+                            isFullVersionActive = isFullVersionActive,
+                            screenMode,
+                            onModeChange = { mode ->
+                                screenMode = mode
+                            },
+                        )
                     }
                 }
             }
@@ -380,27 +372,24 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun launchFilePicker() {
+        val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val audioFileName = "record_$timeStamp.m4a"
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            type = "audio/m4a"
+            putExtra(Intent.EXTRA_TITLE, audioFileName)
+        }
+
+        saveAudioLauncher.launch(intent)
+    }
+
     private fun updateRecordingState() {
         isRecording.value = recordingService?.isRecording() ?: false
     }
 
-    private fun generateTotalWeightString(duration: Int): String {
-        if (duration <= 0) return "0 B"
-        var weight = RecordingService.BIT_RATE.toDouble() / 8 * duration * 60 / 1024
-        var unit = "KB"
-
-        if (weight > 1024 * 1024) {
-            weight /= 1024 * 1024
-            unit = "GB"
-        } else if (weight > 1024) {
-            weight /= 1024
-            unit = "MB"
-        }
-
-        return DecimalFormat("#.##").format(weight) + " " + unit
-    }
-
     private fun updateCurrentRecordingDuration(duration: Int) {
+        Log.d(TAG, "Update recording duration: $duration")
         currentRecordingDuration.intValue = duration
     }
 
@@ -436,4 +425,3 @@ class MainActivity : AppCompatActivity() {
         billingManager.endConnection()
     }
 }
-

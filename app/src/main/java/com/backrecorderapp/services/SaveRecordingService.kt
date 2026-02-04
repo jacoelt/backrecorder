@@ -3,22 +3,30 @@ package com.backrecorderapp.services
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
-import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.R
+import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.helpers.SecurePreferences
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.concatAudioFiles
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 
 class SaveRecordingService : Service() {
 
@@ -29,6 +37,8 @@ class SaveRecordingService : Service() {
 
         const val ACTION_START = "com.backrecorderapp.action.START_SAVE"
         const val EXTRA_OUTPUT_URI = "extra_output_uri"
+        const val EXTRA_DURATION_START = "extra_duration_start"
+        const val EXTRA_DURATION_END = "extra_duration_end"
 
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "save_recording_channel"
@@ -72,12 +82,17 @@ class SaveRecordingService : Service() {
             return START_NOT_STICKY
         }
 
-        startSave(outputUri)
+        val start = intent.getIntExtra(EXTRA_DURATION_START, 0)
+        val end = intent.getIntExtra(EXTRA_DURATION_END, RecordingService.DEFAULT_DURATION)
+
+        Log.d(TAG, "Requested start: $start, end: $end")
+
+        startSave(outputUri, start, end)
 
         return START_NOT_STICKY
     }
 
-    private fun startSave(outputUri: Uri) {
+    private fun startSave(outputUri: Uri, start: Int, end: Int) {
         val context = this.applicationContext
         val settings = SettingsDataStore.getInstance(this.applicationContext)
         val gDriveHelper = GDriveHelper(this.applicationContext, securePreferences)
@@ -89,10 +104,22 @@ class SaveRecordingService : Service() {
                 updateNotification(getString(R.string.saving_status_stop_recording))
 
                 val recordingService = RecordingServiceHolder.get()
-                val audioFiles = recordingService?.getFileList()?.toList()
+                val allAudioFiles = recordingService?.getFileList()
                     ?: throw IllegalStateException("RecordingService not available")
 
-                recordingService.pauseRecording()
+                val audioFiles = allAudioFiles.slice(start.coerceAtLeast(0)..<end.coerceAtMost(allAudioFiles.size))
+
+                Log.d(TAG, "All audio files size: ${allAudioFiles.size}, kept files ${audioFiles.size}")
+
+                if (audioFiles.isEmpty()) {
+                    return@launch
+                }
+
+                if (end == allAudioFiles.size) {
+                    // If last file is included, we need to cut it where it is
+                    Log.d(TAG, "Need to interrupt current file")
+                    recordingService.interruptCurrentRecording()
+                }
 
                 if (mergedFile.exists()) mergedFile.delete()
 
@@ -133,11 +160,7 @@ class SaveRecordingService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Save failed", e)
                 updateNotification(getString(R.string.saving_status_error))
-                Toast.makeText(
-                    context,
-                    R.string.error_on_recording_save,
-                    Toast.LENGTH_SHORT
-                ).show()
+                toastError(context, R.string.error_on_recording_save)
             } finally {
                 mergedFile.delete()
                 delay(1_000)
@@ -174,5 +197,15 @@ class SaveRecordingService : Service() {
 
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(channel)
+    }
+
+    private suspend fun toastError(context: Context, errorCode: Int) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(
+                context,
+                errorCode,
+                Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 }

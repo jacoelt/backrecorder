@@ -1,17 +1,20 @@
 package com.backrecorderapp.services
 
-import android.app.*
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Intent
 import android.media.MediaRecorder
 import android.os.Binder
-import android.os.IBinder
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
+import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.helpers.SettingsDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +23,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 import kotlin.properties.Delegates
 
 
@@ -49,7 +53,7 @@ class RecordingService : Service() {
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000
         const val AUDIO_RECORDINGS_DIR = "audio_recordings"
-        const val DEFAULT_DURATION = 10
+        const val DEFAULT_DURATION = 1440
     }
 
     inner class LocalBinder : Binder() {
@@ -73,7 +77,7 @@ class RecordingService : Service() {
         Log.d("AudioRecordingService", "Started")
         startForegroundService()
         serviceScope.launch {
-            maxDurationMinutes = settings.getRecordingDuration(DEFAULT_DURATION) + 1
+            maxDurationMinutes = DEFAULT_DURATION
             startNewRecording()
         }
         return START_STICKY
@@ -102,7 +106,7 @@ class RecordingService : Service() {
         startForeground(1, notification)
     }
 
-    fun startNewRecording() {
+    private fun startNewRecording() {
         Log.d("AudioRecordingService", "Start new recording")
 
         if (fileList.size > 0) {
@@ -122,6 +126,10 @@ class RecordingService : Service() {
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val audioFile = File(outputDir, "record_$timeStamp.m4a")
         fileList.add(audioFile)
+
+        if (currentDurationCallback != null) {
+            currentDurationCallback?.let { it(fileList.size) }
+        }
 
         Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
 
@@ -153,10 +161,6 @@ class RecordingService : Service() {
 
         // Restart recording after 1 minute
         workerHandler.postDelayed({ startNewRecording() }, 60_000)
-
-        if (currentDurationCallback != null) {
-            currentDurationCallback?.let { it((fileList.size - 1).coerceAtLeast(0)) }
-        }
     }
 
     private fun cleanOldFiles() {
@@ -167,7 +171,7 @@ class RecordingService : Service() {
     }
 
     override fun onDestroy() {
-        Log.d("AudioRecordingService", "Destroy")
+        Log.d(TAG, "Destroy")
         cleanupTemporaryFiles()
         stopRecording()
         workerThread.quitSafely()
@@ -186,6 +190,7 @@ class RecordingService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun isRecording(): Boolean {
+        Log.d(TAG, "isRecording: $isRecording")
         return isRecording
     }
 
@@ -193,8 +198,14 @@ class RecordingService : Service() {
         return fileList.toList() // Make a readonly copy
     }
 
-    fun pauseRecording() {
-        Log.d(TAG, "pauseRecording")
+    fun interruptCurrentRecording() {
+        Log.d(TAG, "interruptCurrentRecording")
+        workerHandler.removeCallbacksAndMessages(null)
+        startNewRecording()
+    }
+
+    fun stopRecording() {
+        Log.d(TAG, "stopRecording")
         workerHandler.removeCallbacksAndMessages(null)
         mediaRecorder?.apply {
             try {
@@ -213,11 +224,6 @@ class RecordingService : Service() {
         }
         mediaRecorder = null
         isRecording = false
-    }
-
-    fun stopRecording() {
-        Log.d(TAG, "stopRecording")
-        pauseRecording()
         stopForeground(STOP_FOREGROUND_REMOVE)
         fileList.clear()
     }
@@ -225,7 +231,7 @@ class RecordingService : Service() {
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
         currentDurationCallback = callback
         if (isRecording) {
-            currentDurationCallback?.let { it((fileList.size - 1).coerceAtLeast(0)) }
+            currentDurationCallback?.let { it(fileList.size) }
         }
     }
 

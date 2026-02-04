@@ -15,7 +15,6 @@ class SettingsDataStore private constructor(private val context: Context) {
         private const val DATASTORE_NAME = "settings"
 
         private val PREF_USE_GDRIVE = booleanPreferencesKey("use_gdrive")
-        private val PREF_DURATION = intPreferencesKey("recording_duration")
         private val PREF_TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
         private val PREF_FIRST_LAUNCH = booleanPreferencesKey("first_launch")
 
@@ -50,18 +49,6 @@ class SettingsDataStore private constructor(private val context: Context) {
 
     suspend fun getUseGDrive(): Boolean {
         return getUseGDriveFlow().first()
-    }
-
-    suspend fun setRecordingDuration(minutes: Int) {
-        dataStore.edit { prefs ->
-            prefs[PREF_DURATION] = minutes
-        }
-    }
-
-    suspend fun getRecordingDuration(defaultValue: Int): Int {
-        return dataStore.data.map { prefs ->
-            prefs[PREF_DURATION]
-        }.first() ?: defaultValue
     }
 
     suspend fun saveTermsAccepted(accepted: Boolean) {
