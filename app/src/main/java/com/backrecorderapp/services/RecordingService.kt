@@ -102,8 +102,17 @@ class RecordingService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(pendingIntent)
             .build()
+        
+        restoreListOfExistingFiles()
 
         startForeground(1, notification)
+    }
+
+    private fun restoreListOfExistingFiles() {
+        val existingFiles = outputDir.listFiles()?.toList()
+        if (existingFiles != null) {
+            fileList.addAll(existingFiles)
+        }
     }
 
     private fun startNewRecording() {
@@ -131,9 +140,9 @@ class RecordingService : Service() {
             currentDurationCallback?.let { it(fileList.size) }
         }
 
-        Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
-
         cleanOldFiles()
+
+        Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
 
         if (mediaRecorder == null) {
             mediaRecorder = MediaRecorder(this)
@@ -172,19 +181,10 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "Destroy")
-        cleanupTemporaryFiles()
         stopRecording()
         workerThread.quitSafely()
         serviceScope.cancel()
         super.onDestroy()
-    }
-
-    private fun cleanupTemporaryFiles() {
-        outputDir.listFiles()?.forEach { file ->
-            if (file.isFile) {
-                file.delete()
-            }
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

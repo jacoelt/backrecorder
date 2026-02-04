@@ -30,7 +30,7 @@ import com.backrecorderapp.R
 @Composable
 fun RecordingContent(
     startRecording: () -> Unit,
-    stopRecordingRequest: () -> Unit,
+    stopRecording: () -> Unit,
     isRecording: MutableState<Boolean>,
     currentRecordingDuration: MutableState<Int>,
     useGDrive: Boolean,
@@ -67,7 +67,7 @@ fun RecordingContent(
                         checked = isRecording.value,
                         onCheckedChange = { checked ->
                             if (checked) startRecording()
-                            else stopRecordingRequest()
+                            else stopRecording()
                         }
                     )
                 }
