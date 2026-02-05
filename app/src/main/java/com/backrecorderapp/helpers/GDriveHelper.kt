@@ -5,10 +5,21 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
-import kotlinx.coroutines.*
-import net.openid.appauth.*
-import okhttp3.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import net.openid.appauth.AuthorizationException
+import net.openid.appauth.AuthorizationRequest
+import net.openid.appauth.AuthorizationResponse
+import net.openid.appauth.AuthorizationService
+import net.openid.appauth.AuthorizationServiceConfiguration
+import okhttp3.FormBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -178,53 +189,52 @@ class GDriveHelper(
         }
     }
 
-    fun uploadFile(file: File, folderType: FolderType, fileName: String?, callback: ((Boolean) -> Unit)?) {
-        scope.launch {
-            val enabled = settingsDataStore.getUseGDrive()
-            if (!enabled) {
-                Log.d(TAG, "GDrive disabled, skipping upload")
-                callback?.invoke(true)
-                return@launch
+    suspend fun uploadFile(file: File, folderType: FolderType, fileName: String?, callback: ((Boolean) -> Unit)?) {
+        val enabled = settingsDataStore.getUseGDrive()
+        if (!enabled) {
+            Log.d(TAG, "GDrive disabled, skipping upload")
+            callback?.invoke(true)
+            return
+        }
+
+        val token = getValidAccessToken() ?: return
+        safeNetworkCall("uploadFile") {
+            val folderId = when (folderType) {
+                FolderType.FINAL -> securePreferences.getString(PREF_KEY_FINAL_FOLDER)
+                FolderType.STAGING -> securePreferences.getString(PREF_KEY_STAGING_FOLDER)
+            } ?: return@safeNetworkCall
+
+            val metadata = JSONObject().apply {
+                put("name", fileName ?: file.name)
+                put("parents", JSONArray().put(folderId))
             }
 
-            val token = getValidAccessToken() ?: return@launch
-            safeNetworkCall("uploadFile") {
-                val folderId = when (folderType) {
-                    FolderType.FINAL -> securePreferences.getString(PREF_KEY_FINAL_FOLDER)
-                    FolderType.STAGING -> securePreferences.getString(PREF_KEY_STAGING_FOLDER)
-                } ?: return@safeNetworkCall
+            Log.d(TAG, "Read file content for upload")
+            val requestBody = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart(
+                    "metadata", null,
+                    metadata.toString()
+                        .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+                )
+                .addFormDataPart(
+                    "file", file.name,
+                    file.readBytes().toRequestBody("audio/m4a".toMediaTypeOrNull())
+                )
+                .build()
 
-                val metadata = JSONObject().apply {
-                    put("name", fileName ?: file.name)
-                    put("parents", JSONArray().put(folderId))
+            val request = Request.Builder()
+                .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+                .post(requestBody)
+                .addHeader("Authorization", "Bearer $token")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Log.d(TAG, "File ${file.name} uploaded successfully in $folderType")
+                } else {
+                    Log.e(TAG, "Upload failed in $folderType: ${response.code} ${response.message}")
                 }
-
-                val requestBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                    .addFormDataPart(
-                        "metadata", null,
-                        metadata.toString()
-                            .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-                    )
-                    .addFormDataPart(
-                        "file", file.name,
-                        file.readBytes().toRequestBody("audio/m4a".toMediaTypeOrNull())
-                    )
-                    .build()
-
-                val request = Request.Builder()
-                    .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
-                    .post(requestBody)
-                    .addHeader("Authorization", "Bearer $token")
-                    .build()
-
-                httpClient.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        Log.d(TAG, "File ${file.name} uploaded successfully")
-                    } else {
-                        Log.e(TAG, "Upload failed: ${response.code} ${response.message}")
-                    }
-                    callback?.invoke(response.isSuccessful)
-                }
+                callback?.invoke(response.isSuccessful)
             }
         }
     }

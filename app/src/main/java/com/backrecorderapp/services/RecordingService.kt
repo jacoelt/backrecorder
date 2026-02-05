@@ -119,18 +119,19 @@ class RecordingService : Service() {
         Log.d("AudioRecordingService", "Start new recording")
 
         if (fileList.size > 0) {
-            try {
-                val lastFile = fileList.last()
-                gDriveHelper?.uploadFile(
-                    lastFile,
-                    GDriveHelper.FolderType.STAGING,
-                    fileName = null,
-                    callback = null
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to upload to Drive", e)
+            serviceScope.launch {
+                try {
+                    val lastFile = fileList.last()
+                    gDriveHelper?.uploadFile(
+                        lastFile,
+                        GDriveHelper.FolderType.STAGING,
+                        fileName = null,
+                        callback = null
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to upload to Drive", e)
+                }
             }
-
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())

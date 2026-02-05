@@ -165,6 +165,7 @@ class SaveRecordingService : Service() {
 
                 delay(5_000)
             } finally {
+                Log.d(TAG, "Clean up after merge and save")
                 mergedFile.delete()
                 delay(1_000)
                 stopForeground(STOP_FOREGROUND_REMOVE)
