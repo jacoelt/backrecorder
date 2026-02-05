@@ -25,16 +25,24 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.properties.Delegates
 
 
 class RecordingService : Service() {
+
+    companion object {
+        private const val TAG = "AudioRecordingService"
+        const val CHANNELS = 1
+        const val SAMPLING_RATE = 16000
+        const val BIT_RATE = 32000
+        const val AUDIO_RECORDINGS_DIR = "audio_recordings"
+        const val DEFAULT_DURATION = 1440
+    }
 
     private var gDriveHelper: GDriveHelper? = null
     private var mediaRecorder: MediaRecorder? = null
     private lateinit var settings: SettingsDataStore
     private lateinit var outputDir: File
-    private var maxDurationMinutes by Delegates.notNull<Int>()
+    private var maxDurationMinutes = DEFAULT_DURATION
     private val fileList = mutableListOf<File>()
 
     private lateinit var workerThread: HandlerThread
@@ -46,15 +54,6 @@ class RecordingService : Service() {
     private val binder = LocalBinder()
     private var isRecording = false  // Track recording status
     private var currentDurationCallback: ((duration: Int) -> Unit)? = null
-
-    companion object {
-        private const val TAG = "AudioRecordingService"
-        const val CHANNELS = 1
-        const val SAMPLING_RATE = 16000
-        const val BIT_RATE = 32000
-        const val AUDIO_RECORDINGS_DIR = "audio_recordings"
-        const val DEFAULT_DURATION = 1440
-    }
 
     inner class LocalBinder : Binder() {
         fun getService(): RecordingService = this@RecordingService
@@ -71,13 +70,14 @@ class RecordingService : Service() {
         workerThread = HandlerThread("AudioRecorderWorker")
         workerThread.start()
         workerHandler = Handler(workerThread.looper)
+
+        restoreListOfExistingFiles()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("AudioRecordingService", "Started")
         startForegroundService()
         serviceScope.launch {
-            maxDurationMinutes = DEFAULT_DURATION
             startNewRecording()
         }
         return START_STICKY
@@ -102,8 +102,6 @@ class RecordingService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(pendingIntent)
             .build()
-        
-        restoreListOfExistingFiles()
 
         startForeground(1, notification)
     }
@@ -234,9 +232,7 @@ class RecordingService : Service() {
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
         currentDurationCallback = callback
-        if (isRecording) {
-            currentDurationCallback?.let { it(fileList.size) }
-        }
+        currentDurationCallback?.let { it(fileList.size) }
     }
 
     fun registerGDriveHelper(gDriveHelper: GDriveHelper) {

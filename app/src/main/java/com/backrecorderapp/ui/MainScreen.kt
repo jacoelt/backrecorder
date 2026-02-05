@@ -1,6 +1,5 @@
 package com.backrecorderapp.ui
 
-import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -122,17 +121,7 @@ fun MainScreen(
                     onToggleGDrive = onToggleGDrive,
                     onShowPremiumDialog = onShowPremiumDialog,
                     isFullVersionActive = isFullVersionActive,
-                    onSaveClick = {
-                        if (isRecording.value) {
-                            onModeChange(MainScreenMode.SAVING)
-                        } else {
-                            Toast.makeText(
-                                context,
-                                R.string.error_no_recording,
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    },
+                    onSaveClick = { onModeChange(MainScreenMode.SAVING) },
                     formatDuration = ::formatMinutesToHHMM
                 )
             }

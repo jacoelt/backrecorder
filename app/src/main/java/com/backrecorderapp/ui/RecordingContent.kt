@@ -133,7 +133,6 @@ fun RecordingContent(
                     onClick = onSaveClick,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .alpha(if (isRecording.value) 1f else ALPHA_DISABLED)
                 ) {
                     Text(stringResource(R.string.save_recording))
                 }
