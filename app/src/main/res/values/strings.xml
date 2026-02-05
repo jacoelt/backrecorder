@@ -29,7 +29,7 @@
     <string name="error_save_gdrive">There was a problem when saving the file on Google Drive</string>
     <string name="monthly">Monthly</string>
     <string name="yearly">Yearly</string>
-    <string name="best_value">(Best value, 15% cheaper!)</string>
+    <string name="best_value">Almost 40% cheaper!</string>
     <string name="saving_recording">Saving record…</string>
     <string name="save_channel_name">Saving record</string>
     <string name="save_channel_description">Currently saving a recording</string>
