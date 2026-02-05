@@ -28,7 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.R
-import java.util.Calendar
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 @Composable
 fun SavingContent(
@@ -36,16 +39,19 @@ fun SavingContent(
     onConfirmSave: (startMinute: Int, endMinute: Int) -> Unit,
     onCancel: () -> Unit,
 ) {
+
+    val DEFAULT_RANGE = (maxMinutes - 15).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()
+
     var range by remember {
-        mutableStateOf(0f..maxMinutes.toFloat())
+        mutableStateOf(DEFAULT_RANGE)
     }
 
     fun previousMinutesToCurrentHHMM(minutes: Int): String {
-        val currentTime = Calendar.getInstance()
-        val totalMinutes = currentTime.get(Calendar.HOUR) * 60 + currentTime.get(Calendar.MINUTE) - maxMinutes + minutes
-        val h = totalMinutes / 60
-        val m = totalMinutes % 60
-        return "%02d:%02d".format(h, m)
+        val actualTime = LocalTime.now().minusMinutes(maxMinutes.toLong()).plusMinutes(minutes.toLong())
+        val formatter = DateTimeFormatter
+            .ofLocalizedTime(FormatStyle.SHORT)
+            .withLocale(Locale.getDefault())
+        return actualTime.format(formatter)
     }
 
     Column(

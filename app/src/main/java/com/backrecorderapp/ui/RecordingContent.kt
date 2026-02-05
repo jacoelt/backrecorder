@@ -138,20 +138,21 @@ fun RecordingContent(
                     Text(stringResource(R.string.save_recording))
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                if (currentRecordingDuration.value > 0) {
 
-                Text(
-                    text = if (currentRecordingDuration.value > 0)
-                        stringResource(
-                            R.string.current_duration,
-                            formatDuration(currentRecordingDuration.value)
-                        )
-                    else stringResource(R.string.no_duration),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .alpha(ALPHA_DISABLED)
-                )
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = stringResource(
+                                R.string.current_duration,
+                                formatDuration(currentRecordingDuration.value)
+                            ),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .alpha(ALPHA_DISABLED)
+                    )
+                }
             }
         }
     }

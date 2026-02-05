@@ -130,17 +130,18 @@ class RecordingService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to upload to Drive", e)
             }
+
         }
 
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val audioFile = File(outputDir, "record_$timeStamp.m4a")
         fileList.add(audioFile)
 
+        cleanOldFiles()
+
         if (currentDurationCallback != null) {
             currentDurationCallback?.let { it(fileList.size) }
         }
-
-        cleanOldFiles()
 
         Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
 
@@ -173,10 +174,12 @@ class RecordingService : Service() {
     }
 
     private fun cleanOldFiles() {
+        Log.d(TAG, "Clean up: currently have ${fileList.size} files")
         while (fileList.size > maxDurationMinutes) {
             fileList.removeAt(0).delete()
         }
         gDriveHelper?.deleteOldestFromStaging(maxDurationMinutes)
+        Log.d(TAG, "Clean up done: ${fileList.size} files left")
     }
 
     override fun onDestroy() {

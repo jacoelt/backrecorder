@@ -140,6 +140,7 @@ class SaveRecordingService : Service() {
 
                 updateNotification(getString(R.string.saving_status_completed))
 
+                Log.d(TAG, "Uploading file: ${mergedFile.path} (${mergedFile.exists()})")
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 if (settings.getUseGDrive()) {
                     gDriveHelper.uploadFile(
@@ -159,30 +160,39 @@ class SaveRecordingService : Service() {
 
             } catch (e: Exception) {
                 Log.e(TAG, "Save failed", e)
-                updateNotification(getString(R.string.saving_status_error))
+                updateNotification(getString(R.string.saving_status_error), false)
                 toastError(context, R.string.error_on_recording_save)
+
+                delay(5_000)
             } finally {
                 mergedFile.delete()
                 delay(1_000)
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                cancelNotification()
                 stopSelf()
             }
         }
     }
 
-    private fun updateNotification(message: String) {
-        val notification = buildNotification(message)
+    private fun cancelNotification() {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(NOTIFICATION_ID)
+    }
+
+
+    private fun updateNotification(message: String, ongoing: Boolean = true) {
+        val notification = buildNotification(message, ongoing)
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun buildNotification(text: String) =
+    private fun buildNotification(text: String, ongoing: Boolean = true) =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.icon)
             .setContentTitle(getString(R.string.saving_recording))
             .setContentText(text)
             .setOnlyAlertOnce(true)
-            .setOngoing(true)
+            .setOngoing(ongoing)
             .setProgress(0, 0, true)
             .build()
 
