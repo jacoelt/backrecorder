@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import com.backrecorderapp.ALPHA_DISABLED
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.SubscriptionMode
+import com.backrecorderapp.helpers.TimeHelper
 import com.backrecorderapp.ui.model.MainViewModel
 
 enum class MainScreenMode {
@@ -49,12 +50,6 @@ fun MainScreen(
 ) {
     val subscriptionMode by viewModel.subscriptionMode.collectAsState()
     val isCloudEnabled = arrayOf(SubscriptionMode.TRIAL, SubscriptionMode.PREMIUM).contains(subscriptionMode)
-
-    fun formatMinutesToHHMM(minutes: Int): String {
-        val h = minutes / 60
-        val m = minutes % 60
-        return "%dh%02d".format(h, m)
-    }
 
     Column(
         modifier = Modifier
@@ -133,7 +128,7 @@ fun MainScreen(
                     onToggleGDrive = onToggleGDrive,
                     isCloudEnabled = isCloudEnabled,
                     onSaveClick = { onModeChange(MainScreenMode.SAVING) },
-                    formatDuration = ::formatMinutesToHHMM
+                    formatDuration = { duration -> TimeHelper.formatDuration(duration) }
                 )
             }
 

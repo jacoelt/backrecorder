@@ -1,5 +1,6 @@
 package com.backrecorderapp.services
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -17,11 +18,15 @@ import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.helpers.SettingsDataStore
+import com.backrecorderapp.helpers.SubscriptionManager
+import com.backrecorderapp.helpers.SubscriptionMode
+import com.backrecorderapp.helpers.TimeHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -37,11 +42,16 @@ class RecordingService : Service() {
         const val BIT_RATE = 32000
         const val AUDIO_RECORDINGS_DIR = "audio_recordings"
         const val DEFAULT_DURATION = MAX_MINUTES_TOTAL
+        const val NOTIFICATION_CHANNEL_ID = "AudioRecordingChannel"
+        const val NOTIFICATION_ID = 42
     }
 
     private var gDriveHelper: GDriveHelper? = null
     private var mediaRecorder: MediaRecorder? = null
     private lateinit var settings: SettingsDataStore
+    private lateinit var subscriptionManager: SubscriptionManager
+
+
     private lateinit var outputDir: File
     private var maxDurationMinutes = DEFAULT_DURATION
     private val fileList = mutableListOf<File>()
@@ -66,6 +76,8 @@ class RecordingService : Service() {
         Log.d("AudioRecordingService", "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
         settings = SettingsDataStore.getInstance(this.applicationContext)
+        subscriptionManager = SubscriptionManager(settings)
+        runBlocking { subscriptionManager.load() }
 
         // Dedicated thread for recurring recording tasks
         workerThread = HandlerThread("AudioRecorderWorker")
@@ -85,26 +97,44 @@ class RecordingService : Service() {
     }
 
     private fun startForegroundService() {
-        val notificationChannelId = "AudioRecordingChannel"
         val channel = NotificationChannel(
-            notificationChannelId,
+            NOTIFICATION_CHANNEL_ID,
             getString(R.string.audio_recording_channel_name),
             NotificationManager.IMPORTANCE_LOW
         )
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
 
+
+        startForeground(NOTIFICATION_ID, buildNotification())
+    }
+
+    private fun buildNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = NotificationCompat.Builder(this, notificationChannelId)
+
+        val notificationBigContentId =
+            when (subscriptionManager.mode.value) {
+                SubscriptionMode.FREE -> R.string.notification_bigtext_free
+                SubscriptionMode.TRIAL -> R.string.notification_bigtext_trial
+                SubscriptionMode.PREMIUM -> R.string.notification_bigtext_premium
+            }
+
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.icon)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentText(getString(R.string.notification_text, TimeHelper.formatDuration(getDuration())))
+            .setStyle(
+                NotificationCompat
+                    .BigTextStyle()
+                    .bigText(getString(
+                        notificationBigContentId,
+                        TimeHelper.formatDuration(getDuration())
+                    ))
+            )
             .setContentIntent(pendingIntent)
             .build()
-
-        startForeground(1, notification)
     }
 
     private fun restoreListOfExistingFiles() {
@@ -233,7 +263,11 @@ class RecordingService : Service() {
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
         currentDurationCallback = callback
-        currentDurationCallback?.let { it(fileList.size) }
+        currentDurationCallback?.let { it(getDuration()) }
+    }
+
+    private fun getDuration(): Int {
+        return fileList.size
     }
 
     fun registerGDriveHelper(gDriveHelper: GDriveHelper) {

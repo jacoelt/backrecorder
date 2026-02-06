@@ -2,7 +2,10 @@
     <string name="app_name">Back Recorder</string>
     <string name="audio_recording_channel_name">Audio Recording</string>
     <string name="notification_title">Recording in progress</string>
-    <string name="notification_text">Back Recorder is recording continuously..</string>
+    <string name="notification_text">Recording time: %s</string>
+    <string name="notification_bigtext_free">Recording time: %s\nFree version • Only last 15 minutes can be saved</string>
+    <string name="notification_bigtext_trial">Recording time: %s\nFree trial • Full recording available</string>
+    <string name="notification_bigtext_premium">Recording time: %s\nPremium • Full recording available</string>
 
     <string name="recording_started">Recording status: Recording</string>
     <string name="recording_stopped">Recording status: Idle</string>

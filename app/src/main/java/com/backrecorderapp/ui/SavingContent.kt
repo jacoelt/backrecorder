@@ -28,10 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.R
+import com.backrecorderapp.helpers.TimeHelper
 import java.time.LocalTime
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
-import java.util.Locale
 
 @Composable
 fun SavingContent(
@@ -48,10 +46,7 @@ fun SavingContent(
 
     fun previousMinutesToCurrentHHMM(minutes: Int): String {
         val actualTime = LocalTime.now().minusMinutes(maxMinutes.toLong()).plusMinutes(minutes.toLong())
-        val formatter = DateTimeFormatter
-            .ofLocalizedTime(FormatStyle.SHORT)
-            .withLocale(Locale.getDefault())
-        return actualTime.format(formatter)
+        return TimeHelper.formatTime(actualTime)
     }
 
     Column(
