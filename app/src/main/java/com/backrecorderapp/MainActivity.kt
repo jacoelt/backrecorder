@@ -338,7 +338,7 @@ class MainActivity : AppCompatActivity() {
                             },
                             onShowTerms = { showTerms = true },
                             onShowPremiumDialog = { reason: PaywallReason -> premiumDialogReason = reason },
-                            trialDaysRemaining = trialDaysRemaining,
+                            trialEndDate = getTrialEndDate(),
                             viewModel,
                             screenMode,
                             onModeChange = { mode ->
@@ -439,6 +439,7 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun getTrialEndDate(): String {
+        //TODO: Fix to not always use current date
         val date = LocalDate.now().plusDays(TRIAL_LENGTH.toLong())
 
         val formatter = DateTimeFormatter

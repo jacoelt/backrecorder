@@ -19,8 +19,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.ALPHA_DISABLED
@@ -44,12 +42,11 @@ fun MainScreen(
     onToggleGDrive: (Boolean) -> Unit,
     onShowTerms: () -> Unit,
     onShowPremiumDialog: (reason: PaywallReason) -> Unit,
-    trialDaysRemaining: Int,
+    trialEndDate: String,
     viewModel: MainViewModel,
     screenMode: MainScreenMode,
     onModeChange: (MainScreenMode) -> Unit,
 ) {
-    val context = LocalContext.current
     val subscriptionMode by viewModel.subscriptionMode.collectAsState()
     val isFullVersionActive = arrayOf(SubscriptionMode.TRIAL, SubscriptionMode.PREMIUM).contains(subscriptionMode)
 
@@ -66,7 +63,7 @@ fun MainScreen(
     ) {
 
         // ===== Trial Banner =====
-        if (subscriptionMode == SubscriptionMode.FREE) {
+        if (subscriptionMode == SubscriptionMode.FREE || subscriptionMode == SubscriptionMode.TRIAL) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -74,12 +71,17 @@ fun MainScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = pluralStringResource(
-                        R.plurals.days_remaining,
-                        trialDaysRemaining,
-                        trialDaysRemaining
-                    ),
-                    modifier = Modifier.clickable { onShowPremiumDialog(PaywallReason.GENERIC) }
+                    text = when(subscriptionMode) {
+                        SubscriptionMode.FREE ->
+                            stringResource(R.string.free_banner)
+                        SubscriptionMode.TRIAL ->
+                            stringResource(R.string.trial_banner, trialEndDate)
+                        else -> throw IllegalStateException()
+                    },
+                    style = MaterialTheme.typography.bodyMedium.copy(),
+                    modifier = Modifier
+                        .padding(bottom = 8.dp)
+                        .clickable { onShowPremiumDialog(PaywallReason.GENERIC) }
                 )
             }
         }
