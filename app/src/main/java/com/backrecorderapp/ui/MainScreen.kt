@@ -41,14 +41,14 @@ fun MainScreen(
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
     onShowTerms: () -> Unit,
-    onShowPremiumDialog: (reason: PaywallReason) -> Unit,
+    onBannerClick: () -> Unit,
     trialEndDate: String,
     viewModel: MainViewModel,
     screenMode: MainScreenMode,
     onModeChange: (MainScreenMode) -> Unit,
 ) {
     val subscriptionMode by viewModel.subscriptionMode.collectAsState()
-    val isFullVersionActive = arrayOf(SubscriptionMode.TRIAL, SubscriptionMode.PREMIUM).contains(subscriptionMode)
+    val isCloudEnabled = arrayOf(SubscriptionMode.TRIAL, SubscriptionMode.PREMIUM).contains(subscriptionMode)
 
     fun formatMinutesToHHMM(minutes: Int): String {
         val h = minutes / 60
@@ -70,19 +70,24 @@ fun MainScreen(
                     .padding(vertical = 8.dp, horizontal = 16.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = when(subscriptionMode) {
-                        SubscriptionMode.FREE ->
-                            stringResource(R.string.free_banner)
-                        SubscriptionMode.TRIAL ->
-                            stringResource(R.string.trial_banner, trialEndDate)
-                        else -> throw IllegalStateException()
-                    },
-                    style = MaterialTheme.typography.bodyMedium.copy(),
-                    modifier = Modifier
-                        .padding(bottom = 8.dp)
-                        .clickable { onShowPremiumDialog(PaywallReason.GENERIC) }
-                )
+                if (subscriptionMode == SubscriptionMode.FREE) {
+                    Text(
+                        text = stringResource(R.string.free_banner),
+                        style = MaterialTheme.typography.bodyMedium.copy(),
+                        modifier = Modifier
+                            .padding(bottom = 8.dp)
+                            .clickable { onBannerClick() }
+                    )
+                }
+
+                if (subscriptionMode == SubscriptionMode.TRIAL) {
+                    Text(
+                        text = stringResource(R.string.trial_banner, trialEndDate),
+                        style = MaterialTheme.typography.bodyMedium.copy(),
+                        modifier = Modifier
+                            .padding(bottom = 8.dp)
+                    )
+                }
             }
         }
 
@@ -126,8 +131,7 @@ fun MainScreen(
                     currentRecordingDuration = currentRecordingDuration,
                     useGDrive = useGDrive,
                     onToggleGDrive = onToggleGDrive,
-                    onShowPremiumDialog = onShowPremiumDialog,
-                    isFullVersionActive = isFullVersionActive,
+                    isCloudEnabled = isCloudEnabled,
                     onSaveClick = { onModeChange(MainScreenMode.SAVING) },
                     formatDuration = ::formatMinutesToHHMM
                 )
@@ -136,7 +140,6 @@ fun MainScreen(
             MainScreenMode.SAVING -> {
                 SavingContent(
                     maxMinutes = currentRecordingDuration.value,
-                    onShowPremiumDialog = onShowPremiumDialog,
                     onConfirmSave = { start, end ->
                         if (startSaveRecording(start, end)) {
                             onModeChange(MainScreenMode.RECORDING)

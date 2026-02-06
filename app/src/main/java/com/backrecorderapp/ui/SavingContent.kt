@@ -38,7 +38,6 @@ fun SavingContent(
     maxMinutes: Int,
     onConfirmSave: (startMinute: Int, endMinute: Int) -> Unit,
     onCancel: () -> Unit,
-    onShowPremiumDialog: (reason: PaywallReason) -> Unit,
 ) {
 
     val DEFAULT_RANGE = (maxMinutes - 15).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()

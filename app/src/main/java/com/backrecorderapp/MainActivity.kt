@@ -324,6 +324,10 @@ class MainActivity : AppCompatActivity() {
                             isRecording = isRecording,
                             currentRecordingDuration,
                             startSaveRecording = { start, end ->
+                                if (start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
+                                    premiumDialogReason = PaywallReason.RECORDING_DURATION
+                                    return@MainScreen false
+                                }
                                 pendingSaveStart.value = start
                                 pendingSaveEnd.value = end
                                 launchFilePicker()
@@ -331,19 +335,21 @@ class MainActivity : AppCompatActivity() {
                             },
                             useGDrive = canUseCloud,
                             onToggleGDrive = { enabled ->
+                                if (!subscriptionManager.isPremium() && !subscriptionManager.isTrial()) {
+                                    premiumDialogReason = PaywallReason.CLOUD_BACKUP
+                                    return@MainScreen
+                                }
                                 lifecycleScope.launch {
                                     settings.setUseGDrive(enabled)
                                     if (enabled) setupGDrive()
                                 }
                             },
                             onShowTerms = { showTerms = true },
-                            onShowPremiumDialog = { reason: PaywallReason -> premiumDialogReason = reason },
+                            onBannerClick = { premiumDialogReason = PaywallReason.GENERIC },
                             trialEndDate = getTrialEndDate(),
                             viewModel,
                             screenMode,
-                            onModeChange = { mode ->
-                                screenMode = mode
-                            },
+                            onModeChange = { screenMode = it },
                         )
                     }
                 }
