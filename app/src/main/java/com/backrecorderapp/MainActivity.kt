@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -30,19 +29,20 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.backrecorderapp.helpers.BillingManager
 import com.backrecorderapp.helpers.GDriveHelper
-import com.backrecorderapp.helpers.PREF_PREMIUM_ACTIVE
 import com.backrecorderapp.helpers.SecurePreferences
 import com.backrecorderapp.helpers.SettingsDataStore
+import com.backrecorderapp.helpers.SubscriptionManager
+import com.backrecorderapp.helpers.SubscriptionMode
+import com.backrecorderapp.helpers.SubscriptionOffer
 import com.backrecorderapp.helpers.TrialManager
 import com.backrecorderapp.services.RecordingService
 import com.backrecorderapp.services.SaveRecordingService
 import com.backrecorderapp.ui.MainScreen
 import com.backrecorderapp.ui.MainScreenMode
-import com.backrecorderapp.ui.PremiumRequiredDialog
-import com.backrecorderapp.ui.SubscriptionOffer
 import com.backrecorderapp.ui.SubscriptionPicker
 import com.backrecorderapp.ui.TermsOfUseScreen
 import com.backrecorderapp.ui.TrialDialog
+import com.backrecorderapp.ui.model.MainViewModel
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +54,8 @@ import java.util.Locale
 
 const val SKU_ID = "main_subscription"
 const val ALPHA_DISABLED = 0.5f
+const val MAX_MINUTES_FREE_MODE = 15
+const val MAX_MINUTES_TOTAL = 24 * 60  // 24h
 
 class MainActivity : AppCompatActivity() {
 
@@ -62,8 +64,6 @@ class MainActivity : AppCompatActivity() {
     private val isRecording = mutableStateOf(false)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var trialDaysRemaining: Int = 30
-    private var isSubscriptionActive = mutableStateOf(false)
-    private var isFullVersionActive: Boolean = false
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
     private lateinit var billingManager: BillingManager
@@ -71,6 +71,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var subscriptionOfferList: List<SubscriptionOffer>
     private var pendingSaveStart = mutableStateOf<Int?>(null)
     private var pendingSaveEnd = mutableStateOf<Int?>(null)
+    private var subscriptionManager = SubscriptionManager(this)
+    private var viewModel = MainViewModel(subscriptionManager)
 
     companion object {
         private const val TAG = "MainActivity"
@@ -142,7 +144,7 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             billingManager.syncSubscriptionState()
-            isSubscriptionActive.value = isPremium()
+            subscriptionManager.load()
             try {
                 subscriptionOfferList = billingManager.getSubscriptionOffers(SKU_ID)
             } catch (e: Exception) {
@@ -180,7 +182,8 @@ class MainActivity : AppCompatActivity() {
             TinkConfig.register()
             settings = SettingsDataStore.getInstance(this.applicationContext)
             gDriveHelper = GDriveHelper(this.applicationContext, securePreferences)
-            billingManager = BillingManager(this.applicationContext, securePreferences)
+            billingManager = BillingManager(this.applicationContext, subscriptionManager)
+            // TODO: Move this to initialisation of class ??
         } catch (e: Exception) {
             Log.e(TAG, "Initialization failed", e)
             Toast.makeText(this, "Initialization error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -203,7 +206,7 @@ class MainActivity : AppCompatActivity() {
             billingManager.startConnection(onConnected = {
                 lifecycleScope.launch {
                     billingManager.syncSubscriptionState()
-                    isSubscriptionActive.value = isPremium()
+                    subscriptionManager.load()
                 }
             })
         } catch (e: Exception) {
@@ -215,22 +218,18 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
 
-        isSubscriptionActive.value = isPremium()
-        isFullVersionActive = trialDaysRemaining > 0 || isSubscriptionActive.value
-
         setContent {
             BackRecorderTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val useGDrivePref by settings.getUseGDriveFlow().collectAsState(initial = false)
-                    val useGDrive = isFullVersionActive && useGDrivePref
 
                     var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
                     var showTerms by rememberSaveable { mutableStateOf(false) }
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
                     var isFirstLaunch by rememberSaveable { mutableStateOf(false) }
+                    var canUseCloud by rememberSaveable { mutableStateOf(false) }
                     var showPremiumDialog by rememberSaveable { mutableStateOf(false) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
                     var selectedOffer by remember { mutableStateOf<SubscriptionOffer?>(null) }
@@ -245,6 +244,7 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         isFirstLaunch = settings.isFirstLaunch()
+                        canUseCloud = canUseCloud()
                     }
 
 
@@ -318,7 +318,7 @@ class MainActivity : AppCompatActivity() {
                                 launchFilePicker()
                                 return@MainScreen true
                             },
-                            useGDrive = useGDrive,
+                            useGDrive = canUseCloud,
                             onToggleGDrive = { enabled ->
                                 lifecycleScope.launch {
                                     settings.setUseGDrive(enabled)
@@ -328,8 +328,7 @@ class MainActivity : AppCompatActivity() {
                             onShowTerms = { showTerms = true },
                             onShowPremiumDialog = { showPremiumDialog = true },
                             trialDaysRemaining = trialDaysRemaining,
-                            isSubscriptionActive = isSubscriptionActive.value,
-                            isFullVersionActive = isFullVersionActive,
+                            viewModel,
                             screenMode,
                             onModeChange = { mode ->
                                 screenMode = mode
@@ -339,10 +338,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-    }
-
-    private fun isPremium(): Boolean {
-        return securePreferences.getString(PREF_PREMIUM_ACTIVE)?.toBoolean() == true
     }
 
     private fun startRecording() {
@@ -419,6 +414,18 @@ class MainActivity : AppCompatActivity() {
             onFail()
         }
     }
+
+    private suspend fun canUseCloud(): Boolean {
+        val useGDrivePref = settings.getUseGDrive()
+        return useGDrivePref && (subscriptionManager.isTrial() || subscriptionManager.isPremium())
+    }
+
+    private fun maxRecordingDurationMinutes(): Int =
+        when (subscriptionManager.mode.value) {
+            SubscriptionMode.FREE -> MAX_MINUTES_FREE_MODE
+            SubscriptionMode.TRIAL,
+            SubscriptionMode.PREMIUM -> MAX_MINUTES_TOTAL
+        }
 
     override fun onDestroy() {
         super.onDestroy()

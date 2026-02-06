@@ -14,6 +14,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -23,6 +25,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.ALPHA_DISABLED
 import com.backrecorderapp.R
+import com.backrecorderapp.helpers.SubscriptionMode
+import com.backrecorderapp.ui.model.MainViewModel
 
 enum class MainScreenMode {
     RECORDING,
@@ -41,12 +45,13 @@ fun MainScreen(
     onShowTerms: () -> Unit,
     onShowPremiumDialog: () -> Unit,
     trialDaysRemaining: Int,
-    isSubscriptionActive: Boolean,
-    isFullVersionActive: Boolean,
-    mode: MainScreenMode,
+    viewModel: MainViewModel,
+    screenMode: MainScreenMode,
     onModeChange: (MainScreenMode) -> Unit,
 ) {
     val context = LocalContext.current
+    val subscriptionMode by viewModel.subscriptionMode.collectAsState()
+    val isFullVersionActive = arrayOf(SubscriptionMode.TRIAL, SubscriptionMode.PREMIUM).contains(subscriptionMode)
 
     fun formatMinutesToHHMM(minutes: Int): String {
         val h = minutes / 60
@@ -61,7 +66,7 @@ fun MainScreen(
     ) {
 
         // ===== Trial Banner =====
-        if (!isSubscriptionActive) {
+        if (subscriptionMode == SubscriptionMode.FREE) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -110,7 +115,7 @@ fun MainScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // ===== Content =====
-        when (mode) {
+        when (screenMode) {
             MainScreenMode.RECORDING -> {
                 RecordingContent(
                     startRecording = startRecording,

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
+import com.backrecorderapp.MAX_MINUTES_FREE_MODE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -239,7 +240,7 @@ class GDriveHelper(
         }
     }
 
-    fun deleteOldestFromStaging(maxFiles: Int = 10) {
+    fun deleteOldestFromStaging(maxFiles: Int = MAX_MINUTES_FREE_MODE) {
         scope.launch {
             val enabled = settingsDataStore.getUseGDrive()
             if (!enabled) {

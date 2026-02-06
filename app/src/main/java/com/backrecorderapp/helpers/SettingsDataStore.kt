@@ -3,7 +3,7 @@ package com.backrecorderapp.helpers
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -17,6 +17,7 @@ class SettingsDataStore private constructor(private val context: Context) {
         private val PREF_USE_GDRIVE = booleanPreferencesKey("use_gdrive")
         private val PREF_TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
         private val PREF_FIRST_LAUNCH = booleanPreferencesKey("first_launch")
+        private val PREF_SUB_MODE = stringPreferencesKey("subscription_mode")
 
 
         // Singleton instance
@@ -73,5 +74,18 @@ class SettingsDataStore private constructor(private val context: Context) {
         return dataStore.data.map { prefs ->
             prefs[PREF_FIRST_LAUNCH] ?: true
         }.first()
+    }
+
+    suspend fun getSubscriptionMode(): SubscriptionMode {
+        val value = dataStore.data.first()[PREF_SUB_MODE]
+        return runCatching {
+            SubscriptionMode.valueOf(value ?: SubscriptionMode.FREE.name)
+        }.getOrDefault(SubscriptionMode.FREE)
+    }
+
+    suspend fun saveSubscriptionMode(mode: SubscriptionMode) {
+        dataStore.edit {
+            it[PREF_SUB_MODE] = mode.name
+        }
     }
 }

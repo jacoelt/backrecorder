@@ -3,14 +3,33 @@ package com.backrecorderapp.helpers
 import android.app.Activity
 import android.content.Context
 import android.util.Log
-import com.android.billingclient.api.*
+import com.android.billingclient.api.AcknowledgePurchaseParams
+import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingFlowParams
+import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.PendingPurchasesParams
+import com.android.billingclient.api.ProductDetails
+import com.android.billingclient.api.Purchase
+import com.android.billingclient.api.PurchasesUpdatedListener
+import com.android.billingclient.api.QueryProductDetailsParams
+import com.android.billingclient.api.QueryPurchasesParams
 import com.backrecorderapp.ui.SubscriptionOffer
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-const val PREF_PREMIUM_ACTIVE = "premium_active"
+data class SubscriptionOffer(
+    val productId: String,
+    val offerToken: String,
+    val basePlanId: String,
+    val billingPeriod: String, // P1M, P1Y, etc.
+    val priceAmountMicros: Long,
+    val priceCurrencyCode: String,
+    val formattedPrice: String
+)
 
 /**
  * Simple BillingManager that:
@@ -21,7 +40,7 @@ const val PREF_PREMIUM_ACTIVE = "premium_active"
  */
 class BillingManager(
     private val context: Context,
-    private val securePreferences: SecurePreferences
+    private val subscriptionManager: SubscriptionManager,
 ) : PurchasesUpdatedListener {
 
     private val productDetailsMap = mutableMapOf<String, ProductDetails>()
@@ -121,29 +140,27 @@ class BillingManager(
             billingClient.acknowledgePurchase(acknowledgeParams) { billingResult ->
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     Log.d(TAG, "Purchase acknowledged")
-                    onSubscriptionActivated()
+                    runBlocking { onSubscriptionActivated() }
                 } else {
                     Log.e(TAG, "Failed to acknowledge purchase: ${billingResult.responseCode}")
                 }
             }
         } else {
             // Already acknowledged (e.g. restored purchase)
-            onSubscriptionActivated()
+
+            runBlocking { onSubscriptionActivated() }
         }
     }
 
-    private fun onSubscriptionActivated() {
+    private suspend fun onSubscriptionActivated() {
         Log.d(TAG, "Subscription activated")
-
-        securePreferences.saveString(PREF_PREMIUM_ACTIVE, "true")
+        subscriptionManager.setMode(SubscriptionMode.PREMIUM)
     }
 
     suspend fun syncSubscriptionState() {
-        val hasSubscription = hasActiveSubscription()
-        securePreferences.saveString(
-            PREF_PREMIUM_ACTIVE,
-            hasSubscription.toString()
-        )
+        if (hasActiveSubscription()) {
+            subscriptionManager.setMode(SubscriptionMode.PREMIUM)
+        }
     }
 
     /**

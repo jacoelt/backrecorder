@@ -35,7 +35,7 @@ class RecordingService : Service() {
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000
         const val AUDIO_RECORDINGS_DIR = "audio_recordings"
-        const val DEFAULT_DURATION = 1440
+        const val DEFAULT_DURATION = MAX_MINUTES_TOTAL
     }
 
     private var gDriveHelper: GDriveHelper? = null
