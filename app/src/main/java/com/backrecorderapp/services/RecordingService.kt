@@ -12,6 +12,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.backrecorderapp.MAX_MINUTES_TOTAL
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.GDriveHelper

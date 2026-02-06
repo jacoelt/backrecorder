@@ -43,7 +43,7 @@ fun MainScreen(
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
     onShowTerms: () -> Unit,
-    onShowPremiumDialog: () -> Unit,
+    onShowPremiumDialog: (reason: PaywallReason) -> Unit,
     trialDaysRemaining: Int,
     viewModel: MainViewModel,
     screenMode: MainScreenMode,
@@ -79,7 +79,7 @@ fun MainScreen(
                         trialDaysRemaining,
                         trialDaysRemaining
                     ),
-                    modifier = Modifier.clickable { onShowPremiumDialog() }
+                    modifier = Modifier.clickable { onShowPremiumDialog(PaywallReason.GENERIC) }
                 )
             }
         }
@@ -134,6 +134,7 @@ fun MainScreen(
             MainScreenMode.SAVING -> {
                 SavingContent(
                     maxMinutes = currentRecordingDuration.value,
+                    onShowPremiumDialog = onShowPremiumDialog,
                     onConfirmSave = { start, end ->
                         if (startSaveRecording(start, end)) {
                             onModeChange(MainScreenMode.RECORDING)

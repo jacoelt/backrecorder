@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -39,6 +40,8 @@ import com.backrecorderapp.services.RecordingService
 import com.backrecorderapp.services.SaveRecordingService
 import com.backrecorderapp.ui.MainScreen
 import com.backrecorderapp.ui.MainScreenMode
+import com.backrecorderapp.ui.PaywallReason
+import com.backrecorderapp.ui.PremiumPaywallDialog
 import com.backrecorderapp.ui.SubscriptionPicker
 import com.backrecorderapp.ui.TermsOfUseScreen
 import com.backrecorderapp.ui.TrialDialog
@@ -49,6 +52,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
@@ -56,6 +61,7 @@ const val SKU_ID = "main_subscription"
 const val ALPHA_DISABLED = 0.5f
 const val MAX_MINUTES_FREE_MODE = 15
 const val MAX_MINUTES_TOTAL = 24 * 60  // 24h
+const val TRIAL_LENGTH = 30  // days
 
 class MainActivity : AppCompatActivity() {
 
@@ -71,8 +77,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var subscriptionOfferList: List<SubscriptionOffer>
     private var pendingSaveStart = mutableStateOf<Int?>(null)
     private var pendingSaveEnd = mutableStateOf<Int?>(null)
-    private var subscriptionManager = SubscriptionManager(this)
-    private var viewModel = MainViewModel(subscriptionManager)
+    private lateinit var subscriptionManager: SubscriptionManager
+    private lateinit var viewModel: MainViewModel
 
     companion object {
         private const val TAG = "MainActivity"
@@ -181,9 +187,10 @@ class MainActivity : AppCompatActivity() {
         try {
             TinkConfig.register()
             settings = SettingsDataStore.getInstance(this.applicationContext)
+            subscriptionManager = SubscriptionManager(settings)
             gDriveHelper = GDriveHelper(this.applicationContext, securePreferences)
             billingManager = BillingManager(this.applicationContext, subscriptionManager)
-            // TODO: Move this to initialisation of class ??
+            viewModel = MainViewModel(subscriptionManager)
         } catch (e: Exception) {
             Log.e(TAG, "Initialization failed", e)
             Toast.makeText(this, "Initialization error: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -230,7 +237,7 @@ class MainActivity : AppCompatActivity() {
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
                     var isFirstLaunch by rememberSaveable { mutableStateOf(false) }
                     var canUseCloud by rememberSaveable { mutableStateOf(false) }
-                    var showPremiumDialog by rememberSaveable { mutableStateOf(false) }
+                    var premiumDialogReason by rememberSaveable { mutableStateOf<PaywallReason?>(null) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
                     var selectedOffer by remember { mutableStateOf<SubscriptionOffer?>(null) }
                     var screenMode by remember { mutableStateOf(MainScreenMode.RECORDING) }
@@ -283,14 +290,18 @@ class MainActivity : AppCompatActivity() {
                             )
                         }
 
-                        if (showPremiumDialog) {
-                            PremiumRequiredDialog (
-                                onOpenSubscriptions = {
+                        if (premiumDialogReason != null) {
+                            PremiumPaywallDialog(
+                                reason = premiumDialogReason!!,
+                                yearlyPrice = stringResource(R.string.yearly_price),
+                                monthlyPrice = stringResource(R.string.monthly_equivalent_price),
+                                trialEndDate = getTrialEndDate(),
+                                onStartTrial = {
                                     Log.d(TAG, "PremiumRequiredDialog: onOpenSubscriptions")
-                                    showPremiumDialog = false
+                                    premiumDialogReason = null
                                     showSubscriptionPicker = true
                                 },
-                                onDismiss = { showPremiumDialog = false }
+                                onDismiss = { premiumDialogReason = null }
                             )
                         }
 
@@ -300,7 +311,7 @@ class MainActivity : AppCompatActivity() {
                                 selectedOffer = selectedOffer,
                                 onOfferSelected = { selectedOffer = it },
                                 onDismiss = { showSubscriptionPicker = false },
-                                onSubscribeClicked = { offer ->
+                                onSubscribeClicked = { offer: SubscriptionOffer ->
                                     billingManager.launchSubscriptionPurchase(this@MainActivity, offer)
                                     showSubscriptionPicker = false
                                 }
@@ -326,7 +337,7 @@ class MainActivity : AppCompatActivity() {
                                 }
                             },
                             onShowTerms = { showTerms = true },
-                            onShowPremiumDialog = { showPremiumDialog = true },
+                            onShowPremiumDialog = { reason: PaywallReason -> premiumDialogReason = reason },
                             trialDaysRemaining = trialDaysRemaining,
                             viewModel,
                             screenMode,
@@ -426,6 +437,15 @@ class MainActivity : AppCompatActivity() {
             SubscriptionMode.TRIAL,
             SubscriptionMode.PREMIUM -> MAX_MINUTES_TOTAL
         }
+
+    private fun getTrialEndDate(): String {
+        val date = LocalDate.now().plusDays(TRIAL_LENGTH.toLong())
+
+        val formatter = DateTimeFormatter
+            .ofPattern("d MMM", Locale.getDefault())
+
+        return date.format(formatter)
+    }
 
     override fun onDestroy() {
         super.onDestroy()

@@ -1,6 +1,5 @@
 package com.backrecorderapp.helpers
 
-import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -11,9 +10,8 @@ enum class SubscriptionMode {
     PREMIUM
 }
 
-class SubscriptionManager(context: Context) {
+class SubscriptionManager(private var dataStore: SettingsDataStore) {
 
-    private val dataStore = SettingsDataStore.getInstance(context.applicationContext)
     private val _mode = MutableStateFlow(SubscriptionMode.FREE)
     val mode: StateFlow<SubscriptionMode> = _mode.asStateFlow()
 

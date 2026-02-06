@@ -42,5 +42,7 @@
     <string name="save_recording_title">Save recent audio</string>
     <string name="quick_presets">Quick presets</string>
     <string name="subtitle">\"I should have recorded that!\"</string>
+    <string name="yearly_price">14.99 USD</string>
+    <string name="monthly_equivalent_price">1.25 USD</string>
 
 </resources>

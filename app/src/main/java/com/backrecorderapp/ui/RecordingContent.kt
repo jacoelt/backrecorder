@@ -35,7 +35,7 @@ fun RecordingContent(
     currentRecordingDuration: MutableState<Int>,
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
-    onShowPremiumDialog: () -> Unit,
+    onShowPremiumDialog: (reason: PaywallReason) -> Unit,
     isFullVersionActive: Boolean,
     onSaveClick: () -> Unit,
     formatDuration: (Int) -> String,
@@ -94,7 +94,7 @@ fun RecordingContent(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
-                            if (!isFullVersionActive) onShowPremiumDialog()
+                            if (!isFullVersionActive) onShowPremiumDialog(PaywallReason.CLOUD_BACKUP)
                         }
                 ) {
                     Text(
@@ -111,7 +111,7 @@ fun RecordingContent(
                                     Toast.LENGTH_SHORT
                                 ).show()
                             } else if (!isFullVersionActive) {
-                                onShowPremiumDialog()
+                                onShowPremiumDialog(PaywallReason.CLOUD_BACKUP)
                             } else {
                                 onToggleGDrive(it)
                             }

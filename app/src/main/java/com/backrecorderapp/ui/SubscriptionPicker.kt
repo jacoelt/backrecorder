@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.backrecorderapp.R
+import com.backrecorderapp.helpers.SubscriptionOffer
 
 @Composable
 fun SubscriptionPicker(
@@ -81,14 +82,14 @@ fun SubscriptionPicker(
                         enabled = selectedOffer != null,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(stringResource(R.string.premium_required_button_subscribe))
+                        Text(stringResource(R.string.paywall_subscribe))
                     }
 
                     TextButton(
                         onClick = onDismiss,
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     ) {
-                        Text(stringResource(R.string.premium_required_button_cancel))
+                        Text(stringResource(R.string.paywall_cancel))
                     }
                 }
             }
