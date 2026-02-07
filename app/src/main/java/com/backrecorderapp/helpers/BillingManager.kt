@@ -3,6 +3,10 @@ package com.backrecorderapp.helpers
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
@@ -14,14 +18,17 @@ import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
+import com.backrecorderapp.workers.TrialReminderWorker
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 const val SKU_ID = "main_subscription"
+const val REMINDER_DAYS_BEFORE_END = 3L
 
 data class SubscriptionOffer(
     val productId: String,
@@ -36,6 +43,7 @@ data class SubscriptionOffer(
 
     val hasTrial: Boolean,
     val trialPeriod: String?,       // P30D
+    val trialEndMillis: Long?
 )
 
 data class SubscriptionOffers (
@@ -52,7 +60,7 @@ data class SubscriptionOffers (
  * Note: enablePendingPurchases(...) requires a PendingPurchasesParams instance.
  */
 class BillingManager(
-    context: Context,
+    private val context: Context,
     private val subscriptionManager: SubscriptionManager,
 ) : PurchasesUpdatedListener {
 
@@ -168,6 +176,35 @@ class BillingManager(
     private suspend fun onSubscriptionActivated() {
         Log.d(TAG, "Subscription activated")
         subscriptionManager.setMode(SubscriptionMode.PREMIUM)
+
+        val subscriptionOffers = subscriptionManager.currentOffers
+        val trialEndMillis = subscriptionOffers.value?.monthly?.trialEndMillis
+            ?: subscriptionOffers.value?.yearly?.trialEndMillis
+            ?: return
+
+        scheduleTrialReminder(context, trialEndMillis)
+    }
+
+    private fun scheduleTrialReminder(context: Context, trialEndMillis: Long) {
+        val reminderTime = trialEndMillis - TimeUnit.DAYS.toMillis(REMINDER_DAYS_BEFORE_END)
+        val delay = reminderTime - System.currentTimeMillis()
+
+        if (delay <= 0) return
+
+        val data = Data.Builder()
+            .putLong(TrialReminderWorker.INPUT_TRIAL_END, trialEndMillis)
+            .build()
+
+        val workRequest = OneTimeWorkRequestBuilder<TrialReminderWorker>()
+            .setInitialDelay(delay, TimeUnit.MILLISECONDS)
+            .setInputData(data)
+            .build()
+
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "EndOfTrialReminder",
+            ExistingWorkPolicy.KEEP,
+            workRequest
+        )
     }
 
     suspend fun syncSubscriptionState() {
@@ -280,6 +317,8 @@ class BillingManager(
                     recurringPhase.formattedPrice
                 }
 
+                val trialEndMillis = trialPhase?.let { System.currentTimeMillis() + iso8601PeriodToMillis(it.billingPeriod) }
+
                 val offerInstance = SubscriptionOffer(
                     productId = productDetails.productId,
                     offerToken = offer.offerToken,
@@ -290,7 +329,8 @@ class BillingManager(
                     priceCurrencyCode = recurringPhase.priceCurrencyCode,
                     monthlyEquivalent = monthlyEquivalent,
                     hasTrial = trialPhase != null,
-                    trialPeriod = trialPhase?.billingPeriod
+                    trialPeriod = trialPhase?.billingPeriod,
+                    trialEndMillis = trialEndMillis,
                 )
 
 
@@ -309,11 +349,33 @@ class BillingManager(
 
             val offers = SubscriptionOffers(yearly, monthly)
 
+            subscriptionManager.setCurrentOffers(offers)
+
             Log.d(TAG, "getSubscriptionOffers: Result $offers")
             cont.resume(offers)
         }
     }
 
+    /**
+     * Convert an ISO 8601 period (ex: P7D, P1M) to milliseconds
+     */
+    fun iso8601PeriodToMillis(period: String): Long {
+        return when {
+            period.startsWith("P") && period.endsWith("D") -> {
+                val days = period.removePrefix("P").removeSuffix("D").toLongOrNull() ?: 0L
+                TimeUnit.DAYS.toMillis(days)
+            }
+            period.startsWith("P") && period.endsWith("M") -> {
+                val months = period.removePrefix("P").removeSuffix("M").toLongOrNull() ?: 0L
+                TimeUnit.DAYS.toMillis(months * 30)
+            }
+            period.startsWith("P") && period.endsWith("Y") -> {
+                val years = period.removePrefix("P").removeSuffix("Y").toLongOrNull() ?: 0L
+                TimeUnit.DAYS.toMillis(years * 365)
+            }
+            else -> 0L
+        }
+    }
 
     fun endConnection() {
         if (billingClient.isReady) billingClient.endConnection()

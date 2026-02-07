@@ -29,6 +29,7 @@
     <string name="error_setup_gdrive">There was a problem connecting to Google Drive.</string>
     <string name="error_open_subscriptions">Error when trying to open subscriptions</string>
     <string name="error_save_gdrive">There was a problem when saving the file on Google Drive</string>
+    <string name="error_no_offers">No subscription details could be fetched from Google Play Store.</string>
 
     <string name="star_icon_description">Star icon</string>
     <string name="saving_recording">Saving record…</string>
@@ -45,6 +46,9 @@
     <string name="subtitle">\"I should have recorded that!\"</string>
 
     <string name="monthly_equivalent_of_yearly">≈ %1$s / month</string>
-    <string name="error_no_offers">No subscription details could be fetched from Google Play Store.</string>
+
+    <string name="trial_ending_soon">Trial ending soon</string>
+    <string name="trial_ends_on">Your free trial ends on %1$s. Cancel anytime in Play Store.</string>
+
 
 </resources>

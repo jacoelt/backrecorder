@@ -17,6 +17,9 @@ class SubscriptionManager(
     private val _mode = MutableStateFlow(SubscriptionMode.FREE)
     val mode: StateFlow<SubscriptionMode> = _mode.asStateFlow()
 
+    private val _currentOffers = MutableStateFlow<SubscriptionOffers?>(null)
+    val currentOffers: StateFlow<SubscriptionOffers?> = _currentOffers.asStateFlow()
+
     suspend fun load() {
         _mode.value = dataStore.getSubscriptionMode()
     }
@@ -34,4 +37,8 @@ class SubscriptionManager(
 
     fun isFree(): Boolean =
         _mode.value == SubscriptionMode.FREE
+
+    fun setCurrentOffers(offers: SubscriptionOffers) {
+        _currentOffers.value = offers
+    }
 }
