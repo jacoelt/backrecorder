@@ -149,10 +149,7 @@ fun PremiumPaywallDialog(
                         )
 
                         Text(
-                            text = stringResource(
-                                R.string.paywall_monthly_equivalent,
-                                monthlyPrice
-                            ),
+                            text = monthlyPrice,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }

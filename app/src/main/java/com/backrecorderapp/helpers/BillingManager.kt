@@ -17,18 +17,32 @@ import com.android.billingclient.api.QueryPurchasesParams
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+const val SKU_ID = "main_subscription"
 
 data class SubscriptionOffer(
     val productId: String,
     val offerToken: String,
     val basePlanId: String,
-    val billingPeriod: String, // P1M, P1Y, etc.
+
+    val billingPeriod: String,      // P1M / P1Y (recurring)
+    val formattedPrice: String,     // price after trial
     val priceAmountMicros: Long,
     val priceCurrencyCode: String,
-    val formattedPrice: String
+    val monthlyEquivalent: String,
+
+    val hasTrial: Boolean,
+    val trialPeriod: String?,       // P30D
 )
+
+data class SubscriptionOffers (
+    val yearly: SubscriptionOffer,
+    val monthly: SubscriptionOffer,
+)
+
 
 /**
  * Simple BillingManager that:
@@ -38,7 +52,7 @@ data class SubscriptionOffer(
  * Note: enablePendingPurchases(...) requires a PendingPurchasesParams instance.
  */
 class BillingManager(
-    private val context: Context,
+    context: Context,
     private val subscriptionManager: SubscriptionManager,
 ) : PurchasesUpdatedListener {
 
@@ -200,9 +214,7 @@ class BillingManager(
         }
     }
 
-    suspend fun getSubscriptionOffers(
-        productId: String
-    ): List<SubscriptionOffer> = suspendCancellableCoroutine { cont ->
+    suspend fun getSubscriptionOffers(): SubscriptionOffers? = suspendCancellableCoroutine { cont ->
 
         Log.d(TAG, "getSubscriptionOffers: Start")
 
@@ -216,7 +228,7 @@ class BillingManager(
             .setProductList(
                 listOf(
                     QueryProductDetailsParams.Product.newBuilder()
-                        .setProductId(productId)
+                        .setProductId(SKU_ID)
                         .setProductType(BillingClient.ProductType.SUBS)
                         .build()
                 )
@@ -235,28 +247,67 @@ class BillingManager(
 
             val productDetails = productDetailsList.productDetailsList.firstOrNull()
             if (productDetails == null) {
-                cont.resume(emptyList())
+                Log.d(TAG, "getSubscriptionOffers: No offers found")
+                cont.resume(null)
                 return@queryProductDetailsAsync
             }
 
             productDetailsMap[productDetails.productId] = productDetails
 
-            val offers = productDetails.subscriptionOfferDetails.orEmpty()
-                .flatMap { offer ->
-                    val pricingPhases = offer.pricingPhases.pricingPhaseList
+            var yearly: SubscriptionOffer? = null
+            var monthly: SubscriptionOffer? = null
 
-                    pricingPhases.map { phase ->
-                        SubscriptionOffer(
-                            productId = productDetails.productId,
-                            offerToken = offer.offerToken,
-                            basePlanId = offer.basePlanId,
-                            billingPeriod = phase.billingPeriod,
-                            priceAmountMicros = phase.priceAmountMicros,
-                            priceCurrencyCode = phase.priceCurrencyCode,
-                            formattedPrice = phase.formattedPrice
-                        )
-                    }
+            for (offer in productDetails.subscriptionOfferDetails.orEmpty()) {
+                val phases = offer.pricingPhases.pricingPhaseList
+
+                val trialPhase = phases.firstOrNull { it.priceAmountMicros == 0L }
+                val recurringPhase = phases.firstOrNull { it.priceAmountMicros > 0 }
+
+                if (recurringPhase == null) {
+                    Log.d(TAG, "getSubscriptionOffers: No recurring phase found in offer")
+                    continue
                 }
+
+                val monthlyEquivalent = if (recurringPhase.billingPeriod == "P1Y") {
+                    val value =
+                        recurringPhase.priceAmountMicros / 12.0 / 1_000_000.0
+                    "%,.2f %s".format(
+                        Locale.getDefault(),
+                        value,
+                        recurringPhase.priceCurrencyCode
+                    )
+                } else {
+                    recurringPhase.formattedPrice
+                }
+
+                val offerInstance = SubscriptionOffer(
+                    productId = productDetails.productId,
+                    offerToken = offer.offerToken,
+                    basePlanId = offer.basePlanId,
+                    billingPeriod = recurringPhase.billingPeriod,
+                    formattedPrice = recurringPhase.formattedPrice,
+                    priceAmountMicros = recurringPhase.priceAmountMicros,
+                    priceCurrencyCode = recurringPhase.priceCurrencyCode,
+                    monthlyEquivalent = monthlyEquivalent,
+                    hasTrial = trialPhase != null,
+                    trialPeriod = trialPhase?.billingPeriod
+                )
+
+
+                when (recurringPhase.billingPeriod) {
+                    "P1Y" -> yearly = offerInstance
+                    "P1M" -> monthly = offerInstance
+                }
+            }
+            if (yearly == null || monthly == null) {
+                Log.d(TAG, "Incorrect subscription offers configuration. Yearly: $yearly ; Monthly: $monthly")
+                cont.resumeWithException(
+                    RuntimeException("Incorrect subscription offers configuration")
+                )
+                return@queryProductDetailsAsync
+            }
+
+            val offers = SubscriptionOffers(yearly, monthly)
 
             Log.d(TAG, "getSubscriptionOffers: Result $offers")
             cont.resume(offers)

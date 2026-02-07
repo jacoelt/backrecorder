@@ -9,11 +9,16 @@
     <string name="paywall_free_limit_generic">Some features are limited in the free version.</string>
 
     <string name="paywall_best_value">Best value</string>
-    <string name="paywall_monthly_equivalent">≈ %1$s / month</string>
     <string name="paywall_start_trial">Start 30-day free trial</string>
     <string name="paywall_continue_free">Continue with free version</string>
     <string name="paywall_trial_disclaimer">No charge today. Cancel anytime before %1$s.</string>
     <string name="paywall_subscribe">Subscribe</string>
     <string name="paywall_cancel">Cancel</string>
+
+    <string name="best_value">Best Value</string>
+    <string name="monthly">Monthly</string>
+    <string name="yearly">Yearly</string>
+
+    <string name="free_trial_30_days">Free for 30 days</string>
 
 </resources>

@@ -28,16 +28,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.SubscriptionOffer
+import com.backrecorderapp.helpers.SubscriptionOffers
 
 @Composable
 fun SubscriptionPicker(
-    offers: List<SubscriptionOffer>,
+    offers: SubscriptionOffers,
     selectedOffer: SubscriptionOffer?,
     onOfferSelected: (SubscriptionOffer) -> Unit,
     onDismiss: () -> Unit,
     onSubscribeClicked: (SubscriptionOffer) -> Unit
 ) {
-
     Dialog(onDismissRequest = { onDismiss() }) {
         Surface(
             shape = RoundedCornerShape(20.dp),
@@ -62,13 +62,16 @@ fun SubscriptionPicker(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
 
-                offers.forEach { offer ->
-                    SubscriptionOfferCard(
-                        offer = offer,
-                        selected = offer == selectedOffer,
-                        onClick = { onOfferSelected(offer) }
-                    )
-                }
+                SubscriptionOfferCard(
+                    offer = offers.yearly,
+                    selected = offers.yearly == selectedOffer,
+                    onClick = { onOfferSelected(offers.yearly) }
+                )
+                SubscriptionOfferCard(
+                    offer = offers.monthly,
+                    selected = offers.monthly == selectedOffer,
+                    onClick = { onOfferSelected(offers.monthly) }
+                )
 
                 Spacer(modifier = Modifier.height(8.dp))
                 Column(
@@ -138,6 +141,14 @@ private fun SubscriptionOfferCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    if (offer.hasTrial) {
+                        Text(
+                            text = stringResource(R.string.free_trial_30_days),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
                     Text(
                         text = when (offer.billingPeriod) {
                             "P1M" -> stringResource(R.string.monthly)
@@ -169,6 +180,15 @@ private fun SubscriptionOfferCard(
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
+
+            if (isYearly) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.monthly_equivalent_of_yearly, offer.monthlyEquivalent),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
     }
 }

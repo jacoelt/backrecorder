@@ -10,7 +10,9 @@ enum class SubscriptionMode {
     PREMIUM
 }
 
-class SubscriptionManager(private var dataStore: SettingsDataStore) {
+class SubscriptionManager(
+    private var dataStore: SettingsDataStore,
+) {
 
     private val _mode = MutableStateFlow(SubscriptionMode.FREE)
     val mode: StateFlow<SubscriptionMode> = _mode.asStateFlow()

@@ -27,12 +27,10 @@
     <string name="error_no_recording">No audio recorded.</string>
     <string name="error_cannot_change_while_recording">This cannot be changed while recording.</string>
     <string name="error_setup_gdrive">There was a problem connecting to Google Drive.</string>
-    <string name="star_icon_description">Star icon</string>
     <string name="error_open_subscriptions">Error when trying to open subscriptions</string>
     <string name="error_save_gdrive">There was a problem when saving the file on Google Drive</string>
-    <string name="monthly">Monthly</string>
-    <string name="yearly">Yearly</string>
-    <string name="best_value">Almost 40% cheaper!</string>
+
+    <string name="star_icon_description">Star icon</string>
     <string name="saving_recording">Saving record…</string>
     <string name="save_channel_name">Saving record</string>
     <string name="save_channel_description">Currently saving a recording</string>
@@ -45,7 +43,7 @@
     <string name="save_recording_title">Save recent audio</string>
     <string name="quick_presets">Quick presets</string>
     <string name="subtitle">\"I should have recorded that!\"</string>
-    <string name="yearly_price">14.99 USD</string>
-    <string name="monthly_equivalent_price">1.25 USD</string>
+
+    <string name="monthly_equivalent_of_yearly">≈ %1$s / month</string>
 
 </resources>

@@ -35,6 +35,7 @@ import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.SubscriptionManager
 import com.backrecorderapp.helpers.SubscriptionMode
 import com.backrecorderapp.helpers.SubscriptionOffer
+import com.backrecorderapp.helpers.SubscriptionOffers
 import com.backrecorderapp.helpers.TrialManager
 import com.backrecorderapp.services.RecordingService
 import com.backrecorderapp.services.SaveRecordingService
@@ -50,6 +51,7 @@ import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.time.LocalDate
@@ -57,7 +59,6 @@ import java.time.format.DateTimeFormatter
 import java.util.Date
 import java.util.Locale
 
-const val SKU_ID = "main_subscription"
 const val ALPHA_DISABLED = 0.5f
 const val MAX_MINUTES_FREE_MODE = 15
 const val MAX_MINUTES_TOTAL = 24 * 60  // 24h
@@ -74,7 +75,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var gDriveHelper: GDriveHelper
     private lateinit var billingManager: BillingManager
     private var securePreferences = SecurePreferences(this)
-    private lateinit var subscriptionOfferList: List<SubscriptionOffer>
+    private var subscriptionOffers: SubscriptionOffers? = null
     private var pendingSaveStart = mutableStateOf<Int?>(null)
     private var pendingSaveEnd = mutableStateOf<Int?>(null)
     private lateinit var subscriptionManager: SubscriptionManager
@@ -152,7 +153,7 @@ class MainActivity : AppCompatActivity() {
             billingManager.syncSubscriptionState()
             subscriptionManager.load()
             try {
-                subscriptionOfferList = billingManager.getSubscriptionOffers(SKU_ID)
+                subscriptionOffers = billingManager.getSubscriptionOffers()
             } catch (e: Exception) {
                 Log.w(TAG, "Error while getting subscriptions offers", e)
             }
@@ -291,31 +292,42 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         if (premiumDialogReason != null) {
-                            PremiumPaywallDialog(
-                                reason = premiumDialogReason!!,
-                                yearlyPrice = stringResource(R.string.yearly_price),
-                                monthlyPrice = stringResource(R.string.monthly_equivalent_price),
-                                trialEndDate = getTrialEndDate(),
-                                onStartTrial = {
-                                    Log.d(TAG, "PremiumRequiredDialog: onOpenSubscriptions")
-                                    premiumDialogReason = null
-                                    showSubscriptionPicker = true
-                                },
-                                onDismiss = { premiumDialogReason = null }
-                            )
+                            if (subscriptionOffers != null) {
+                                PremiumPaywallDialog(
+                                    reason = premiumDialogReason!!,
+                                    yearlyPrice = subscriptionOffers!!.yearly.formattedPrice,
+                                    monthlyPrice = stringResource(R.string.monthly_equivalent_of_yearly, subscriptionOffers!!.yearly.monthlyEquivalent),
+                                    trialEndDate = getTrialEndDate(),
+                                    onStartTrial = {
+                                        Log.d(TAG, "PremiumRequiredDialog: onOpenSubscriptions")
+                                        premiumDialogReason = null
+                                        showSubscriptionPicker = true
+                                    },
+                                    onDismiss = { premiumDialogReason = null }
+                                )
+                            } else {
+                                //TODO: Display an error window
+                            }
                         }
 
-                        if (showSubscriptionPicker){
-                            SubscriptionPicker(
-                                offers = subscriptionOfferList,
-                                selectedOffer = selectedOffer,
-                                onOfferSelected = { selectedOffer = it },
-                                onDismiss = { showSubscriptionPicker = false },
-                                onSubscribeClicked = { offer: SubscriptionOffer ->
-                                    billingManager.launchSubscriptionPurchase(this@MainActivity, offer)
-                                    showSubscriptionPicker = false
-                                }
-                            )
+                        if (showSubscriptionPicker) {
+                            if (subscriptionOffers != null) {
+                                SubscriptionPicker(
+                                    offers = subscriptionOffers!!,
+                                    selectedOffer = selectedOffer,
+                                    onOfferSelected = { selectedOffer = it },
+                                    onDismiss = { showSubscriptionPicker = false },
+                                    onSubscribeClicked = { offer: SubscriptionOffer ->
+                                        billingManager.launchSubscriptionPurchase(
+                                            this@MainActivity,
+                                            offer
+                                        )
+                                        showSubscriptionPicker = false
+                                    }
+                                )
+                            } else {
+                                //TODO: Display an error window
+                            }
                         }
 
                         MainScreen(
@@ -325,6 +337,9 @@ class MainActivity : AppCompatActivity() {
                             currentRecordingDuration,
                             startSaveRecording = { start, end ->
                                 if (start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
+                                    if (subscriptionOffers == null) {
+                                        subscriptionOffers = runBlocking { billingManager.getSubscriptionOffers() }
+                                    }
                                     premiumDialogReason = PaywallReason.RECORDING_DURATION
                                     return@MainScreen false
                                 }
@@ -336,6 +351,9 @@ class MainActivity : AppCompatActivity() {
                             useGDrive = canUseCloud,
                             onToggleGDrive = { enabled ->
                                 if (!subscriptionManager.isPremium() && !subscriptionManager.isTrial()) {
+                                    if (subscriptionOffers == null) {
+                                        subscriptionOffers = runBlocking { billingManager.getSubscriptionOffers() }
+                                    }
                                     premiumDialogReason = PaywallReason.CLOUD_BACKUP
                                     return@MainScreen
                                 }
@@ -345,7 +363,12 @@ class MainActivity : AppCompatActivity() {
                                 }
                             },
                             onShowTerms = { showTerms = true },
-                            onBannerClick = { premiumDialogReason = PaywallReason.GENERIC },
+                            onBannerClick = {
+                                if (subscriptionOffers == null) {
+                                    subscriptionOffers = runBlocking { billingManager.getSubscriptionOffers() }
+                                }
+                                premiumDialogReason = PaywallReason.GENERIC
+                            },
                             trialEndDate = getTrialEndDate(),
                             viewModel,
                             screenMode,
