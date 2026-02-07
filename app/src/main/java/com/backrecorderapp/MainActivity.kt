@@ -306,6 +306,7 @@ class MainActivity : AppCompatActivity() {
                                     onDismiss = { premiumDialogReason = null }
                                 )
                             } else {
+                                Toast.makeText(this, stringResource(R.string.error_no_offers), Toast.LENGTH_SHORT).show()
                                 //TODO: Display an error window
                             }
                         }
@@ -326,6 +327,7 @@ class MainActivity : AppCompatActivity() {
                                     }
                                 )
                             } else {
+                                Toast.makeText(this, stringResource(R.string.error_no_offers), Toast.LENGTH_SHORT).show()
                                 //TODO: Display an error window
                             }
                         }
