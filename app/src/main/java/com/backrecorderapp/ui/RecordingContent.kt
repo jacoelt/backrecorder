@@ -1,19 +1,16 @@
 package com.backrecorderapp.ui
 
 import android.widget.Toast
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.ALPHA_DISABLED
 import com.backrecorderapp.R
+
 
 @Composable
 fun RecordingContent(
@@ -43,113 +41,114 @@ fun RecordingContent(
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .fillMaxWidth()
     ) {
 
-        // ===== Controls =====
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = if (isRecording.value)
-                            stringResource(R.string.recording_started)
-                        else
-                            stringResource(R.string.recording_stopped),
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = isRecording.value,
-                        onCheckedChange = { checked ->
-                            if (checked) startRecording()
-                            else stopRecording()
-                        }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
+        // ===== Recording control (secondary) =====
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            tonalElevation = 1.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Text(
-                    text = stringResource(R.string.reminder),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .alpha(ALPHA_DISABLED)
+                    text = if (isRecording.value)
+                        stringResource(R.string.stop_recording)
+                    else
+                        stringResource(R.string.start_recording),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+
+                Switch(
+                    checked = isRecording.value,
+                    onCheckedChange = { checked ->
+                        if (checked) startRecording()
+                        else stopRecording()
+                    }
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // ===== GDrive =====
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            onToggleGDrive(!useGDrive)
-                        }
-                ) {
+        // ===== Cloud option =====
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            tonalElevation = 0.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = stringResource(R.string.setup_gdrive),
-                        modifier = Modifier.weight(1f)
+                        text = stringResource(R.string.save_to_gdrive),
+                        style = MaterialTheme.typography.bodyMedium
                     )
-                    Switch(
-                        checked = useGDrive,
-                        onCheckedChange = {
-                            if (isRecording.value) {
-                                Toast.makeText(
-                                    context,
-                                    R.string.error_cannot_change_while_recording,
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                onToggleGDrive(it)
-                            }
-                        },
-                        modifier = Modifier.alpha(
-                            if (isCloudEnabled && !isRecording.value) 1f else ALPHA_DISABLED
+
+                    if (!isCloudEnabled) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = stringResource(R.string.premium_required),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.alpha(ALPHA_DISABLED)
                         )
-                    )
+                    }
                 }
+
+                Switch(
+                    checked = useGDrive,
+                    onCheckedChange = {
+                        if (isRecording.value) {
+                            Toast.makeText(
+                                context,
+                                R.string.error_cannot_change_while_recording,
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            onToggleGDrive(it)
+                        }
+                    },
+                    modifier = Modifier.alpha(
+                        if (isCloudEnabled && !isRecording.value) 1f else ALPHA_DISABLED
+                    )
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(24.dp))
 
-        // ===== Save =====
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Button(
-                    onClick = onSaveClick,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                ) {
-                    Text(stringResource(R.string.save_recording))
-                }
+        // ===== Save action (contextual) =====
+        Button(
+            onClick = onSaveClick,
+            enabled = currentRecordingDuration.value > 0,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(stringResource(R.string.save_recording))
+        }
 
-                if (currentRecordingDuration.value > 0) {
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    Text(
-                        text = stringResource(
-                                R.string.current_duration,
-                                formatDuration(currentRecordingDuration.value)
-                            ),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier
-                            .align(Alignment.CenterHorizontally)
-                            .alpha(ALPHA_DISABLED)
-                    )
-                }
-            }
+        if (currentRecordingDuration.value > 0) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = stringResource(
+                    R.string.current_duration,
+                    formatDuration(currentRecordingDuration.value)
+                ),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .alpha(ALPHA_DISABLED)
+            )
         }
     }
 }

@@ -49,6 +49,17 @@
 
     <string name="trial_ending_soon">Trial ending soon</string>
     <string name="trial_ends_on">Your free trial ends on %1$s. Cancel anytime in Play Store.</string>
+    <string name="recording_on">Recording</string>
+    <string name="recording_idle">Idle</string>
+    <string name="stop_recording">Stop recording</string>
+    <string name="start_recording">Start recording</string>
+    <string name="save_to_gdrive">Save to Google Drive</string>
+    <string name="premium_required">Requires premium</string>
+    <string name="last_5">Last 5 min</string>
+    <string name="last_15">Last 15 min</string>
+    <string name="last_1h">Last hour</string>
+    <string name="full_recording">Full recording</string>
+    <string name="select_range">Select time range to save</string>
 
 
 </resources>

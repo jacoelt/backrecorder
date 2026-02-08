@@ -2,6 +2,7 @@ package com.backrecorderapp.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,7 +31,6 @@ import androidx.compose.ui.unit.dp
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.TimeHelper
 import java.time.LocalTime
-
 @Composable
 fun SavingContent(
     maxMinutes: Int,
@@ -38,29 +38,42 @@ fun SavingContent(
     onCancel: () -> Unit,
 ) {
 
-    val DEFAULT_RANGE = (maxMinutes - 15).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()
+    val defaultRange =
+        (maxMinutes - 15).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()
 
-    var range by remember {
-        mutableStateOf(DEFAULT_RANGE)
-    }
+    var range by remember { mutableStateOf(defaultRange) }
 
     fun previousMinutesToCurrentHHMM(minutes: Int): String {
-        val actualTime = LocalTime.now().minusMinutes(maxMinutes.toLong()).plusMinutes(minutes.toLong())
+        val actualTime =
+            LocalTime.now()
+                .minusMinutes(maxMinutes.toLong())
+                .plusMinutes(minutes.toLong())
         return TimeHelper.formatTime(actualTime)
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .padding(horizontal = 16.dp)
             .verticalScroll(rememberScrollState())
     ) {
 
-        // ===== Waveform + Range selector =====
+        // ===== Waveform + Range =====
         Card(
             modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(8.dp)
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            elevation = CardDefaults.cardElevation(0.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
+
+                Text(
+                    text = stringResource(R.string.select_range),
+                    style = MaterialTheme.typography.titleSmall
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 FakeWaveformPreview(
                     modifier = Modifier
@@ -68,7 +81,7 @@ fun SavingContent(
                         .height(96.dp)
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 RangeSlider(
                     value = range,
@@ -81,73 +94,93 @@ fun SavingContent(
                         val min = newRange.start
                         val max = newRange.endInclusive
 
-                        val correctedRange =
-                            if (max - min < 1) {
-                                // Determine which thumb moved
+                        range =
+                            if (max - min < 1f) {
                                 if (min != range.start) {
-                                    // Left thumb moved → keep it left
-                                    (min - 1)..max
+                                    (min - 1f)..max
                                 } else {
-                                    // Right thumb moved → keep it right
-                                    min..(max + 1)
+                                    min..(max + 1f)
                                 }
                             } else {
                                 newRange
                             }
-
-                        range = correctedRange
                     },
                     valueRange = 0f..maxMinutes.toFloat(),
-                    steps = maxMinutes - 1,
+                    steps = maxMinutes - 1
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                Row (
+                Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(previousMinutesToCurrentHHMM(range.start.toInt()))
-                    Text(previousMinutesToCurrentHHMM(range.endInclusive.toInt()))
+                    Text(
+                        previousMinutesToCurrentHHMM(range.start.toInt()),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        previousMinutesToCurrentHHMM(range.endInclusive.toInt()),
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         // ===== Presets =====
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            elevation = CardDefaults.cardElevation(8.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+        Text(
+            text = stringResource(R.string.quick_presets),
+            style = MaterialTheme.typography.titleSmall
+        )
 
-                Text(
-                    text = stringResource(R.string.quick_presets),
-                    style = MaterialTheme.typography.titleSmall
-                )
+        Spacer(modifier = Modifier.height(8.dp))
 
-                Spacer(modifier = Modifier.height(8.dp))
+        Column {
 
-                PresetButton("Last 5 min") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PresetButton(
+                    label = stringResource(R.string.last_5),
+                    modifier = Modifier.weight(1f)
+                ) {
                     range = (maxMinutes - 5).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()
                 }
 
-                PresetButton("Last 15 min") {
+                PresetButton(
+                    label = stringResource(R.string.last_15),
+                    modifier = Modifier.weight(1f)
+                ) {
                     range = (maxMinutes - 15).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()
                 }
+            }
 
-                PresetButton("Last 1 hour") {
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PresetButton(
+                    label = stringResource(R.string.last_1h),
+                    modifier = Modifier.weight(1f)
+                ) {
                     range = (maxMinutes - 60).coerceAtLeast(0).toFloat()..maxMinutes.toFloat()
                 }
 
-                PresetButton("Full recording") {
+                PresetButton(
+                    label = stringResource(R.string.full_recording),
+                    modifier = Modifier.weight(1f)
+                ) {
                     range = 0f..maxMinutes.toFloat()
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(32.dp))
 
         // ===== Actions =====
         Button(
@@ -176,14 +209,28 @@ fun SavingContent(
 @Composable
 private fun PresetButton(
     label: String,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
-    Text(
-        text = label,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(vertical = 8.dp),
-        style = MaterialTheme.typography.bodyMedium
-    )
+    Card(
+        modifier = modifier
+            .clickable { onClick() },
+        shape = MaterialTheme.shapes.medium,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = CardDefaults.outlinedCardBorder()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
 }
