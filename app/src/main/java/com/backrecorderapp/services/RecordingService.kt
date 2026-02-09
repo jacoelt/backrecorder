@@ -137,6 +137,12 @@ class RecordingService : Service() {
             .build()
     }
 
+    private fun updateNotification() {
+        val notification = buildNotification()
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
     private fun restoreListOfExistingFiles() {
         val existingFiles = outputDir.listFiles()?.toList()
         if (existingFiles != null) {
@@ -169,6 +175,7 @@ class RecordingService : Service() {
 
         cleanOldFiles()
 
+        updateNotification()
         if (currentDurationCallback != null) {
             currentDurationCallback?.let { it(fileList.size) }
         }
