@@ -44,10 +44,13 @@ class RecordingService : Service() {
         const val DEFAULT_DURATION = MAX_MINUTES_TOTAL
         const val NOTIFICATION_CHANNEL_ID = "AudioRecordingChannel"
         const val NOTIFICATION_ID = 42
+
+        const val ACTION_START_RECORDING = "action_start_recording"
+        const val ACTION_STOP_RECORDING = "action_stop_recording"
     }
 
-    private var gDriveHelper: GDriveHelper? = null
     private var mediaRecorder: MediaRecorder? = null
+    private lateinit var gDriveHelper: GDriveHelper
     private lateinit var settings: SettingsDataStore
     private lateinit var subscriptionManager: SubscriptionManager
 
@@ -64,6 +67,7 @@ class RecordingService : Service() {
 
     private val binder = LocalBinder()
     private var isRecording = false  // Track recording status
+    private var recordingStateCallback: ((isRecording: Boolean) -> Unit)? = null
     private var currentDurationCallback: ((duration: Int) -> Unit)? = null
 
     inner class LocalBinder : Binder() {
@@ -77,23 +81,38 @@ class RecordingService : Service() {
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
         settings = SettingsDataStore.getInstance(this.applicationContext)
         subscriptionManager = SubscriptionManager(settings)
+        gDriveHelper = GDriveHelper(this)
         runBlocking { subscriptionManager.load() }
 
         // Dedicated thread for recurring recording tasks
         workerThread = HandlerThread("AudioRecorderWorker")
         workerThread.start()
         workerHandler = Handler(workerThread.looper)
-
-        restoreListOfExistingFiles()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d("AudioRecordingService", "Started")
-        startForegroundService()
-        serviceScope.launch {
-            startNewRecording()
+
+        restoreListOfExistingFiles()
+
+        when(intent?.action) {
+            ACTION_START_RECORDING -> {
+                startForegroundService()
+                serviceScope.launch {
+                    startNewRecording()
+                }
+                return START_STICKY
+            }
+
+            ACTION_STOP_RECORDING -> {
+                stopRecording()
+                return START_NOT_STICKY
+            }
+
+            else -> {
+                return START_NOT_STICKY
+            }
         }
-        return START_STICKY
     }
 
     private fun startForegroundService() {
@@ -176,9 +195,7 @@ class RecordingService : Service() {
         cleanOldFiles()
 
         updateNotification()
-        if (currentDurationCallback != null) {
-            currentDurationCallback?.let { it(fileList.size) }
-        }
+        notifyCurrentDurationChanged()
 
         Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
 
@@ -200,6 +217,7 @@ class RecordingService : Service() {
                 start()
             }
             isRecording = true
+            notifyRecordingStateChanged()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start MediaRecorder", e)
             stopSelf()
@@ -229,11 +247,6 @@ class RecordingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    fun isRecording(): Boolean {
-        Log.d(TAG, "isRecording: $isRecording")
-        return isRecording
-    }
-
     fun getFileList(): List<File> {
         return fileList.toList() // Make a readonly copy
     }
@@ -244,7 +257,7 @@ class RecordingService : Service() {
         startNewRecording()
     }
 
-    fun stopRecording() {
+    private fun stopRecording() {
         Log.d(TAG, "stopRecording")
         workerHandler.removeCallbacksAndMessages(null)
         mediaRecorder?.apply {
@@ -264,20 +277,29 @@ class RecordingService : Service() {
         }
         mediaRecorder = null
         isRecording = false
+        notifyRecordingStateChanged()
         stopForeground(STOP_FOREGROUND_REMOVE)
         fileList.clear()
     }
 
+    fun registerRecordingStateCallback(callback: (isRecording: Boolean) -> Unit) {
+        recordingStateCallback = callback
+        notifyRecordingStateChanged()
+    }
+
+    private fun notifyRecordingStateChanged() {
+        recordingStateCallback?.invoke(isRecording)
+    }
+
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
         currentDurationCallback = callback
-        currentDurationCallback?.let { it(getDuration()) }
+    }
+
+    private fun notifyCurrentDurationChanged() {
+        currentDurationCallback?.invoke(getDuration())
     }
 
     private fun getDuration(): Int {
         return fileList.size
-    }
-
-    fun registerGDriveHelper(gDriveHelper: GDriveHelper) {
-        this.gDriveHelper = gDriveHelper
     }
 }

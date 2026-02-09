@@ -25,12 +25,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.backrecorderapp.helpers.BillingManager
 import com.backrecorderapp.helpers.GDriveHelper
-import com.backrecorderapp.helpers.SecurePreferences
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.SubscriptionManager
 import com.backrecorderapp.helpers.SubscriptionOffer
@@ -48,10 +46,7 @@ import com.backrecorderapp.ui.TrialDialog
 import com.backrecorderapp.ui.model.MainViewModel
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -73,7 +68,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
     private lateinit var billingManager: BillingManager
-    private var securePreferences = SecurePreferences(this)
     private var subscriptionOffers: SubscriptionOffers? = null
     private var pendingSaveStart = mutableStateOf<Int?>(null)
     private var pendingSaveEnd = mutableStateOf<Int?>(null)
@@ -89,14 +83,22 @@ class MainActivity : AppCompatActivity() {
             val binder = service as RecordingService.LocalBinder
             recordingService = binder.getService()
             isBound = true
-            updateRecordingState()
-            recordingService!!.registerCallbackCurrentDuration { updateCurrentRecordingDuration(it) }
-            recordingService!!.registerGDriveHelper(gDriveHelper)
+
+            recordingService?.registerRecordingStateCallback { isRecordingParam ->
+                isRecording.value = isRecordingParam
+            }
+
+            recordingService?.registerCallbackCurrentDuration {
+                updateCurrentRecordingDuration(it)
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             recordingService = null
             isBound = false
+
+            // Try to re-bind
+            bindRecordingService()
         }
     }
 
@@ -140,6 +142,10 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
 
+        bindRecordingService()
+    }
+
+    private fun bindRecordingService() {
         Intent(this, RecordingService::class.java).also { intent ->
             bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
         }
@@ -169,27 +175,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // ===== Global exception handler =====
-        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            Log.e("GlobalError", "Uncaught exception in thread ${thread.name}", throwable)
-
-            lifecycleScope.launch {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(
-                        applicationContext,
-                        "Unexpected error: ${throwable.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-        }
 
         try {
             TinkConfig.register()
             settings = SettingsDataStore.getInstance(this.applicationContext)
             trialManager = TrialManager(settings)
             subscriptionManager = SubscriptionManager(settings)
-            gDriveHelper = GDriveHelper(this.applicationContext, securePreferences)
+            gDriveHelper = GDriveHelper(this.applicationContext)
             billingManager = BillingManager(this.applicationContext, subscriptionManager, trialManager)
             viewModel = MainViewModel(subscriptionManager)
         } catch (e: Exception) {
@@ -201,16 +193,6 @@ class MainActivity : AppCompatActivity() {
             trialManager.load()
 
             trialDaysRemaining = trialManager.trialDaysRemaining()
-        }
-
-        if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this@MainActivity,
-                arrayOf(permission.READ_EXTERNAL_STORAGE, permission.WRITE_EXTERNAL_STORAGE),
-                2222
-            )
         }
 
         // Start billing connection, then evaluate subscription state
@@ -244,8 +226,8 @@ class MainActivity : AppCompatActivity() {
                     var canUseCloud by rememberSaveable { mutableStateOf(false) }
                     var premiumDialogReason by rememberSaveable { mutableStateOf<PaywallReason?>(null) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
+                    var screenMode by rememberSaveable { mutableStateOf(MainScreenMode.RECORDING) }
                     var selectedOffer by remember { mutableStateOf<SubscriptionOffer?>(null) }
-                    var screenMode by remember { mutableStateOf(MainScreenMode.RECORDING) }
 
                     // Load state
                     LaunchedEffect(Unit) {
@@ -343,24 +325,27 @@ class MainActivity : AppCompatActivity() {
                             currentRecordingDuration,
                             startSaveRecording = { start, end ->
                                 if (start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
-                                    if (subscriptionOffers == null) {
-                                        subscriptionOffers = runBlocking { billingManager.getSubscriptionOffers() }
+                                    lifecycleScope.launch {
+                                        if (ensureSubscriptionOffersLoaded()) {
+                                            premiumDialogReason = PaywallReason.RECORDING_DURATION
+                                        }
                                     }
-                                    premiumDialogReason = PaywallReason.RECORDING_DURATION
                                     return@MainScreen false
                                 }
+
                                 pendingSaveStart.value = start
                                 pendingSaveEnd.value = end
                                 launchFilePicker()
-                                return@MainScreen true
+                                true
                             },
                             useGDrive = canUseCloud,
                             onToggleGDrive = { enabled ->
                                 if (!subscriptionManager.isPremium() && !subscriptionManager.isTrial()) {
-                                    if (subscriptionOffers == null) {
-                                        subscriptionOffers = runBlocking { billingManager.getSubscriptionOffers() }
+                                    lifecycleScope.launch {
+                                        if (ensureSubscriptionOffersLoaded()) {
+                                            premiumDialogReason = PaywallReason.CLOUD_BACKUP
+                                        }
                                     }
-                                    premiumDialogReason = PaywallReason.CLOUD_BACKUP
                                     return@MainScreen
                                 }
                                 lifecycleScope.launch {
@@ -370,10 +355,11 @@ class MainActivity : AppCompatActivity() {
                             },
                             onShowTerms = { showTerms = true },
                             onBannerClick = {
-                                if (subscriptionOffers == null) {
-                                    subscriptionOffers = runBlocking { billingManager.getSubscriptionOffers() }
+                                lifecycleScope.launch {
+                                    if (ensureSubscriptionOffersLoaded()) {
+                                        premiumDialogReason = PaywallReason.GENERIC
+                                    }
                                 }
-                                premiumDialogReason = PaywallReason.GENERIC
                             },
                             trialEndDate = getTrialEndDate(),
                             viewModel,
@@ -387,31 +373,48 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRecording() {
-        if (ContextCompat.checkSelfPermission(this, permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            try {
-                val intent = Intent(this, RecordingService::class.java)
-                ContextCompat.startForegroundService(this, intent)
-                this.isRecording.value = true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start recording", e)
-                Toast.makeText(this, "Unable to start recording: ${e.message}", Toast.LENGTH_SHORT).show()
-            }
-        } else {
+        Log.d(TAG, "startRecording")
+        if (ContextCompat.checkSelfPermission(this, permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
             requestAudioPermissionLauncher.launch(permission.RECORD_AUDIO)
+            return
+        }
+
+        val intent = Intent(this, RecordingService::class.java).apply {
+            action = RecordingService.ACTION_START_RECORDING
+        }
+
+        try {
+            ContextCompat.startForegroundService(this, intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start recording", e)
+            Toast.makeText(
+                this,
+                "Unable to start recording: ${e.message}",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
     private fun stopRecording() {
-        Log.d("MainActivity", "stopRecording")
+        Log.d(TAG, "stopRecording")
+        val intent = Intent(this, RecordingService::class.java).apply {
+            action = RecordingService.ACTION_STOP_RECORDING
+        }
+
         try {
-            recordingService?.stopRecording()
-            isRecording.value = false
-            stopService(Intent(this, RecordingService::class.java))
+            startService(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error while stopping recording", e)
-            Toast.makeText(this, "Error while stopping recording: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                this,
+                "Error while stopping recording: ${e.message}",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
+
 
     private fun launchFilePicker() {
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -423,10 +426,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         saveAudioLauncher.launch(intent)
-    }
-
-    private fun updateRecordingState() {
-        isRecording.value = recordingService?.isRecording() ?: false
     }
 
     private fun updateCurrentRecordingDuration(duration: Int) {
@@ -473,6 +472,18 @@ class MainActivity : AppCompatActivity() {
             .ofPattern("d MMM", Locale.getDefault())
 
         return date.format(formatter)
+    }
+
+    private suspend fun ensureSubscriptionOffersLoaded(): Boolean {
+        if (subscriptionOffers != null) return true
+
+        return try {
+            subscriptionOffers = billingManager.getSubscriptionOffers()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load subscription offers", e)
+            false
+        }
     }
 
     override fun onDestroy() {

@@ -12,7 +12,6 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.GDriveHelper
-import com.backrecorderapp.helpers.SecurePreferences
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.concatAudioFiles
 import kotlinx.coroutines.CoroutineScope
@@ -29,8 +28,6 @@ import java.util.Date
 import java.util.Locale
 
 class SaveRecordingService : Service() {
-
-    private var securePreferences = SecurePreferences(this)
 
     companion object {
         const val TAG = "SaveRecordingService"
@@ -95,7 +92,7 @@ class SaveRecordingService : Service() {
     private fun startSave(outputUri: Uri, start: Int, end: Int) {
         val context = this.applicationContext
         val settings = SettingsDataStore.getInstance(this.applicationContext)
-        val gDriveHelper = GDriveHelper(this.applicationContext, securePreferences)
+        val gDriveHelper = GDriveHelper(this.applicationContext)
 
         serviceScope.launch {
             val mergedFile = File(cacheDir, "merged_audio.m4a")

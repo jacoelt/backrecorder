@@ -27,8 +27,7 @@ import org.json.JSONObject
 import java.io.File
 
 class GDriveHelper(
-    private val context: Context,
-    private val securePreferences: SecurePreferences,
+    context: Context
 ) {
     companion object {
         private const val TAG = "GDriveHelper"
@@ -54,6 +53,7 @@ class GDriveHelper(
     private val authService = AuthorizationService(context)
     private val httpClient = OkHttpClient()
     private val settingsDataStore = SettingsDataStore.getInstance(context)
+    private val securePreferences = SecurePreferences(context)
 
     private val serviceConfig = AuthorizationServiceConfiguration(
         Uri.parse("https://accounts.google.com/o/oauth2/auth"),
