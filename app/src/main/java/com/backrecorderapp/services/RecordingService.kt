@@ -26,7 +26,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -70,6 +69,12 @@ class RecordingService : Service() {
     private var recordingStateCallback: ((isRecording: Boolean) -> Unit)? = null
     private var currentDurationCallback: ((duration: Int) -> Unit)? = null
 
+    @Volatile
+    private var isTransitioning = false
+
+    @Volatile
+    private var isServiceActive = false
+
     inner class LocalBinder : Binder() {
         fun getService(): RecordingService = this@RecordingService
     }
@@ -77,12 +82,16 @@ class RecordingService : Service() {
     override fun onCreate() {
         super.onCreate()
         RecordingServiceHolder.set(this)
-        Log.d("AudioRecordingService", "Created")
+        Log.d(TAG, "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
         settings = SettingsDataStore.getInstance(this.applicationContext)
         subscriptionManager = SubscriptionManager(settings)
         gDriveHelper = GDriveHelper(this)
-        runBlocking { subscriptionManager.load() }
+
+        serviceScope.launch {
+            subscriptionManager.load()
+            updateNotification()
+        }
 
         // Dedicated thread for recurring recording tasks
         workerThread = HandlerThread("AudioRecorderWorker")
@@ -91,20 +100,24 @@ class RecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("AudioRecordingService", "Started")
+        Log.d(TAG, "Started")
 
         restoreListOfExistingFiles()
 
         when(intent?.action) {
             ACTION_START_RECORDING -> {
-                startForegroundService()
-                serviceScope.launch {
-                    startNewRecording()
+                if (!isServiceActive) {
+                    isServiceActive = true
+                    startForegroundService()
+                    serviceScope.launch {
+                        startNewRecording()
+                    }
                 }
                 return START_STICKY
             }
 
             ACTION_STOP_RECORDING -> {
+                isServiceActive = false
                 stopRecording()
                 return START_NOT_STICKY
             }
@@ -157,26 +170,47 @@ class RecordingService : Service() {
     }
 
     private fun updateNotification() {
-        val notification = buildNotification()
         val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification)
+        if (isServiceActive) {
+            val notification = buildNotification()
+            manager.notify(NOTIFICATION_ID, notification)
+        } else {
+            manager.cancel(NOTIFICATION_ID)
+        }
     }
 
     private fun restoreListOfExistingFiles() {
         val existingFiles = outputDir.listFiles()?.toList()
         if (existingFiles != null) {
+            fileList.clear()
             fileList.addAll(existingFiles)
         }
     }
 
     private fun startNewRecording() {
-        Log.d("AudioRecordingService", "Start new recording")
+        if (isTransitioning) {
+            Log.w(TAG, "startNewRecording ignored: transition already in progress")
+            return
+        }
+        isTransitioning = true
 
-        if (fileList.size > 0) {
+        try {
+            internalStartNewRecording()
+        } finally {
+            isTransitioning = false
+        }
+    }
+
+    private fun internalStartNewRecording() {
+        Log.d(TAG, "Start new recording")
+
+        stopCurrentRecorderSafely()
+
+        if (fileList.isNotEmpty()) {
             serviceScope.launch {
                 try {
                     val lastFile = fileList.last()
-                    gDriveHelper?.uploadFile(
+                    gDriveHelper.uploadFile(
                         lastFile,
                         GDriveHelper.FolderType.STAGING,
                         fileName = null,
@@ -193,39 +227,75 @@ class RecordingService : Service() {
         fileList.add(audioFile)
 
         cleanOldFiles()
+        startRecorder(audioFile)
+
+        scheduleNextRotation()
 
         updateNotification()
         notifyCurrentDurationChanged()
 
-        Log.d(TAG, "Writing staging file ${audioFile.absolutePath}")
+    }
 
-        if (mediaRecorder == null) {
-            mediaRecorder = MediaRecorder(this)
-        }
+    private fun startRecorder(outputFile: File) {
+        Log.d(TAG, "Writing staging file ${outputFile.absolutePath}")
 
-        try {
-            mediaRecorder?.apply {
-                reset()
+        mediaRecorder = MediaRecorder(this).apply {
+            try {
                 setAudioSource(MediaRecorder.AudioSource.MIC)
                 setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setAudioChannels(CHANNELS)
                 setAudioSamplingRate(SAMPLING_RATE)
                 setAudioEncodingBitRate(BIT_RATE)
-                setOutputFile(audioFile.absolutePath)
+                setOutputFile(outputFile.absolutePath)
                 prepare()
                 start()
-            }
-            isRecording = true
-            notifyRecordingStateChanged()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start MediaRecorder", e)
-            stopSelf()
-            return
-        }
 
-        // Restart recording after 1 minute
-        workerHandler.postDelayed({ startNewRecording() }, 60_000)
+                isRecording = true
+                notifyRecordingStateChanged()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start MediaRecorder", e)
+                stopCurrentRecorderSafely()
+                stopSelf()
+            }
+        }
+    }
+
+    private fun scheduleNextRotation() {
+        workerHandler.removeCallbacksAndMessages(null)
+        workerHandler.postDelayed({
+            if (isServiceActive) {
+                startNewRecording()
+            }
+        }, 60_000)
+    }
+
+    private fun stopRecording() {
+        Log.d(TAG, "stopRecording")
+        isServiceActive = false
+        workerHandler.removeCallbacksAndMessages(null)
+        stopCurrentRecorderSafely()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    private fun stopCurrentRecorderSafely() {
+        Log.d(TAG, "stopCurrentRecorderSafely")
+        mediaRecorder?.apply {
+            try {
+                stop()
+            } catch (_: IllegalStateException) {
+            } finally {
+                try {
+                    reset()
+                } catch (_: Exception) {}
+                try {
+                    release()
+                } catch (_: Exception) {}
+            }
+        }
+        mediaRecorder = null
+        isRecording = false
+        notifyRecordingStateChanged()
     }
 
     private fun cleanOldFiles() {
@@ -233,7 +303,7 @@ class RecordingService : Service() {
         while (fileList.size > maxDurationMinutes) {
             fileList.removeAt(0).delete()
         }
-        gDriveHelper?.deleteOldestFromStaging(maxDurationMinutes)
+        gDriveHelper.deleteOldestFromStaging(maxDurationMinutes)
         Log.d(TAG, "Clean up done: ${fileList.size} files left")
     }
 
@@ -254,32 +324,8 @@ class RecordingService : Service() {
     fun interruptCurrentRecording() {
         Log.d(TAG, "interruptCurrentRecording")
         workerHandler.removeCallbacksAndMessages(null)
+        isTransitioning = false
         startNewRecording()
-    }
-
-    private fun stopRecording() {
-        Log.d(TAG, "stopRecording")
-        workerHandler.removeCallbacksAndMessages(null)
-        mediaRecorder?.apply {
-            try {
-                stop()
-            } catch (_: Exception) {
-            } finally {
-                try {
-                    reset()
-                } catch (_: Exception) {
-                }
-                try {
-                    release()
-                } catch (_: Exception) {
-                }
-            }
-        }
-        mediaRecorder = null
-        isRecording = false
-        notifyRecordingStateChanged()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        fileList.clear()
     }
 
     fun registerRecordingStateCallback(callback: (isRecording: Boolean) -> Unit) {

@@ -46,6 +46,7 @@ import com.backrecorderapp.ui.TrialDialog
 import com.backrecorderapp.ui.model.MainViewModel
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.time.LocalDate
@@ -62,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var recordingService: RecordingService? = null
     private var isBound = false
     private val isRecording = mutableStateOf(false)
+    private val uiIsRecording = mutableStateOf(false)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var trialDaysRemaining: Int = TrialManager.TRIAL_PERIOD
     private lateinit var trialManager: TrialManager
@@ -84,8 +86,8 @@ class MainActivity : AppCompatActivity() {
             recordingService = binder.getService()
             isBound = true
 
-            recordingService?.registerRecordingStateCallback { isRecordingParam ->
-                isRecording.value = isRecordingParam
+            recordingService?.registerRecordingStateCallback { recordingState: Boolean ->
+                isRecording.value = recordingState
             }
 
             recordingService?.registerCallbackCurrentDuration {
@@ -241,6 +243,16 @@ class MainActivity : AppCompatActivity() {
                         canUseCloud = canUseCloud()
                     }
 
+                    LaunchedEffect(isRecording.value) {
+                        if (isRecording.value) {
+                            uiIsRecording.value = true
+                        } else {
+                            delay(300)
+                            if (!isRecording.value) {
+                                uiIsRecording.value = false
+                            }
+                        }
+                    }
 
                     // Display either Terms screen or main content
                     if (showTerms && mustAcceptTerms) {
@@ -321,7 +333,7 @@ class MainActivity : AppCompatActivity() {
                         MainScreen(
                             startRecording = { startRecording() },
                             stopRecording = { stopRecording() },
-                            isRecording = isRecording,
+                            isRecording = uiIsRecording,
                             currentRecordingDuration,
                             startSaveRecording = { start, end ->
                                 if (start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
