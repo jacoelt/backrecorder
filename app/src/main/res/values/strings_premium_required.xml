@@ -20,5 +20,7 @@
     <string name="yearly">Yearly</string>
 
     <string name="free_trial_30_days">Free for 30 days</string>
+    <string name="paywall_premium_content_1">• Save full recordings (no 15-minute limit)</string>
+    <string name="paywall_premium_content_2"><![CDATA[• Secure cloud backup & sync]]></string>
 
 </resources>

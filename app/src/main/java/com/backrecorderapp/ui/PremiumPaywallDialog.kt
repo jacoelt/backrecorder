@@ -111,7 +111,6 @@ fun PremiumPaywallDialog(
                     text = stringResource(content.freeLimitExplanation),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
                 )
 
                 Spacer(Modifier.height(16.dp))
@@ -120,9 +119,8 @@ fun PremiumPaywallDialog(
                     horizontalAlignment = Alignment.Start,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("• Up to 24h continuous recording")
-                    Text("• Save full recordings (no 10-minute limit)")
-                    Text("• Secure cloud backup & sync")
+                    Text(stringResource(R.string.paywall_premium_content_1))
+                    Text(stringResource(R.string.paywall_premium_content_2))
                 }
 
                 Spacer(Modifier.height(20.dp))
