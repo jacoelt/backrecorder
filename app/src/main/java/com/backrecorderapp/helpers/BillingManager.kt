@@ -62,6 +62,7 @@ data class SubscriptionOffers (
 class BillingManager(
     private val context: Context,
     private val subscriptionManager: SubscriptionManager,
+    private val trialManager: TrialManager,
 ) : PurchasesUpdatedListener {
 
     private val productDetailsMap = mutableMapOf<String, ProductDetails>()
@@ -176,6 +177,7 @@ class BillingManager(
     private suspend fun onSubscriptionActivated() {
         Log.d(TAG, "Subscription activated")
         subscriptionManager.setMode(SubscriptionMode.PREMIUM)
+        trialManager.setTrialStartTime(System.currentTimeMillis())  // TODO: Eventually, get the actual purchase date from google store
 
         val subscriptionOffers = subscriptionManager.currentOffers
         val trialEndMillis = subscriptionOffers.value?.monthly?.trialEndMillis

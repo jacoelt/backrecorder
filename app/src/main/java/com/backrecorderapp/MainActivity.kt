@@ -33,7 +33,6 @@ import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.helpers.SecurePreferences
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.SubscriptionManager
-import com.backrecorderapp.helpers.SubscriptionMode
 import com.backrecorderapp.helpers.SubscriptionOffer
 import com.backrecorderapp.helpers.SubscriptionOffers
 import com.backrecorderapp.helpers.TrialManager
@@ -62,7 +61,6 @@ import java.util.Locale
 const val ALPHA_DISABLED = 0.5f
 const val MAX_MINUTES_FREE_MODE = 15
 const val MAX_MINUTES_TOTAL = 24 * 60  // 24h
-const val TRIAL_LENGTH = 30  // days
 
 class MainActivity : AppCompatActivity() {
 
@@ -70,7 +68,8 @@ class MainActivity : AppCompatActivity() {
     private var isBound = false
     private val isRecording = mutableStateOf(false)
     private var currentRecordingDuration = mutableIntStateOf(0)
-    private var trialDaysRemaining: Int = 30
+    private var trialDaysRemaining: Int = TrialManager.TRIAL_PERIOD
+    private lateinit var trialManager: TrialManager
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
     private lateinit var billingManager: BillingManager
@@ -188,13 +187,20 @@ class MainActivity : AppCompatActivity() {
         try {
             TinkConfig.register()
             settings = SettingsDataStore.getInstance(this.applicationContext)
+            trialManager = TrialManager(settings)
             subscriptionManager = SubscriptionManager(settings)
             gDriveHelper = GDriveHelper(this.applicationContext, securePreferences)
-            billingManager = BillingManager(this.applicationContext, subscriptionManager)
+            billingManager = BillingManager(this.applicationContext, subscriptionManager, trialManager)
             viewModel = MainViewModel(subscriptionManager)
         } catch (e: Exception) {
             Log.e(TAG, "Initialization failed", e)
             Toast.makeText(this, "Initialization error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+
+        lifecycleScope.launch {
+            trialManager.load()
+
+            trialDaysRemaining = trialManager.trialDaysRemaining()
         }
 
         if (ContextCompat.checkSelfPermission(applicationContext, permission.READ_EXTERNAL_STORAGE)
@@ -206,8 +212,6 @@ class MainActivity : AppCompatActivity() {
                 2222
             )
         }
-
-        trialDaysRemaining = TrialManager.trialDaysRemaining(this.applicationContext).toInt()
 
         // Start billing connection, then evaluate subscription state
         try {
@@ -462,16 +466,8 @@ class MainActivity : AppCompatActivity() {
         return useGDrivePref && (subscriptionManager.isTrial() || subscriptionManager.isPremium())
     }
 
-    private fun maxRecordingDurationMinutes(): Int =
-        when (subscriptionManager.mode.value) {
-            SubscriptionMode.FREE -> MAX_MINUTES_FREE_MODE
-            SubscriptionMode.TRIAL,
-            SubscriptionMode.PREMIUM -> MAX_MINUTES_TOTAL
-        }
-
     private fun getTrialEndDate(): String {
-        //TODO: Fix to not always use current date
-        val date = LocalDate.now().plusDays(TRIAL_LENGTH.toLong())
+        val date = LocalDate.now().plusDays(trialDaysRemaining.toLong())
 
         val formatter = DateTimeFormatter
             .ofPattern("d MMM", Locale.getDefault())
