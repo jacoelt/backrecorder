@@ -46,6 +46,7 @@ class RecordingService : Service() {
 
         const val ACTION_START_RECORDING = "action_start_recording"
         const val ACTION_STOP_RECORDING = "action_stop_recording"
+        const val ACTION_FLUSH_CURRENT_FILE = "action_flush_current_file"
     }
 
     private var mediaRecorder: MediaRecorder? = null
@@ -81,7 +82,6 @@ class RecordingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        RecordingServiceHolder.set(this)
         Log.d(TAG, "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
         settings = SettingsDataStore.getInstance(this.applicationContext)
@@ -119,6 +119,13 @@ class RecordingService : Service() {
             ACTION_STOP_RECORDING -> {
                 isServiceActive = false
                 stopRecording()
+                return START_NOT_STICKY
+            }
+
+            ACTION_FLUSH_CURRENT_FILE -> {
+                if (isServiceActive) {
+                    interruptCurrentRecording()
+                }
                 return START_NOT_STICKY
             }
 
@@ -317,11 +324,7 @@ class RecordingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
-    fun getFileList(): List<File> {
-        return fileList.toList() // Make a readonly copy
-    }
-
-    fun interruptCurrentRecording() {
+    private fun interruptCurrentRecording() {
         Log.d(TAG, "interruptCurrentRecording")
         workerHandler.removeCallbacksAndMessages(null)
         isTransitioning = false

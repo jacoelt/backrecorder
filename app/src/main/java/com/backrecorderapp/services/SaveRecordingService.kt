@@ -14,6 +14,7 @@ import com.backrecorderapp.R
 import com.backrecorderapp.helpers.GDriveHelper
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.concatAudioFiles
+import com.backrecorderapp.services.RecordingService.Companion.AUDIO_RECORDINGS_DIR
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -95,16 +96,26 @@ class SaveRecordingService : Service() {
         val gDriveHelper = GDriveHelper(this.applicationContext)
 
         serviceScope.launch {
-            val mergedFile = File(cacheDir, "merged_audio.m4a")
+            val mergedFile = File.createTempFile(
+                "merged_audio_",
+                ".m4a",
+                cacheDir
+            )
 
             try {
                 updateNotification(getString(R.string.saving_status_stop_recording))
 
-                val recordingService = RecordingServiceHolder.get()
-                val allAudioFiles = recordingService?.getFileList()
-                    ?: throw IllegalStateException("RecordingService not available")
+                val allAudioFiles = getFileList()
 
-                val audioFiles = allAudioFiles.slice(start.coerceAtLeast(0)..<end.coerceAtMost(allAudioFiles.size))
+                val boundStart = start.coerceIn(0, allAudioFiles.size)
+                val boundEnd = end.coerceIn(0, allAudioFiles.size)
+
+                if (boundStart >= boundEnd) {
+                    Log.e(TAG, "Invalid slice range: start=$start, end=$end")
+                    throw IllegalArgumentException("Invalid recording slice range")
+                }
+
+                val audioFiles = allAudioFiles.subList(boundStart, boundEnd)
 
                 Log.d(TAG, "All audio files size: ${allAudioFiles.size}, kept files ${audioFiles.size}")
 
@@ -115,10 +126,14 @@ class SaveRecordingService : Service() {
                 if (end == allAudioFiles.size) {
                     // If last file is included, we need to cut it where it is
                     Log.d(TAG, "Need to interrupt current file")
-                    recordingService.interruptCurrentRecording()
-                }
 
-                if (mergedFile.exists()) mergedFile.delete()
+                    val intent = Intent(context, RecordingService::class.java).apply {
+                        action = RecordingService.ACTION_FLUSH_CURRENT_FILE
+                    }
+                    context.startService(intent)
+
+                    delay(500)
+                }
 
                 updateNotification(getString(R.string.saving_status_mergin_audio))
 
@@ -170,6 +185,17 @@ class SaveRecordingService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    private fun getFileList(): List<File> {
+        val recordingsDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR)
+
+        val allAudioFiles = recordingsDir
+            .listFiles { file -> file.extension == "m4a" }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+
+        return allAudioFiles
     }
 
     private fun cancelNotification() {
