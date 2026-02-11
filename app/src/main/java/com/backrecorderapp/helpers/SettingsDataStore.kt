@@ -8,14 +8,13 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.first
 
-class SettingsDataStore private constructor(private val context: Context) {
+class SettingsDataStore private constructor(context: Context) {
 
     companion object {
         private const val DATASTORE_NAME = "settings"
 
         private val PREF_USE_GDRIVE = booleanPreferencesKey("use_gdrive")
         private val PREF_TERMS_ACCEPTED = booleanPreferencesKey("terms_accepted")
-        private val PREF_FIRST_LAUNCH = booleanPreferencesKey("first_launch")
         private val PREF_SUB_MODE = stringPreferencesKey("subscription_mode")
         private val PREF_TRIAL_START_TIME = longPreferencesKey("trial_start_time")
 
@@ -55,16 +54,6 @@ class SettingsDataStore private constructor(private val context: Context) {
 
     suspend fun isTermsAccepted(): Boolean {
         return dataStore.data.first()[PREF_TERMS_ACCEPTED] ?: false
-    }
-
-    suspend fun markFirstLaunchDone() {
-        dataStore.edit { prefs ->
-            prefs[PREF_FIRST_LAUNCH] = false
-        }
-    }
-
-    suspend fun isFirstLaunch(): Boolean {
-        return dataStore.data.first()[PREF_FIRST_LAUNCH] ?: true
     }
 
     suspend fun getSubscriptionMode(): SubscriptionMode {

@@ -42,7 +42,6 @@ import com.backrecorderapp.ui.PaywallReason
 import com.backrecorderapp.ui.PremiumPaywallDialog
 import com.backrecorderapp.ui.SubscriptionPicker
 import com.backrecorderapp.ui.TermsOfUseScreen
-import com.backrecorderapp.ui.TrialDialog
 import com.backrecorderapp.ui.model.MainViewModel
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
@@ -223,7 +222,6 @@ class MainActivity : AppCompatActivity() {
                     var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
                     var showTerms by rememberSaveable { mutableStateOf(false) }
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
-                    var isFirstLaunch by rememberSaveable { mutableStateOf(false) }
                     var canUseCloud by rememberSaveable { mutableStateOf(false) }
                     var premiumDialogReason by rememberSaveable { mutableStateOf<PaywallReason?>(null) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
@@ -238,7 +236,6 @@ class MainActivity : AppCompatActivity() {
                             mustAcceptTerms = true
                         }
 
-                        isFirstLaunch = settings.isFirstLaunch()
                         canUseCloud = canUseCloud()
                     }
 
@@ -274,20 +271,6 @@ class MainActivity : AppCompatActivity() {
                     } else {
 
                         // Display dialogs
-                        if (isFirstLaunch) {
-                            TrialDialog(
-                                onOpenSubscriptions = {
-                                    Log.d(TAG, "TrialDialog: onOpenSubscriptions")
-                                    showSubscriptionPicker = true
-                                    isFirstLaunch = false
-                                },
-                                onDismiss = {
-                                    lifecycleScope.launch { settings.markFirstLaunchDone() }
-                                    isFirstLaunch = false
-                                }
-                            )
-                        }
-
                         if (premiumDialogReason != null) {
                             if (subscriptionOffers != null) {
                                 PremiumPaywallDialog(
