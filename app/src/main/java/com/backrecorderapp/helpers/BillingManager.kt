@@ -19,9 +19,11 @@ import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
 import com.backrecorderapp.workers.TrialReminderWorker
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -66,6 +68,7 @@ class BillingManager(
 ) : PurchasesUpdatedListener {
 
     private val productDetailsMap = mutableMapOf<String, ProductDetails>()
+    private val billingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
         private const val TAG = "BillingManager"
@@ -100,7 +103,9 @@ class BillingManager(
         activity: Activity,
         offer: SubscriptionOffer
     ) {
-        Log.e(TAG, "launchSubscriptionPurchase: Start")
+        check(billingClient.isReady) { "BillingClient not ready" }
+
+        Log.d(TAG, "launchSubscriptionPurchase: Start")
         val productDetails = productDetailsMap[offer.productId]
         if (productDetails == null) {
             Log.e(TAG, "launchSubscriptionPurchase: ProductDetails not found for ${offer.productId}")
@@ -117,7 +122,7 @@ class BillingManager(
             .setProductDetailsParamsList(listOf(params))
             .build()
 
-        Log.e(TAG, "launchSubscriptionPurchase: launch billing flow $billingFlowParams")
+        Log.d(TAG, "launchSubscriptionPurchase: launch billing flow $billingFlowParams")
         billingClient.launchBillingFlow(activity, billingFlowParams)
     }
 
@@ -162,22 +167,25 @@ class BillingManager(
             billingClient.acknowledgePurchase(acknowledgeParams) { billingResult ->
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     Log.d(TAG, "Purchase acknowledged")
-                    runBlocking { onSubscriptionActivated() }
+                    billingScope.launch {
+                        onSubscriptionActivated(purchase)
+                    }
                 } else {
                     Log.e(TAG, "Failed to acknowledge purchase: ${billingResult.responseCode}")
                 }
             }
         } else {
             // Already acknowledged (e.g. restored purchase)
-
-            runBlocking { onSubscriptionActivated() }
+            billingScope.launch {
+                onSubscriptionActivated(purchase)
+            }
         }
     }
 
-    private suspend fun onSubscriptionActivated() {
+    private suspend fun onSubscriptionActivated(purchase: Purchase) {
         Log.d(TAG, "Subscription activated")
         subscriptionManager.setMode(SubscriptionMode.PREMIUM)
-        trialManager.setTrialStartTime(System.currentTimeMillis())  // TODO: Eventually, get the actual purchase date from google store
+        trialManager.setTrialStartTime(purchase.purchaseTime)
 
         val subscriptionOffers = subscriptionManager.currentOffers
         val trialEndMillis = subscriptionOffers.value?.monthly?.trialEndMillis
@@ -204,29 +212,65 @@ class BillingManager(
 
         WorkManager.getInstance(context).enqueueUniqueWork(
             "EndOfTrialReminder",
-            ExistingWorkPolicy.KEEP,
+            ExistingWorkPolicy.REPLACE,
             workRequest
         )
     }
 
     suspend fun syncSubscriptionState() {
-        if (hasActiveSubscription()) {
-            subscriptionManager.setMode(SubscriptionMode.PREMIUM)
+        val purchases: List<Purchase>
+        try {
+            purchases = getActiveSubscriptions()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to sync subscriptions", e)
+            return
         }
+
+        if (purchases.isEmpty()) {
+            subscriptionManager.setMode(SubscriptionMode.FREE)
+            return
+        }
+
+        val purchase = purchases.first()
+
+        val offers = subscriptionManager.currentOffers.value
+            ?: run {
+                subscriptionManager.setMode(SubscriptionMode.FREE)
+                return
+            }
+
+        val matchingOffer =
+            listOf(offers.monthly, offers.yearly)
+                .firstOrNull { offer ->
+                    purchase.products.contains(offer.productId)
+                }
+
+        val mode = matchingOffer?.let {
+            resolveSubscriptionMode(purchase, it)
+        } ?: SubscriptionMode.FREE
+
+        subscriptionManager.setMode(mode)
     }
 
-    /**
-     * Returns true if there is at least one active (PURCHASED & acknowledged) subscription.
-     */
-    private suspend fun hasActiveSubscription(): Boolean {
-        val purchases = try {
-            withTimeout(5000) { getActiveSubscriptions() }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error while getting subscriptions", e)
-            return false
+    private fun resolveSubscriptionMode(
+        purchase: Purchase,
+        offer: SubscriptionOffer
+    ): SubscriptionMode {
+
+        if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) {
+            return SubscriptionMode.FREE
         }
-        return purchases.any { p ->
-            p.purchaseState == Purchase.PurchaseState.PURCHASED && p.isAcknowledged
+
+        if (!offer.hasTrial || offer.trialEndMillis == null) {
+            return SubscriptionMode.PREMIUM
+        }
+
+        val now = System.currentTimeMillis()
+
+        return if (now < offer.trialEndMillis) {
+            SubscriptionMode.TRIAL
+        } else {
+            SubscriptionMode.PREMIUM
         }
     }
 
@@ -241,6 +285,7 @@ class BillingManager(
 
         try {
             billingClient.queryPurchasesAsync(params) { billingResult, purchasesList ->
+                if (!cont.isActive) return@queryPurchasesAsync
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     cont.resume(purchasesList)
                 } else {
@@ -249,6 +294,7 @@ class BillingManager(
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error when connecting to google billing", e)
+            if (!cont.isActive) return@suspendCancellableCoroutine
             cont.resumeWithException(e)
         }
     }
@@ -259,6 +305,7 @@ class BillingManager(
 
         if (!billingClient.isReady) {
             Log.d(TAG, "getSubscriptionOffers: Billing client not ready")
+            if (!cont.isActive) return@suspendCancellableCoroutine
             cont.resumeWithException(IllegalStateException("Billing client not ready"))
             return@suspendCancellableCoroutine
         }
@@ -278,6 +325,7 @@ class BillingManager(
 
             if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
                 Log.d(TAG, "getSubscriptionOffers: Product query failed: ${billingResult.responseCode}")
+                if (!cont.isActive) return@queryProductDetailsAsync
                 cont.resumeWithException(
                     RuntimeException("Product query failed: ${billingResult.responseCode}")
                 )
@@ -287,6 +335,7 @@ class BillingManager(
             val productDetails = productDetailsList.productDetailsList.firstOrNull()
             if (productDetails == null) {
                 Log.d(TAG, "getSubscriptionOffers: No offers found")
+                if (!cont.isActive) return@queryProductDetailsAsync
                 cont.resume(null)
                 return@queryProductDetailsAsync
             }
@@ -343,6 +392,7 @@ class BillingManager(
             }
             if (yearly == null || monthly == null) {
                 Log.d(TAG, "Incorrect subscription offers configuration. Yearly: $yearly ; Monthly: $monthly")
+                if (!cont.isActive) return@queryProductDetailsAsync
                 cont.resumeWithException(
                     RuntimeException("Incorrect subscription offers configuration")
                 )
@@ -361,7 +411,7 @@ class BillingManager(
     /**
      * Convert an ISO 8601 period (ex: P7D, P1M) to milliseconds
      */
-    fun iso8601PeriodToMillis(period: String): Long {
+    private fun iso8601PeriodToMillis(period: String): Long {
         return when {
             period.startsWith("P") && period.endsWith("D") -> {
                 val days = period.removePrefix("P").removeSuffix("D").toLongOrNull() ?: 0L
