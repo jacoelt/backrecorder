@@ -155,18 +155,22 @@ class SaveRecordingService : Service() {
                 Log.d(TAG, "Uploading file: ${mergedFile.path} (${mergedFile.exists()})")
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 if (settings.getUseGDrive()) {
-                    gDriveHelper.uploadFile(
-                        mergedFile,
-                        GDriveHelper.FolderType.FINAL,
-                        fileName = "record_$timeStamp.m4a"
-                    ) { isSuccess ->
-                        if (!isSuccess) {
-                            Toast.makeText(
-                                context,
-                                R.string.error_save_gdrive,
-                                Toast.LENGTH_SHORT
-                            ).show()
+                    try {
+                        gDriveHelper.uploadFile(
+                            mergedFile,
+                            GDriveHelper.FolderType.FINAL,
+                            fileName = "record_$timeStamp.m4a"
+                        ) { isSuccess ->
+                            if (!isSuccess) {
+                                Toast.makeText(
+                                    context,
+                                    R.string.error_save_gdrive,
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         }
+                    } finally {
+                        gDriveHelper.clear()
                     }
                 }
 

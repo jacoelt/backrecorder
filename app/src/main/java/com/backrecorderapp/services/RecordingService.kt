@@ -319,6 +319,7 @@ class RecordingService : Service() {
         stopRecording()
         workerThread.quitSafely()
         serviceScope.cancel()
+        gDriveHelper.clear()
         super.onDestroy()
     }
 

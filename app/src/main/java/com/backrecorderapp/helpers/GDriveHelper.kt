@@ -21,6 +21,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -132,10 +133,16 @@ class GDriveHelper(
             }
 
             val finalId = getOrCreateFolder("BackRecorder", null)
-            checkNotNull(finalId)
+            if (finalId == null) {
+                Log.e(TAG, "Failed to create/find final Drive folder")
+                return@launch
+            }
 
             val stagingId = getOrCreateFolder("staging", finalId)
-            checkNotNull(stagingId)
+            if (stagingId == null) {
+                Log.e(TAG, "Failed to create/find staging Drive folder")
+                return@launch
+            }
 
             securePreferences.saveString(PREF_KEY_FINAL_FOLDER, finalId ?: "")
             securePreferences.saveString(PREF_KEY_STAGING_FOLDER, stagingId ?: "")
@@ -198,7 +205,13 @@ class GDriveHelper(
             return
         }
 
-        val token = getValidAccessToken() ?: return
+        val token = getValidAccessToken()
+        if (token == null) {
+            Log.e(TAG, "No valid access token, upload aborted")
+            callback?.invoke(false)
+            return
+        }
+
         safeNetworkCall("uploadFile") {
             val folderId = when (folderType) {
                 FolderType.FINAL -> securePreferences.getString(PREF_KEY_FINAL_FOLDER)
@@ -218,8 +231,9 @@ class GDriveHelper(
                         .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
                 )
                 .addFormDataPart(
-                    "file", file.name,
-                    file.readBytes().toRequestBody("audio/m4a".toMediaTypeOrNull())
+                    "file",
+                    file.name,
+                    file.asRequestBody("audio/m4a".toMediaTypeOrNull())
                 )
                 .build()
 
@@ -254,7 +268,7 @@ class GDriveHelper(
             safeNetworkCall("deleteOldestFromStaging") {
                 val request = Request.Builder()
                     .url(
-                        "https://www.googleapis.com/drive/v3/files?" +
+                        "https://www.googleapis.com/drive/v3/files?pageSize=1500&" +
                                 "q='${stagingId}' in parents and trashed=false&orderBy=createdTime"
                     )
                     .addHeader("Authorization", "Bearer $token")

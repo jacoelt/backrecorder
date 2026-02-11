@@ -499,7 +499,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         billingManager.endConnection()
+        gDriveHelper.clear()
+        super.onDestroy()
     }
 }
