@@ -76,12 +76,6 @@ class GDriveHelper(
 
     fun launchSignIn(authLauncher: ActivityResultLauncher<Intent>) {
         scope.launch {
-            val enabled = settingsDataStore.getUseGDrive()
-            if (!enabled) {
-                Log.d(TAG, "GDrive disabled, skipping Sign-in")
-                return@launch
-            }
-
             withContext(Dispatchers.Main) {
                 val request = AuthorizationRequest.Builder(
                     serviceConfig,
