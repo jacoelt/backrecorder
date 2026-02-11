@@ -7,7 +7,6 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 
 class SettingsDataStore private constructor(private val context: Context) {
 
@@ -87,8 +86,6 @@ class SettingsDataStore private constructor(private val context: Context) {
     }
 
     suspend fun getTrialStartTime(): Long? {
-        return dataStore.data.map { prefs ->
-            prefs[PREF_TRIAL_START_TIME]
-        }.first()
+        return dataStore.data.first()[PREF_TRIAL_START_TIME]
     }
 }

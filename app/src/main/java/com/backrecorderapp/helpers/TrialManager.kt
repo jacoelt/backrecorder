@@ -14,23 +14,27 @@ class TrialManager(
     private var trialStartTime: Long? = null
 
     suspend fun load() {
+        if (trialStartTime != null) return
         trialStartTime = dataStore.getTrialStartTime()
     }
 
     suspend fun setTrialStartTime(startTime: Long) {
-        trialStartTime = startTime
         dataStore.setTrialStartTime(startTime)
+        trialStartTime = startTime
     }
 
     /**
      * Returns remaining trial days (>= 0).
      */
-    fun trialDaysRemaining(): Int {
-        if (trialStartTime == null) {
-            return TRIAL_PERIOD
-        }
+    fun trialDaysRemaining(
+        nowMillis: Long = System.currentTimeMillis()
+    ): Int {
+        val start = trialStartTime ?: return 0
 
-        val remaining = TRIAL_PERIOD.toDuration(DurationUnit.DAYS) - trialStartTime!!.toDuration(DurationUnit.MILLISECONDS)
-        return if (remaining.isPositive()) remaining.inWholeDays.toInt() else 0
+        val elapsed = (nowMillis - start)
+            .toDuration(DurationUnit.MILLISECONDS)
+
+        val remaining = TRIAL_PERIOD.toDuration(DurationUnit.DAYS) - elapsed
+        return remaining.inWholeDays.toInt().coerceAtLeast(0)
     }
 }

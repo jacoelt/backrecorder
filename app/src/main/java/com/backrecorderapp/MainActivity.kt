@@ -193,7 +193,6 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             trialManager.load()
-
             trialDaysRemaining = trialManager.trialDaysRemaining()
         }
 
