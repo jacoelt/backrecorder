@@ -477,7 +477,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getTrialEndDate(): String {
-        val date = LocalDate.now().plusDays(trialDaysRemaining.toLong())
+        val date = LocalDate.now().plusDays(TrialManager.TRIAL_PERIOD.toLong())  // TODO: Check how to get actual remaining days if user has already started a trial
 
         val formatter = DateTimeFormatter
             .ofPattern("d MMM", Locale.getDefault())

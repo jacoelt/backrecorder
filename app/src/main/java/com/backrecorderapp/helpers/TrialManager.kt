@@ -1,5 +1,6 @@
 package com.backrecorderapp.helpers
 
+import android.util.Log
 import kotlin.time.DurationUnit
 import kotlin.time.toDuration
 
@@ -14,6 +15,7 @@ class TrialManager(
     private var trialStartTime: Long? = null
 
     suspend fun load() {
+        Log.d(TAG, "TrialManager load values")
         if (trialStartTime != null) return
         trialStartTime = dataStore.getTrialStartTime()
     }
@@ -29,6 +31,7 @@ class TrialManager(
     fun trialDaysRemaining(
         nowMillis: Long = System.currentTimeMillis()
     ): Int {
+        Log.d(TAG, "Get trial remaining days")
         val start = trialStartTime ?: return 0
 
         val elapsed = (nowMillis - start)

@@ -97,12 +97,15 @@ class RecordingService : Service() {
         workerThread = HandlerThread("AudioRecorderWorker")
         workerThread.start()
         workerHandler = Handler(workerThread.looper)
+
+
+        restoreListOfExistingFiles()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Started")
 
-        restoreListOfExistingFiles()
+//        restoreListOfExistingFiles()
 
         when(intent?.action) {
             ACTION_START_RECORDING -> {
@@ -158,6 +161,7 @@ class RecordingService : Service() {
                 SubscriptionMode.FREE -> R.string.notification_bigtext_free
                 SubscriptionMode.TRIAL -> R.string.notification_bigtext_trial
                 SubscriptionMode.PREMIUM -> R.string.notification_bigtext_premium
+                else -> R.string.notification_bigtext_free
             }
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
@@ -188,8 +192,8 @@ class RecordingService : Service() {
 
     private fun restoreListOfExistingFiles() {
         val existingFiles = outputDir.listFiles()?.toList()
+        fileList.clear()
         if (existingFiles != null) {
-            fileList.clear()
             fileList.addAll(existingFiles)
         }
     }
