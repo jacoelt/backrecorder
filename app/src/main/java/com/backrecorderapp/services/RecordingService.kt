@@ -342,6 +342,7 @@ class RecordingService : Service() {
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
         currentDurationCallback = callback
+        notifyCurrentDurationChanged()
     }
 
     private fun notifyCurrentDurationChanged() {
