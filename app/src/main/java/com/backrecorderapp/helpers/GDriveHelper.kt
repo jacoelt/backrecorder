@@ -109,10 +109,12 @@ class GDriveHelper(
         if (ex == null) {
             authService.performTokenRequest(response.createTokenExchangeRequest()) { tokenResponse, exception ->
                 if (tokenResponse != null) {
-                    securePreferences.saveString(PREF_KEY_ACCESS_TOKEN, tokenResponse.accessToken ?: "")
-                    securePreferences.saveString(PREF_KEY_REFRESH_TOKEN, tokenResponse.refreshToken ?: "")
-                    Log.d(TAG, "AccessToken stored: ${tokenResponse.accessToken}")
-                    signInCallback(true)
+                    scope.launch {
+                        securePreferences.saveString(PREF_KEY_ACCESS_TOKEN, tokenResponse.accessToken ?: "")
+                        securePreferences.saveString(PREF_KEY_REFRESH_TOKEN, tokenResponse.refreshToken ?: "")
+                        Log.d(TAG, "AccessToken stored: ${tokenResponse.accessToken}")
+                        signInCallback(true)
+                    }
                 } else {
                     Log.e(TAG, "Token Exchange failed", exception)
                     signInCallback(false)
