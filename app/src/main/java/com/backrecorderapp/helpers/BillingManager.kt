@@ -430,6 +430,7 @@ class BillingManager(
     }
 
     fun endConnection() {
+        subscriptionManager.clearOffers()
         if (billingClient.isReady) billingClient.endConnection()
     }
 }

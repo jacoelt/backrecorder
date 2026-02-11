@@ -14,19 +14,20 @@ class SubscriptionManager(
     private var dataStore: SettingsDataStore,
 ) {
 
-    private val _mode = MutableStateFlow(SubscriptionMode.FREE)
-    val mode: StateFlow<SubscriptionMode> = _mode.asStateFlow()
+    private val _mode = MutableStateFlow<SubscriptionMode?>(null)
+    val mode: StateFlow<SubscriptionMode?> = _mode.asStateFlow()
 
     private val _currentOffers = MutableStateFlow<SubscriptionOffers?>(null)
     val currentOffers: StateFlow<SubscriptionOffers?> = _currentOffers.asStateFlow()
 
     suspend fun load() {
+        if (_mode.value != null) return
         _mode.value = dataStore.getSubscriptionMode()
     }
 
     suspend fun setMode(newMode: SubscriptionMode) {
-        _mode.value = newMode
         dataStore.saveSubscriptionMode(newMode)
+        _mode.value = newMode
     }
 
     fun isPremium(): Boolean =
@@ -40,5 +41,9 @@ class SubscriptionManager(
 
     fun setCurrentOffers(offers: SubscriptionOffers) {
         _currentOffers.value = offers
+    }
+
+    fun clearOffers() {
+        _currentOffers.value = null
     }
 }
