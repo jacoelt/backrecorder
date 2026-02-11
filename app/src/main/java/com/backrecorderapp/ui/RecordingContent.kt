@@ -33,7 +33,7 @@ fun RecordingContent(
     currentRecordingDuration: MutableState<Int>,
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
-    isCloudEnabled: Boolean,
+    isCloudAvailable: Boolean,
     onSaveClick: () -> Unit,
     formatDuration: (Int) -> String,
 ) {
@@ -96,7 +96,7 @@ fun RecordingContent(
                         style = MaterialTheme.typography.bodyMedium
                     )
 
-                    if (!isCloudEnabled) {
+                    if (!isCloudAvailable) {
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = stringResource(R.string.premium_required),
@@ -120,7 +120,7 @@ fun RecordingContent(
                         }
                     },
                     modifier = Modifier.alpha(
-                        if (isCloudEnabled && !isRecording.value) 1f else ALPHA_DISABLED
+                        if (isCloudAvailable && !isRecording.value) 1f else ALPHA_DISABLED
                     )
                 )
             }

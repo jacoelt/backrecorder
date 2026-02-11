@@ -45,7 +45,7 @@ fun MainScreen(
     onModeChange: (MainScreenMode) -> Unit,
 ) {
     val subscriptionMode by viewModel.subscriptionMode.collectAsState()
-    val isCloudEnabled =
+    val isCloudAvailable =
         subscriptionMode == SubscriptionMode.TRIAL ||
                 subscriptionMode == SubscriptionMode.PREMIUM
 
@@ -119,7 +119,7 @@ fun MainScreen(
                         currentRecordingDuration = currentRecordingDuration,
                         useGDrive = useGDrive,
                         onToggleGDrive = onToggleGDrive,
-                        isCloudEnabled = isCloudEnabled,
+                        isCloudAvailable = isCloudAvailable,
                         onSaveClick = {
                             onModeChange(MainScreenMode.SAVING)
                         },

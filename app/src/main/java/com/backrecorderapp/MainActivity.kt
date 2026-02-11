@@ -222,7 +222,7 @@ class MainActivity : AppCompatActivity() {
                     var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
                     var showTerms by rememberSaveable { mutableStateOf(false) }
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
-                    var canUseCloud by rememberSaveable { mutableStateOf(false) }
+                    var usingCloud by rememberSaveable { mutableStateOf(false) }
                     var premiumDialogReason by rememberSaveable { mutableStateOf<PaywallReason?>(null) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
                     var screenMode by rememberSaveable { mutableStateOf(MainScreenMode.RECORDING) }
@@ -236,7 +236,7 @@ class MainActivity : AppCompatActivity() {
                             mustAcceptTerms = true
                         }
 
-                        canUseCloud = canUseCloud()
+                        usingCloud = isUsingCloud()
                     }
 
                     LaunchedEffect(isRecording.value) {
@@ -332,7 +332,7 @@ class MainActivity : AppCompatActivity() {
                                 launchFilePicker()
                                 true
                             },
-                            useGDrive = canUseCloud,
+                            useGDrive = usingCloud,
                             onToggleGDrive = { enabled ->
                                 if (!subscriptionManager.isPremium() && !subscriptionManager.isTrial()) {
                                     lifecycleScope.launch {
@@ -343,8 +343,9 @@ class MainActivity : AppCompatActivity() {
                                     return@MainScreen
                                 }
                                 lifecycleScope.launch {
-                                    settings.setUseGDrive(enabled)
                                     if (enabled) setupGDrive()
+                                    settings.setUseGDrive(enabled)
+                                    usingCloud = enabled
                                 }
                             },
                             onShowTerms = { showTerms = true },
@@ -454,7 +455,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun canUseCloud(): Boolean {
+    private suspend fun isUsingCloud(): Boolean {
         val useGDrivePref = settings.getUseGDrive()
         return useGDrivePref && (subscriptionManager.isTrial() || subscriptionManager.isPremium())
     }
