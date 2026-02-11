@@ -6,7 +6,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
@@ -45,13 +44,8 @@ class SettingsDataStore private constructor(private val context: Context) {
         }
     }
 
-    fun getUseGDriveFlow(): Flow<Boolean> =
-        context.dataStore.data.map { prefs ->
-            prefs[PREF_USE_GDRIVE] ?: false
-        }
-
     suspend fun getUseGDrive(): Boolean {
-        return getUseGDriveFlow().first()
+        return dataStore.data.first()[PREF_USE_GDRIVE] ?: false
     }
 
     suspend fun saveTermsAccepted(accepted: Boolean) {
@@ -61,9 +55,7 @@ class SettingsDataStore private constructor(private val context: Context) {
     }
 
     suspend fun isTermsAccepted(): Boolean {
-        return dataStore.data.map { prefs ->
-            prefs[PREF_TERMS_ACCEPTED] ?: false
-        }.first()
+        return dataStore.data.first()[PREF_TERMS_ACCEPTED] ?: false
     }
 
     suspend fun markFirstLaunchDone() {
@@ -73,16 +65,13 @@ class SettingsDataStore private constructor(private val context: Context) {
     }
 
     suspend fun isFirstLaunch(): Boolean {
-        return dataStore.data.map { prefs ->
-            prefs[PREF_FIRST_LAUNCH] ?: true
-        }.first()
+        return dataStore.data.first()[PREF_FIRST_LAUNCH] ?: true
     }
 
     suspend fun getSubscriptionMode(): SubscriptionMode {
         val value = dataStore.data.first()[PREF_SUB_MODE]
-        return runCatching {
-            SubscriptionMode.valueOf(value ?: SubscriptionMode.FREE.name)
-        }.getOrDefault(SubscriptionMode.FREE)
+        return SubscriptionMode.entries.firstOrNull { it.name == value }
+            ?: SubscriptionMode.FREE
     }
 
     suspend fun saveSubscriptionMode(mode: SubscriptionMode) {
