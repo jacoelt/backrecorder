@@ -31,14 +31,31 @@ class SecurePreferences(generalContext: Context) {
     private val context = generalContext.applicationContext
 
     private val aead: Aead by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        try {
+            createAead()
+        } catch (e: Exception) {
+            clearSecurePrefs()
+            createAead()
+        }
+    }
+
+    private fun createAead(): Aead {
         AeadConfig.register()
-        AndroidKeysetManager.Builder()
+        return AndroidKeysetManager.Builder()
             .withSharedPref(context, TINK_KEYSET_NAME, TINK_PREF_FILE)
             .withKeyTemplate(KeyTemplates.get("AES256_GCM"))
             .withMasterKeyUri(MASTER_KEY_URI)
             .build()
             .keysetHandle
             .getPrimitive(Aead::class.java)
+    }
+
+    private fun clearSecurePrefs() {
+        context
+            .getSharedPreferences(TINK_PREF_FILE, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
     }
 
     /**
