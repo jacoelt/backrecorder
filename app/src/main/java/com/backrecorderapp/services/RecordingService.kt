@@ -112,11 +112,15 @@ class RecordingService : Service() {
                 when (focusChange) {
                     AudioManager.AUDIOFOCUS_LOSS,
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                        onCallStarted()
+                        serviceScope.launch {
+                            onCallStarted()
+                        }
                     }
 
                     AudioManager.AUDIOFOCUS_GAIN -> {
-                        onCallEnded()
+                        serviceScope.launch {
+                            onCallEnded()
+                        }
                     }
                 }
             }
@@ -210,8 +214,10 @@ class RecordingService : Service() {
             .build()
     }
 
-    private fun updateNotification() {
+    private suspend fun updateNotification() {
         val manager = getSystemService(NotificationManager::class.java)
+        subscriptionManager.load()
+
         if (isServiceActive) {
             val notification = buildNotification()
             manager.notify(NOTIFICATION_ID, notification)
@@ -272,7 +278,9 @@ class RecordingService : Service() {
 
         scheduleNextRotation()
 
-        updateNotification()
+        serviceScope.launch {
+            updateNotification()
+        }
         notifyCurrentDurationChanged()
     }
 
@@ -336,7 +344,7 @@ class RecordingService : Service() {
         changeRecordingStatus(RecordingStatus.STOPPED)
     }
 
-    private fun onCallStarted() {
+    private suspend fun onCallStarted() {
         if (isServiceActive) {
             interruptCurrentRecording()
         }
@@ -344,7 +352,7 @@ class RecordingService : Service() {
         updateNotification()
     }
 
-    private fun onCallEnded() {
+    private suspend fun onCallEnded() {
         changeRecordingStatus(RecordingStatus.RECORDING)
         updateNotification()
         startNewRecording()

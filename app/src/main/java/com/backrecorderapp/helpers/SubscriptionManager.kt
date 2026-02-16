@@ -25,8 +25,6 @@ class SubscriptionManager(
     val currentOffers: StateFlow<SubscriptionOffers?> = _currentOffers.asStateFlow()
 
     suspend fun load() {
-        Log.d(TAG, "Load sub mode (current: ${_mode.value}")
-        if (_mode.value != null) return
         _mode.value = dataStore.getSubscriptionMode()
         Log.d(TAG, "Loaded sub mode: ${_mode.value}")
     }
