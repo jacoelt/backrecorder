@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MaterialTheme.colorScheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,6 +26,7 @@ import com.backrecorderapp.R
 import com.backrecorderapp.helpers.RecordingConfig
 import com.backrecorderapp.helpers.SubscriptionMode
 import com.backrecorderapp.helpers.TimeHelper
+import com.backrecorderapp.services.RecordingService
 import com.backrecorderapp.ui.helpers.QaHiddenTapTarget
 import com.backrecorderapp.ui.model.MainViewModel
 
@@ -37,7 +39,7 @@ enum class MainScreenMode {
 fun MainScreen(
     startRecording: () -> Unit,
     stopRecording: () -> Unit,
-    isRecording: MutableState<Boolean>,
+    recordingStatus: MutableState<RecordingService.RecordingStatus>,
     currentRecordingDuration: MutableState<Int>,
     startSaveRecording: (start: Int, end: Int) -> Boolean,
     useGDrive: Boolean,
@@ -83,10 +85,11 @@ fun MainScreen(
 
             // ===== Recording state (dominant surface) =====
             Surface(
-                color = if (isRecording.value)
-                    MaterialTheme.colorScheme.errorContainer
-                else
-                    MaterialTheme.colorScheme.surfaceVariant,
+                color = when (recordingStatus.value) {
+                    RecordingService.RecordingStatus.RECORDING -> colorScheme.errorContainer
+                    RecordingService.RecordingStatus.STOPPED -> colorScheme.surfaceVariant
+                    RecordingService.RecordingStatus.PAUSED_BY_CALL -> colorScheme.secondaryContainer
+                },
                 shape = MaterialTheme.shapes.large,
                 tonalElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
@@ -106,15 +109,18 @@ fun MainScreen(
                         }
                     ) {
                         Text(
-                            text = if (isRecording.value)
-                                stringResource(R.string.recording_on)
-                            else
-                                stringResource(R.string.recording_idle),
+                            text = stringResource(
+                                when (recordingStatus.value) {
+                                    RecordingService.RecordingStatus.RECORDING -> R.string.recording_on
+                                    RecordingService.RecordingStatus.STOPPED -> R.string.recording_idle
+                                    RecordingService.RecordingStatus.PAUSED_BY_CALL -> R.string.recording_paused_by_call
+                                }
+                            ),
                             style = MaterialTheme.typography.titleLarge
                         )
                     }
 
-                    if (isRecording.value) {
+                    if (recordingStatus.value != RecordingService.RecordingStatus.STOPPED) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = TimeHelper.formatDuration(currentRecordingDuration.value),
@@ -132,7 +138,7 @@ fun MainScreen(
                     RecordingContent(
                         startRecording = startRecording,
                         stopRecording = stopRecording,
-                        isRecording = isRecording,
+                        recordingStatus = recordingStatus,
                         currentRecordingDuration = currentRecordingDuration,
                         useGDrive = useGDrive,
                         onToggleGDrive = onToggleGDrive,

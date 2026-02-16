@@ -23,13 +23,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.ALPHA_DISABLED
 import com.backrecorderapp.R
+import com.backrecorderapp.services.RecordingService
 
 
 @Composable
 fun RecordingContent(
     startRecording: () -> Unit,
     stopRecording: () -> Unit,
-    isRecording: MutableState<Boolean>,
+    recordingStatus: MutableState<RecordingService.RecordingStatus>,
     currentRecordingDuration: MutableState<Int>,
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
@@ -58,15 +59,19 @@ fun RecordingContent(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = if (isRecording.value)
-                        stringResource(R.string.stop_recording)
-                    else
-                        stringResource(R.string.start_recording),
+                    text = stringResource(
+                        when (recordingStatus.value) {
+                            RecordingService.RecordingStatus.RECORDING -> R.string.stop_recording
+                            RecordingService.RecordingStatus.STOPPED -> R.string.start_recording
+                            RecordingService.RecordingStatus.PAUSED_BY_CALL -> R.string.cannot_change_recording
+                        }
+                    ),
                     style = MaterialTheme.typography.bodyLarge
                 )
 
                 Switch(
-                    checked = isRecording.value,
+                    checked = recordingStatus.value == RecordingService.RecordingStatus.RECORDING,
+                    enabled = recordingStatus.value != RecordingService.RecordingStatus.PAUSED_BY_CALL,
                     onCheckedChange = { checked ->
                         if (checked) startRecording()
                         else stopRecording()
@@ -109,7 +114,7 @@ fun RecordingContent(
                 Switch(
                     checked = useGDrive,
                     onCheckedChange = {
-                        if (isRecording.value) {
+                        if (recordingStatus.value != RecordingService.RecordingStatus.STOPPED) {
                             Toast.makeText(
                                 context,
                                 R.string.error_cannot_change_while_recording,
@@ -120,7 +125,7 @@ fun RecordingContent(
                         }
                     },
                     modifier = Modifier.alpha(
-                        if (isCloudAvailable && !isRecording.value) 1f else ALPHA_DISABLED
+                        if (isCloudAvailable && recordingStatus.value == RecordingService.RecordingStatus.STOPPED) 1f else ALPHA_DISABLED
                     )
                 )
             }

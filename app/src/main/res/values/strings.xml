@@ -1,7 +1,9 @@
 <resources>
     <string name="app_name">Back Recorder</string>
     <string name="audio_recording_channel_name">Audio Recording</string>
-    <string name="notification_title">Recording in progress</string>
+    <string name="notification_title_recording">Recording in progress</string>
+    <string name="notification_title_stopped">Not recording</string>
+    <string name="notification_title_paused_by_call">Recording paused by voice call</string>
     <string name="notification_text">Recording time: %s</string>
     <string name="notification_bigtext_free">Recording time: %s\nFree version • Only last 15 minutes can be saved</string>
     <string name="notification_bigtext_trial">Recording time: %s\nFree trial • Full recording available</string>
@@ -51,8 +53,10 @@
     <string name="trial_ends_on">Your free trial ends on %1$s. Cancel anytime in Play Store.</string>
     <string name="recording_on">Recording</string>
     <string name="recording_idle">Idle</string>
+    <string name="recording_paused_by_call">Paused by voice call</string>
     <string name="stop_recording">Stop recording</string>
     <string name="start_recording">Start recording</string>
+    <string name="cannot_change_recording">Cannot change recording status while on call</string>
     <string name="save_to_gdrive">Save to Google Drive</string>
     <string name="premium_required">Requires premium</string>
     <string name="last_5">Last 5 min</string>

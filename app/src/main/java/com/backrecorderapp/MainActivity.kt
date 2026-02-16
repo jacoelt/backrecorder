@@ -60,8 +60,8 @@ class MainActivity : AppCompatActivity() {
 
     private var recordingService: RecordingService? = null
     private var isBound = false
-    private val isRecording = mutableStateOf(false)
-    private val uiIsRecording = mutableStateOf(false)
+    private val recordingStatus = mutableStateOf(RecordingService.RecordingStatus.STOPPED)
+    private val uiRecordingStatus = mutableStateOf(RecordingService.RecordingStatus.STOPPED)
     private var currentRecordingDuration = mutableIntStateOf(0)
     private var trialDaysRemaining: Int = TrialManager.TRIAL_PERIOD
     private lateinit var trialManager: TrialManager
@@ -84,8 +84,8 @@ class MainActivity : AppCompatActivity() {
             recordingService = binder.getService()
             isBound = true
 
-            recordingService?.registerRecordingStateCallback { recordingState: Boolean ->
-                isRecording.value = recordingState
+            recordingService?.registerRecordingStateCallback { recordingState: RecordingService.RecordingStatus ->
+                recordingStatus.value = recordingState
             }
 
             recordingService?.registerCallbackCurrentDuration {
@@ -238,13 +238,13 @@ class MainActivity : AppCompatActivity() {
                         usingCloud = isUsingCloud()
                     }
 
-                    LaunchedEffect(isRecording.value) {
-                        if (isRecording.value) {
-                            uiIsRecording.value = true
+                    LaunchedEffect(recordingStatus.value) {
+                        if (recordingStatus.value != RecordingService.RecordingStatus.STOPPED) {
+                            uiRecordingStatus.value = recordingStatus.value
                         } else {
                             delay(300)
-                            if (!isRecording.value) {
-                                uiIsRecording.value = false
+                            if (recordingStatus.value == RecordingService.RecordingStatus.STOPPED) {
+                                uiRecordingStatus.value = RecordingService.RecordingStatus.STOPPED
                             }
                         }
                     }
@@ -314,7 +314,7 @@ class MainActivity : AppCompatActivity() {
                         MainScreen(
                             startRecording = { startRecording() },
                             stopRecording = { stopRecording() },
-                            isRecording = uiIsRecording,
+                            recordingStatus = uiRecordingStatus,
                             currentRecordingDuration,
                             startSaveRecording = { start, end ->
                                 if (start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {

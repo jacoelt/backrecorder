@@ -5,7 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Binder
 import android.os.Handler
@@ -63,9 +66,15 @@ class RecordingService : Service() {
         SupervisorJob() + Dispatchers.IO
     )
 
+    enum class RecordingStatus {
+        STOPPED,
+        RECORDING,
+        PAUSED_BY_CALL,
+    }
+
     private val binder = LocalBinder()
-    private var isRecording = false  // Track recording status
-    private var recordingStateCallback: ((isRecording: Boolean) -> Unit)? = null
+    private var recordingStatus = RecordingStatus.STOPPED
+    private var recordingStateCallback: ((recordingStatus: RecordingStatus) -> Unit)? = null
     private var currentDurationCallback: ((duration: Int) -> Unit)? = null
 
     @Volatile
@@ -96,14 +105,30 @@ class RecordingService : Service() {
         workerThread.start()
         workerHandler = Handler(workerThread.looper)
 
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        val focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setOnAudioFocusChangeListener { focusChange ->
+                when (focusChange) {
+                    AudioManager.AUDIOFOCUS_LOSS,
+                    AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                        onCallStarted()
+                    }
+
+                    AudioManager.AUDIOFOCUS_GAIN -> {
+                        onCallEnded()
+                    }
+                }
+            }
+            .build()
+
+        audioManager.requestAudioFocus(focusRequest)
 
         restoreListOfExistingFiles()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Started")
-
-//        restoreListOfExistingFiles()
 
         when(intent?.action) {
             ACTION_START_RECORDING -> {
@@ -154,6 +179,13 @@ class RecordingService : Service() {
             this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val notificationContentId =
+            when (recordingStatus) {
+                RecordingStatus.RECORDING -> R.string.notification_title_recording
+                RecordingStatus.STOPPED -> R.string.notification_title_stopped
+                RecordingStatus.PAUSED_BY_CALL -> R.string.notification_title_paused_by_call
+            }
+
         val notificationBigContentId =
             when (subscriptionManager.mode.value) {
                 SubscriptionMode.FREE -> R.string.notification_bigtext_free
@@ -164,7 +196,7 @@ class RecordingService : Service() {
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.icon)
-            .setContentTitle(getString(R.string.notification_title))
+            .setContentTitle(getString(notificationContentId))
             .setContentText(getString(R.string.notification_text, TimeHelper.formatDuration(getDuration())))
             .setStyle(
                 NotificationCompat
@@ -242,7 +274,6 @@ class RecordingService : Service() {
 
         updateNotification()
         notifyCurrentDurationChanged()
-
     }
 
     private fun startRecorder(outputFile: File) {
@@ -260,8 +291,7 @@ class RecordingService : Service() {
                 prepare()
                 start()
 
-                isRecording = true
-                notifyRecordingStateChanged()
+                changeRecordingStatus(RecordingStatus.RECORDING)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start MediaRecorder", e)
                 stopCurrentRecorderSafely()
@@ -303,8 +333,21 @@ class RecordingService : Service() {
             }
         }
         mediaRecorder = null
-        isRecording = false
-        notifyRecordingStateChanged()
+        changeRecordingStatus(RecordingStatus.STOPPED)
+    }
+
+    private fun onCallStarted() {
+        if (isServiceActive) {
+            interruptCurrentRecording()
+        }
+        changeRecordingStatus(RecordingStatus.PAUSED_BY_CALL)
+        updateNotification()
+    }
+
+    private fun onCallEnded() {
+        changeRecordingStatus(RecordingStatus.RECORDING)
+        updateNotification()
+        startNewRecording()
     }
 
     private fun cleanOldFiles() {
@@ -334,13 +377,16 @@ class RecordingService : Service() {
         startNewRecording()
     }
 
-    fun registerRecordingStateCallback(callback: (isRecording: Boolean) -> Unit) {
+    fun registerRecordingStateCallback(callback: (recordingStatus: RecordingStatus) -> Unit) {
         recordingStateCallback = callback
-        notifyRecordingStateChanged()
+        changeRecordingStatus()
     }
 
-    private fun notifyRecordingStateChanged() {
-        recordingStateCallback?.invoke(isRecording)
+    private fun changeRecordingStatus(newRecordingStatus: RecordingStatus? = null) {
+        if (newRecordingStatus != null) {
+            recordingStatus = newRecordingStatus
+        }
+        recordingStateCallback?.invoke(recordingStatus)
     }
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
