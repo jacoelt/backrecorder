@@ -84,6 +84,7 @@ class BillingManager(
         .build()
 
     fun startConnection(onConnected: () -> Unit, onDisconnected: (() -> Unit)? = null) {
+        Log.d(TAG, "Start billing connection")
         billingClient.startConnection(object : BillingClientStateListener {
             override fun onBillingSetupFinished(billingResult: BillingResult) {
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
@@ -130,10 +131,14 @@ class BillingManager(
         billingResult: BillingResult,
         purchases: MutableList<Purchase>?
     ) {
+        Log.d(TAG, "onPurchasesUpdated: Start")
         when (billingResult.responseCode) {
 
             BillingClient.BillingResponseCode.OK -> {
-                if (purchases.isNullOrEmpty()) return
+                if (purchases.isNullOrEmpty()) {
+                    Log.d(TAG, "onPurchasesUpdated: No purchases found")
+                    return
+                }
 
                 purchases.forEach { purchase ->
                     handlePurchase(purchase)
@@ -154,6 +159,7 @@ class BillingManager(
     }
 
     private fun handlePurchase(purchase: Purchase) {
+        Log.d(TAG, "handlePurchase: Start $purchase")
         if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) {
             return
         }
@@ -183,7 +189,7 @@ class BillingManager(
     }
 
     private suspend fun onSubscriptionActivated(purchase: Purchase) {
-        Log.d(TAG, "Subscription activated")
+        Log.d(TAG, "onSubscriptionActivated: Start")
         subscriptionManager.setMode(SubscriptionMode.PREMIUM)
         trialManager.setTrialStartTime(purchase.purchaseTime)
 
@@ -196,8 +202,11 @@ class BillingManager(
     }
 
     private fun scheduleTrialReminder(context: Context, trialEndMillis: Long) {
+        Log.d(TAG, "scheduleTrialReminder: Start")
         val reminderTime = trialEndMillis - TimeUnit.DAYS.toMillis(REMINDER_DAYS_BEFORE_END)
         val delay = reminderTime - System.currentTimeMillis()
+
+        Log.d(TAG, "scheduleTrialReminder: delay $delay")
 
         if (delay <= 0) return
 
@@ -218,6 +227,7 @@ class BillingManager(
     }
 
     suspend fun syncSubscriptionState() {
+        Log.d(TAG, "syncSubscriptionState: Start")
         val purchases: List<Purchase>
         try {
             purchases = getActiveSubscriptions()
@@ -227,17 +237,23 @@ class BillingManager(
         }
 
         if (purchases.isEmpty()) {
+            Log.d(TAG, "syncSubscriptionState: No subscription found")
             subscriptionManager.setMode(SubscriptionMode.FREE)
             return
         }
 
+        Log.d(TAG, "syncSubscriptionState: Purchases $purchases")
+
         val purchase = purchases.first()
 
-        val offers = subscriptionManager.currentOffers.value
+        val offers = getSubscriptionOffers()
             ?: run {
                 subscriptionManager.setMode(SubscriptionMode.FREE)
+                Log.d(TAG, "syncSubscriptionState: No offers found")
                 return
             }
+
+        Log.d(TAG, "syncSubscriptionState: Offers $offers")
 
         val matchingOffer =
             listOf(offers.monthly, offers.yearly)
@@ -245,9 +261,13 @@ class BillingManager(
                     purchase.products.contains(offer.productId)
                 }
 
+        Log.d(TAG, "syncSubscriptionState: Matching offer $matchingOffer")
+
         val mode = matchingOffer?.let {
             resolveSubscriptionMode(purchase, it)
         } ?: SubscriptionMode.FREE
+
+        Log.d(TAG, "syncSubscriptionState: Final mode $mode")
 
         subscriptionManager.setMode(mode)
     }
@@ -256,6 +276,9 @@ class BillingManager(
         purchase: Purchase,
         offer: SubscriptionOffer
     ): SubscriptionMode {
+
+        Log.d(TAG, "resolveSubscriptionMode: Start")
+        Log.d(TAG, "resolveSubscriptionMode: Purchase $purchase, Offer $offer")
 
         if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) {
             return SubscriptionMode.FREE
@@ -275,6 +298,8 @@ class BillingManager(
     }
 
     private suspend fun getActiveSubscriptions(): List<Purchase> = suspendCancellableCoroutine { cont ->
+        Log.d(TAG, "getActiveSubscriptions: Start")
+
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.SUBS)
             .build()
@@ -285,10 +310,15 @@ class BillingManager(
 
         try {
             billingClient.queryPurchasesAsync(params) { billingResult, purchasesList ->
-                if (!cont.isActive) return@queryPurchasesAsync
+                if (!cont.isActive) {
+                    Log.d(TAG, "getActiveSubscriptions: coroutine no longer active")
+                    return@queryPurchasesAsync
+                }
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
+                    Log.d(TAG, "getActiveSubscriptions: Ok $purchasesList")
                     cont.resume(purchasesList)
                 } else {
+                    Log.e(TAG, "getActiveSubscriptions: Error $billingResult")
                     cont.resumeWithException(RuntimeException("Billing query failed: ${billingResult.responseCode}"))
                 }
             }
@@ -300,7 +330,6 @@ class BillingManager(
     }
 
     suspend fun getSubscriptionOffers(): SubscriptionOffers? = suspendCancellableCoroutine { cont ->
-
         Log.d(TAG, "getSubscriptionOffers: Start")
 
         if (!billingClient.isReady) {
@@ -322,6 +351,7 @@ class BillingManager(
             .build()
 
         billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
+            Log.d(TAG, "getSubscriptionOffers: Product details response $billingResult $productDetailsList")
 
             if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
                 Log.d(TAG, "getSubscriptionOffers: Product query failed: ${billingResult.responseCode}")

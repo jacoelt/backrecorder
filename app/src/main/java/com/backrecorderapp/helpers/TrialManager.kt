@@ -9,6 +9,7 @@ class TrialManager(
 ) {
 
     companion object {
+        const val TAG = "TrialManager"
         const val TRIAL_PERIOD: Int = 30
     }
 

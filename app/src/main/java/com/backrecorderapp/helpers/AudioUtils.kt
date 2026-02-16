@@ -8,7 +8,7 @@ import android.util.Log
 import java.io.File
 import java.nio.ByteBuffer
 
-const val TAG = "AudioUtils"
+private const val TAG = "AudioUtils"
 
 fun concatAudioFiles(inputFiles: List<File>, outputFile: File) {
 
