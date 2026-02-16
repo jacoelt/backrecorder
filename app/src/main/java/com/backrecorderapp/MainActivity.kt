@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     private var subscriptionOffers: SubscriptionOffers? = null
     private var pendingSaveStart = mutableStateOf<Int?>(null)
     private var pendingSaveEnd = mutableStateOf<Int?>(null)
+    private var usingCloud = mutableStateOf(false)
     private lateinit var subscriptionManager: SubscriptionManager
     private lateinit var viewModel: MainViewModel
 
@@ -221,7 +222,6 @@ class MainActivity : AppCompatActivity() {
                     var hasAcceptedTerms by rememberSaveable { mutableStateOf<Boolean?>(null) }
                     var showTerms by rememberSaveable { mutableStateOf(false) }
                     var mustAcceptTerms by rememberSaveable { mutableStateOf(false) }
-                    var usingCloud by rememberSaveable { mutableStateOf(false) }
                     var premiumDialogReason by rememberSaveable { mutableStateOf<PaywallReason?>(null) }
                     var showSubscriptionPicker by rememberSaveable { mutableStateOf(false) }
                     var screenMode by rememberSaveable { mutableStateOf(MainScreenMode.RECORDING) }
@@ -235,7 +235,7 @@ class MainActivity : AppCompatActivity() {
                             mustAcceptTerms = true
                         }
 
-                        usingCloud = isUsingCloud()
+                        usingCloud.value = isUsingCloud()
                     }
 
                     LaunchedEffect(recordingStatus.value) {
@@ -331,7 +331,7 @@ class MainActivity : AppCompatActivity() {
                                 launchFilePicker()
                                 true
                             },
-                            useGDrive = usingCloud,
+                            useGDrive = usingCloud.value,
                             onToggleGDrive = { enabled ->
                                 if (!subscriptionManager.isPremium() && !subscriptionManager.isTrial()) {
                                     lifecycleScope.launch {
@@ -342,9 +342,12 @@ class MainActivity : AppCompatActivity() {
                                     return@MainScreen
                                 }
                                 lifecycleScope.launch {
-                                    if (enabled) setupGDrive()
-                                    settings.setUseGDrive(enabled)
-                                    usingCloud = enabled
+                                    if (enabled) {
+                                        initiateSetupGDrive()
+                                    } else {
+                                        settings.setUseGDrive(false)
+                                        usingCloud.value = false
+                                    }
                                 }
                             },
                             onShowTerms = { showTerms = true },
@@ -427,7 +430,7 @@ class MainActivity : AppCompatActivity() {
         currentRecordingDuration.intValue = duration
     }
 
-    private fun setupGDrive() {
+    private fun initiateSetupGDrive() {
         gDriveHelper.launchSignIn(authResultLauncher)
     }
 
@@ -444,6 +447,10 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (success) {
+            lifecycleScope.launch {
+                settings.setUseGDrive(true)
+                usingCloud.value = true
+            }
             try {
                 gDriveHelper.setupDrive()
             } catch (e: IllegalStateException) {
