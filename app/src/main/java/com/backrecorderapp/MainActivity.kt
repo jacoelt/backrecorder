@@ -55,7 +55,6 @@ import java.util.Locale
 
 const val ALPHA_DISABLED = 0.5f
 const val MAX_MINUTES_FREE_MODE = 15
-const val MAX_MINUTES_TOTAL = 24 * 60  // 24h
 
 class MainActivity : AppCompatActivity() {
 

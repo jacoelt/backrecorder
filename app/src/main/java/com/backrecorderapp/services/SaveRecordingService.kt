@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.GDriveHelper
+import com.backrecorderapp.helpers.RecordingConfig
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.concatAudioFiles
 import com.backrecorderapp.services.RecordingService.Companion.AUDIO_RECORDINGS_DIR
@@ -81,7 +82,7 @@ class SaveRecordingService : Service() {
         }
 
         val start = intent.getIntExtra(EXTRA_DURATION_START, 0)
-        val end = intent.getIntExtra(EXTRA_DURATION_END, RecordingService.DEFAULT_DURATION)
+        val end = intent.getIntExtra(EXTRA_DURATION_END, RecordingConfig.currentMaxDuration)
 
         Log.d(TAG, "Requested start: $start, end: $end")
 

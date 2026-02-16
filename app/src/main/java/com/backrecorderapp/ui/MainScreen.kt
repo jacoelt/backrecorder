@@ -1,5 +1,6 @@
 package com.backrecorderapp.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,17 +18,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.R
+import com.backrecorderapp.helpers.RecordingConfig
 import com.backrecorderapp.helpers.SubscriptionMode
 import com.backrecorderapp.helpers.TimeHelper
+import com.backrecorderapp.ui.helpers.QaHiddenTapTarget
 import com.backrecorderapp.ui.model.MainViewModel
 
 enum class MainScreenMode {
     RECORDING,
     SAVING
 }
+
 @Composable
 fun MainScreen(
     startRecording: () -> Unit,
@@ -44,6 +49,7 @@ fun MainScreen(
     screenMode: MainScreenMode,
     onModeChange: (MainScreenMode) -> Unit,
 ) {
+    val context = LocalContext.current
     val subscriptionMode by viewModel.subscriptionMode.collectAsState()
     val isCloudAvailable =
         subscriptionMode == SubscriptionMode.TRIAL ||
@@ -89,13 +95,24 @@ fun MainScreen(
                     modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        text = if (isRecording.value)
-                            stringResource(R.string.recording_on)
-                        else
-                            stringResource(R.string.recording_idle),
-                        style = MaterialTheme.typography.titleLarge
-                    )
+                    QaHiddenTapTarget(
+                        onTriggered = {
+                            RecordingConfig.switchQaDuration()
+                            Toast.makeText(
+                                context,
+                                "Current max recording duration ${RecordingConfig.currentMaxDuration} mins",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    ) {
+                        Text(
+                            text = if (isRecording.value)
+                                stringResource(R.string.recording_on)
+                            else
+                                stringResource(R.string.recording_idle),
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                    }
 
                     if (isRecording.value) {
                         Spacer(modifier = Modifier.height(8.dp))

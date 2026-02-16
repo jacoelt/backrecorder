@@ -13,10 +13,10 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.backrecorderapp.MAX_MINUTES_TOTAL
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.helpers.GDriveHelper
+import com.backrecorderapp.helpers.RecordingConfig
 import com.backrecorderapp.helpers.SettingsDataStore
 import com.backrecorderapp.helpers.SubscriptionManager
 import com.backrecorderapp.helpers.SubscriptionMode
@@ -40,7 +40,6 @@ class RecordingService : Service() {
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000
         const val AUDIO_RECORDINGS_DIR = "audio_recordings"
-        const val DEFAULT_DURATION = MAX_MINUTES_TOTAL
         const val NOTIFICATION_CHANNEL_ID = "AudioRecordingChannel"
         const val NOTIFICATION_ID = 42
 
@@ -56,7 +55,6 @@ class RecordingService : Service() {
 
 
     private lateinit var outputDir: File
-    private var maxDurationMinutes = DEFAULT_DURATION
     private val fileList = mutableListOf<File>()
 
     private lateinit var workerThread: HandlerThread
@@ -311,10 +309,10 @@ class RecordingService : Service() {
 
     private fun cleanOldFiles() {
         Log.d(TAG, "Clean up: currently have ${fileList.size} files")
-        while (fileList.size > maxDurationMinutes) {
+        while (fileList.size > RecordingConfig.currentMaxDuration) {
             fileList.removeAt(0).delete()
         }
-        gDriveHelper.deleteOldestFromStaging(maxDurationMinutes)
+        gDriveHelper.deleteOldestFromStaging(RecordingConfig.currentMaxDuration)
         Log.d(TAG, "Clean up done: ${fileList.size} files left")
     }
 
