@@ -136,6 +136,7 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK || result.data != null) {
             gDriveHelper.handleAuthResponse(result.data) { success -> afterGoogleSignIn(success) }
         } else {
+            switchUseGdrive(false)
             Log.e("MainActivity", "Auth canceled or failed")
         }
     }
@@ -345,8 +346,7 @@ class MainActivity : AppCompatActivity() {
                                     if (enabled) {
                                         initiateSetupGDrive()
                                     } else {
-                                        settings.setUseGDrive(false)
-                                        usingCloud.value = false
+                                        switchUseGdrive(false)
                                     }
                                 }
                             },
@@ -366,6 +366,13 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+    }
+
+    private fun switchUseGdrive(newStatus: Boolean) {
+        lifecycleScope.launch {
+            settings.setUseGDrive(newStatus)
+            usingCloud.value = newStatus
         }
     }
 
@@ -436,9 +443,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun afterGoogleSignIn(success: Boolean) {
         fun onFail() {
-            lifecycleScope.launch {
-                settings.setUseGDrive(false)
-            }
+            switchUseGdrive(false)
             Toast.makeText(
                 this.applicationContext,
                 R.string.error_setup_gdrive,
@@ -447,10 +452,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (success) {
-            lifecycleScope.launch {
-                settings.setUseGDrive(true)
-                usingCloud.value = true
-            }
+            switchUseGdrive(true)
             try {
                 gDriveHelper.setupDrive()
             } catch (e: IllegalStateException) {

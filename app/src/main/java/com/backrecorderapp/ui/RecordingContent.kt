@@ -1,6 +1,5 @@
 package com.backrecorderapp.ui
 
-import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -114,18 +113,10 @@ fun RecordingContent(
                 Switch(
                     checked = useGDrive,
                     onCheckedChange = {
-                        if (recordingStatus.value != RecordingService.RecordingStatus.STOPPED) {
-                            Toast.makeText(
-                                context,
-                                R.string.error_cannot_change_while_recording,
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } else {
-                            onToggleGDrive(it)
-                        }
+                        onToggleGDrive(it)
                     },
                     modifier = Modifier.alpha(
-                        if (isCloudAvailable && recordingStatus.value == RecordingService.RecordingStatus.STOPPED) 1f else ALPHA_DISABLED
+                        if (isCloudAvailable) 1f else ALPHA_DISABLED
                     )
                 )
             }

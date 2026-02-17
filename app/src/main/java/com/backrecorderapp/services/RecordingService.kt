@@ -345,6 +345,7 @@ class RecordingService : Service() {
     }
 
     private suspend fun onCallStarted() {
+        Log.d(TAG, "onCallStarted")
         if (isServiceActive) {
             interruptCurrentRecording()
         }
@@ -353,6 +354,7 @@ class RecordingService : Service() {
     }
 
     private suspend fun onCallEnded() {
+        Log.d(TAG, "onCallEnded")
         changeRecordingStatus(RecordingStatus.RECORDING)
         updateNotification()
         startNewRecording()
