@@ -155,6 +155,7 @@ class RecordingService : Service() {
             ACTION_FLUSH_CURRENT_FILE -> {
                 if (isServiceActive) {
                     interruptCurrentRecording()
+                    startNewRecording()
                 }
                 return START_NOT_STICKY
             }
@@ -384,7 +385,6 @@ class RecordingService : Service() {
         Log.d(TAG, "interruptCurrentRecording")
         workerHandler.removeCallbacksAndMessages(null)
         isTransitioning = false
-        startNewRecording()
     }
 
     fun registerRecordingStateCallback(callback: (recordingStatus: RecordingStatus) -> Unit) {

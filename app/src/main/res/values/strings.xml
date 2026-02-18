@@ -56,7 +56,7 @@
     <string name="recording_paused_by_call">Paused by voice call</string>
     <string name="stop_recording">Stop recording</string>
     <string name="start_recording">Start recording</string>
-    <string name="cannot_change_recording">Cannot change recording status while on call</string>
+    <string name="cannot_change_recording">Cannot change while on call</string>
     <string name="save_to_gdrive">Save to Google Drive</string>
     <string name="premium_required">Requires premium</string>
     <string name="last_5">Last 5 min</string>
