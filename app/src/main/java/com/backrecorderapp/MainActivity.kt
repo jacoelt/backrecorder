@@ -159,6 +159,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             billingManager.syncSubscriptionState()
             subscriptionManager.load()
+            switchUseGdrive(isUsingCloud())
             try {
                 subscriptionOffers = billingManager.getSubscriptionOffers()
             } catch (e: Exception) {
@@ -202,6 +203,8 @@ class MainActivity : AppCompatActivity() {
                 lifecycleScope.launch {
                     billingManager.syncSubscriptionState()
                     subscriptionManager.load()
+
+                    switchUseGdrive(isUsingCloud())
                 }
             })
         } catch (e: Exception) {
@@ -236,7 +239,7 @@ class MainActivity : AppCompatActivity() {
                             mustAcceptTerms = true
                         }
 
-                        usingCloud.value = isUsingCloud()
+                        switchUseGdrive(isUsingCloud())
                     }
 
                     LaunchedEffect(recordingStatus.value) {

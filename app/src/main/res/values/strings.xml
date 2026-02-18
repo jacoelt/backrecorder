@@ -28,7 +28,7 @@
     <string name="error_no_duration">Duration must be > 0</string>
     <string name="error_no_recording">No audio recorded.</string>
     <string name="error_cannot_change_while_recording">This cannot be changed while recording.</string>
-    <string name="error_setup_gdrive">There was a problem connecting to Google Drive.</string>
+    <string name="error_setup_gdrive">There was a problem connecting to Google Drive. Please check internet connectivity.</string>
     <string name="error_open_subscriptions">Error when trying to open subscriptions</string>
     <string name="error_save_gdrive">There was a problem when saving the file on Google Drive</string>
     <string name="error_no_offers">No subscription details could be fetched from Google Play Store.</string>

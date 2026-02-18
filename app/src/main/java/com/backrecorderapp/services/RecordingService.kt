@@ -38,7 +38,7 @@ import java.util.Locale
 class RecordingService : Service() {
 
     companion object {
-        private const val TAG = "AudioRecordingService"
+        private const val TAG = "RecordingService"
         const val CHANNELS = 1
         const val SAMPLING_RATE = 16000
         const val BIT_RATE = 32000

@@ -122,12 +122,6 @@ class GDriveHelper(
 
     fun setupDrive() {
         scope.launch {
-            val enabled = settingsDataStore.getUseGDrive()
-            if (!enabled) {
-                Log.d(TAG, "GDrive disabled, skipping Drive setup")
-                return@launch
-            }
-
             val finalId = getOrCreateFolder("BackRecorder", null)
             if (finalId == null) {
                 Log.e(TAG, "Failed to create/find final Drive folder")
