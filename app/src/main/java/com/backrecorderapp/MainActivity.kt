@@ -321,7 +321,7 @@ class MainActivity : AppCompatActivity() {
                             recordingStatus = uiRecordingStatus,
                             currentRecordingDuration,
                             startSaveRecording = { start, end ->
-                                if (start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
+                                if (subscriptionManager.isFree() && start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
                                     lifecycleScope.launch {
                                         if (ensureSubscriptionOffersLoaded()) {
                                             premiumDialogReason = PaywallReason.RECORDING_DURATION
@@ -337,7 +337,7 @@ class MainActivity : AppCompatActivity() {
                             },
                             useGDrive = usingCloud.value,
                             onToggleGDrive = { enabled ->
-                                if (!subscriptionManager.isPremium() && !subscriptionManager.isTrial()) {
+                                if (subscriptionManager.isFree()) {
                                     lifecycleScope.launch {
                                         if (ensureSubscriptionOffersLoaded()) {
                                             premiumDialogReason = PaywallReason.CLOUD_BACKUP
