@@ -256,39 +256,73 @@ class GDriveHelper(
             val stagingId = securePreferences.getString(PREF_KEY_STAGING_FOLDER) ?: return@launch
 
             safeNetworkCall("deleteOldestFromStaging") {
-                val request = Request.Builder()
-                    .url(
-                        "https://www.googleapis.com/drive/v3/files?pageSize=1500&" +
-                                "q='${stagingId}' in parents and trashed=false&orderBy=createdTime"
-                    )
-                    .addHeader("Authorization", "Bearer $token")
-                    .build()
 
-                httpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        Log.e(TAG, "Failed to list staging files: ${response.code}")
-                        return@safeNetworkCall
+                val allFiles = mutableListOf<String>()
+                var pageToken: String? = null
+
+                do {
+                    Log.d(TAG, "Getting page of files from drive")
+
+                    val url = buildString {
+                        append("https://www.googleapis.com/drive/v3/files?")
+                        append("q='").append(stagingId).append("' in parents and trashed=false")
+                        append("&orderBy=createdTime")
+                        append("&pageSize=1000")
+                        if (pageToken != null) {
+                            append("&pageToken=").append(pageToken)
+                        }
                     }
 
-                    val body = response.body?.string() ?: return@safeNetworkCall
-                    val files = JSONObject(body).optJSONArray("files") ?: return@safeNetworkCall
-                    if (files.length() <= maxFiles) return@safeNetworkCall
+                    val request = Request.Builder()
+                        .url(url)
+                        .addHeader("Authorization", "Bearer $token")
+                        .build()
 
-                    val toDeleteCount = files.length() - maxFiles
-                    for (i in 0 until toDeleteCount) {
-                        val fileId = files.getJSONObject(i).getString("id")
-                        val deleteRequest = Request.Builder()
-                            .url("https://www.googleapis.com/drive/v3/files/$fileId")
-                            .delete()
-                            .addHeader("Authorization", "Bearer $token")
-                            .build()
-                        httpClient.newCall(deleteRequest).execute().close()
-                        Log.d(TAG, "Deleted old staging file $fileId")
+                    httpClient.newCall(request).execute().use { response ->
+                        if (!response.isSuccessful) {
+                            Log.e(TAG, "Failed to list staging files: $response")
+                            return@safeNetworkCall
+                        }
+
+                        val body = response.body?.string() ?: return@safeNetworkCall
+                        val json = JSONObject(body)
+
+                        val files = json.optJSONArray("files") ?: return@safeNetworkCall
+                        for (i in 0 until files.length()) {
+                            val fileId = files.getJSONObject(i).getString("id")
+                            allFiles.add(fileId)
+                        }
+
+                        pageToken = json.optString("nextPageToken", null)
+
+                        Log.d(TAG, "Next page? ${pageToken != null}")
                     }
+
+                } while (pageToken != null)
+
+                if (allFiles.size <= maxFiles) {
+                    Log.d(TAG, "No cleanup needed (${allFiles.size}/$maxFiles)")
+                    return@safeNetworkCall
+                }
+
+                val toDeleteCount = allFiles.size - maxFiles
+                Log.d(TAG, "Deleting $toDeleteCount old staging files")
+
+                for (i in 0 until toDeleteCount) {
+                    val fileId = allFiles[i]
+                    val deleteRequest = Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files/$fileId")
+                        .delete()
+                        .addHeader("Authorization", "Bearer $token")
+                        .build()
+
+                    httpClient.newCall(deleteRequest).execute().close()
+                    Log.d(TAG, "Deleted old staging file $fileId")
                 }
             }
         }
     }
+
 
 
     private suspend fun getValidAccessToken(): String? {
