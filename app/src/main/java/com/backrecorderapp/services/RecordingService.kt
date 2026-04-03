@@ -393,10 +393,47 @@ class RecordingService : Service() {
     }
 
     private fun changeRecordingStatus(newRecordingStatus: RecordingStatus? = null) {
+        if (recordingStatus == newRecordingStatus) return
+
         if (newRecordingStatus != null) {
             recordingStatus = newRecordingStatus
         }
+
         recordingStateCallback?.invoke(recordingStatus)
+
+        if (recordingStatus === RecordingStatus.PAUSED_BY_CALL) {
+            serviceScope.launch {
+                onEnterPausedByCall()
+            }
+        }
+    }
+
+    private suspend fun onEnterPausedByCall() {
+        updateNotification()
+        schedulePauseRecoveryCheck()
+    }
+
+    private fun schedulePauseRecoveryCheck() {
+        workerHandler.postDelayed({
+            if (recordingStatus != RecordingStatus.PAUSED_BY_CALL) return@postDelayed
+            if (!isServiceActive) return@postDelayed
+
+            tryResumeFromPausedByCall()
+        }, 5_000)
+    }
+
+    private fun tryResumeFromPausedByCall() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        val canResume =
+            audioManager.mode == AudioManager.MODE_NORMAL &&
+                    !audioManager.isMicrophoneMute
+
+        if (canResume) {
+            startNewRecording()
+        } else {
+            schedulePauseRecoveryCheck()
+        }
     }
 
     fun registerCallbackCurrentDuration(callback: (duration: Int) -> Unit) {
