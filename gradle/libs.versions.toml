@@ -25,6 +25,9 @@ securityCrypto = "1.1.0"
 tinkAndroid = "1.12.0"
 wheelpickercompose = "1.1.11"
 workRuntimeKtx = "2.11.1"
+adjustSdk = "5.0.0"
+facebookSdk = "17.0.1"
+installReferrer = "2.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -54,6 +57,9 @@ play-services-auth = { group = "com.google.android.gms", name = "play-services-a
 tink-android = { module = "com.google.crypto.tink:tink-android", version.ref = "tinkAndroid" }
 wheelpickercompose = { module = "com.github.commandiron:WheelPickerCompose", version.ref = "wheelpickercompose" }
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntimeKtx" }
+adjust-android = { module = "com.adjust.sdk:adjust-android", version.ref = "adjustSdk" }
+facebook-android-sdk = { module = "com.facebook.android:facebook-android-sdk", version.ref = "facebookSdk" }
+install-referrer = { module = "com.android.installreferrer:installreferrer", version.ref = "installReferrer" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
