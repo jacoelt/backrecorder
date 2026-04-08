@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="saving_status_stop_recording">\"Stopping recording…\"</string>
-    <string name="saving_status_mergin_audio">\"Merging audio…\"</string>
-    <string name="saving_status_writing_file">\"Writing output file…\"</string>
-    <string name="saving_status_completed">\"Save completed\"</string>
-    <string name="saving_status_error">\"Error while saving\"</string>
-</resources>
