@@ -33,6 +33,8 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 
 class RecordingService : Service() {
@@ -58,7 +60,7 @@ class RecordingService : Service() {
 
 
     private lateinit var outputDir: File
-    private val fileList = mutableListOf<File>()
+    private val fileList = CopyOnWriteArrayList<File>()
 
     private lateinit var workerThread: HandlerThread
     private lateinit var workerHandler: Handler
@@ -77,11 +79,8 @@ class RecordingService : Service() {
     private var recordingStateCallback: ((recordingStatus: RecordingStatus) -> Unit)? = null
     private var currentDurationCallback: ((duration: Int) -> Unit)? = null
 
-    @Volatile
-    private var isTransitioning = false
-
-    @Volatile
-    private var isServiceActive = false
+    private val isTransitioning = AtomicBoolean(false)
+    private val isServiceActive = AtomicBoolean(false)
 
     inner class LocalBinder : Binder() {
         fun getService(): RecordingService = this@RecordingService
@@ -92,8 +91,8 @@ class RecordingService : Service() {
         Log.d(TAG, "Created")
         outputDir = File(externalCacheDir, AUDIO_RECORDINGS_DIR).apply { mkdirs() }
         settings = SettingsDataStore.getInstance(this.applicationContext)
-        subscriptionManager = SubscriptionManager(settings)
-        gDriveHelper = GDriveHelper(this)
+        subscriptionManager = SubscriptionManager.getInstance(this.applicationContext)
+        gDriveHelper = GDriveHelper.getInstance(this.applicationContext)
 
         serviceScope.launch {
             subscriptionManager.load()
@@ -136,8 +135,7 @@ class RecordingService : Service() {
 
         when(intent?.action) {
             ACTION_START_RECORDING -> {
-                if (!isServiceActive) {
-                    isServiceActive = true
+                if (isServiceActive.compareAndSet(false, true)) {
                     startForegroundService()
                     serviceScope.launch {
                         startNewRecording()
@@ -147,13 +145,13 @@ class RecordingService : Service() {
             }
 
             ACTION_STOP_RECORDING -> {
-                isServiceActive = false
+                isServiceActive.set(false)
                 stopRecording()
                 return START_NOT_STICKY
             }
 
             ACTION_FLUSH_CURRENT_FILE -> {
-                if (isServiceActive) {
+                if (isServiceActive.get()) {
                     interruptCurrentRecording()
                     startNewRecording()
                 }
@@ -219,7 +217,7 @@ class RecordingService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         subscriptionManager.load()
 
-        if (isServiceActive) {
+        if (isServiceActive.get()) {
             val notification = buildNotification()
             manager.notify(NOTIFICATION_ID, notification)
         } else {
@@ -236,16 +234,15 @@ class RecordingService : Service() {
     }
 
     private fun startNewRecording() {
-        if (isTransitioning) {
+        if (!isTransitioning.compareAndSet(false, true)) {
             Log.w(TAG, "startNewRecording ignored: transition already in progress")
             return
         }
-        isTransitioning = true
 
         try {
             internalStartNewRecording()
         } finally {
-            isTransitioning = false
+            isTransitioning.set(false)
         }
     }
 
@@ -312,7 +309,7 @@ class RecordingService : Service() {
     private fun scheduleNextRotation() {
         workerHandler.removeCallbacksAndMessages(null)
         workerHandler.postDelayed({
-            if (isServiceActive) {
+            if (isServiceActive.get()) {
                 startNewRecording()
             }
         }, 60_000)
@@ -320,7 +317,7 @@ class RecordingService : Service() {
 
     private fun stopRecording() {
         Log.d(TAG, "stopRecording")
-        isServiceActive = false
+        isServiceActive.set(false)
         workerHandler.removeCallbacksAndMessages(null)
         stopCurrentRecorderSafely()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -347,7 +344,7 @@ class RecordingService : Service() {
 
     private suspend fun onCallStarted() {
         Log.d(TAG, "onCallStarted")
-        if (isServiceActive) {
+        if (isServiceActive.get()) {
             interruptCurrentRecording()
         }
         changeRecordingStatus(RecordingStatus.PAUSED_BY_CALL)
@@ -375,7 +372,6 @@ class RecordingService : Service() {
         stopRecording()
         workerThread.quitSafely()
         serviceScope.cancel()
-        gDriveHelper.clear()
         super.onDestroy()
     }
 
@@ -384,7 +380,7 @@ class RecordingService : Service() {
     private fun interruptCurrentRecording() {
         Log.d(TAG, "interruptCurrentRecording")
         workerHandler.removeCallbacksAndMessages(null)
-        isTransitioning = false
+        isTransitioning.set(false)
     }
 
     fun registerRecordingStateCallback(callback: (recordingStatus: RecordingStatus) -> Unit) {
@@ -416,7 +412,7 @@ class RecordingService : Service() {
     private fun schedulePauseRecoveryCheck() {
         workerHandler.postDelayed({
             if (recordingStatus != RecordingStatus.PAUSED_BY_CALL) return@postDelayed
-            if (!isServiceActive) return@postDelayed
+            if (!isServiceActive.get()) return@postDelayed
 
             tryResumeFromPausedByCall()
         }, 5_000)

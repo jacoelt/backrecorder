@@ -13,7 +13,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -29,8 +28,8 @@ import com.backrecorderapp.services.RecordingService
 fun RecordingContent(
     startRecording: () -> Unit,
     stopRecording: () -> Unit,
-    recordingStatus: MutableState<RecordingService.RecordingStatus>,
-    currentRecordingDuration: MutableState<Int>,
+    recordingStatus: RecordingService.RecordingStatus,
+    currentRecordingDuration: Int,
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
     isCloudAvailable: Boolean,
@@ -59,7 +58,7 @@ fun RecordingContent(
             ) {
                 Text(
                     text = stringResource(
-                        when (recordingStatus.value) {
+                        when (recordingStatus) {
                             RecordingService.RecordingStatus.RECORDING -> R.string.stop_recording
                             RecordingService.RecordingStatus.STOPPED -> R.string.start_recording
                             RecordingService.RecordingStatus.PAUSED_BY_CALL -> R.string.cannot_change_recording
@@ -69,8 +68,8 @@ fun RecordingContent(
                 )
 
                 Switch(
-                    checked = recordingStatus.value == RecordingService.RecordingStatus.RECORDING,
-                    enabled = recordingStatus.value != RecordingService.RecordingStatus.PAUSED_BY_CALL,
+                    checked = recordingStatus == RecordingService.RecordingStatus.RECORDING,
+                    enabled = recordingStatus != RecordingService.RecordingStatus.PAUSED_BY_CALL,
                     onCheckedChange = { checked ->
                         if (checked) startRecording()
                         else stopRecording()
@@ -127,18 +126,18 @@ fun RecordingContent(
         // ===== Save action (contextual) =====
         Button(
             onClick = onSaveClick,
-            enabled = currentRecordingDuration.value > 0,
+            enabled = currentRecordingDuration > 0,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(stringResource(R.string.save_recording))
         }
 
-        if (currentRecordingDuration.value > 0) {
+        if (currentRecordingDuration > 0) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = stringResource(
                     R.string.current_duration,
-                    formatDuration(currentRecordingDuration.value)
+                    formatDuration(currentRecordingDuration)
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier
