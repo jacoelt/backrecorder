@@ -14,6 +14,7 @@ import com.backrecorderapp.ui.settings.SettingsScreen
 
 object Routes {
     const val DISCLAIMER = "disclaimer"
+    const val DISCLAIMER_REVIEW = "disclaimer_review"
     const val MAIN = "main"
     const val SETTINGS = "settings"
 }
@@ -35,9 +36,16 @@ fun NavGraph() {
                     }
                 },
                 onDeclined = {
-                    // Close the app
                     android.os.Process.killProcess(android.os.Process.myPid())
                 }
+            )
+        }
+
+        composable(Routes.DISCLAIMER_REVIEW) {
+            DisclaimerScreen(
+                onAccepted = {},
+                onDeclined = { navController.popBackStack() },
+                readOnly = true
             )
         }
 
@@ -53,7 +61,7 @@ fun NavGraph() {
             SettingsScreen(
                 onNavigateBack = { navController.popBackStack() },
                 onShowDisclaimer = {
-                    navController.navigate(Routes.DISCLAIMER)
+                    navController.navigate(Routes.DISCLAIMER_REVIEW)
                 }
             )
         }

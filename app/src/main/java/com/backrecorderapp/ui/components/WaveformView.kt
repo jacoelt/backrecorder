@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -20,7 +21,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
-import com.backrecorderapp.data.waveform.WaveformRepository
 import com.backrecorderapp.util.TimeUtils
 import kotlin.math.abs
 
@@ -50,8 +50,7 @@ fun WaveformView(
     } else 1f
 
     val downsampled = remember(waveformData) {
-        val repo = WaveformRepository()
-        repo.downsample(waveformData, 800)
+        downsampleAmplitudes(waveformData, 800)
     }
 
     Column(modifier = modifier) {
@@ -79,20 +78,26 @@ fun WaveformView(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(150.dp)
-                .pointerInput(timeRange) {
-                    detectHorizontalDragGestures { change, _ ->
-                        val fraction = change.position.x / size.width
-
-                        // Determine which handle is closer
-                        val distToStart = abs(fraction - selectionStartFraction)
-                        val distToEnd = abs(fraction - selectionEndFraction)
-
-                        if (distToStart < distToEnd) {
-                            onSelectionStartChanged(fraction.coerceIn(0f, 1f))
-                        } else {
-                            onSelectionEndChanged(fraction.coerceIn(0f, 1f))
+                .pointerInput(timeRange, selectionStartFraction, selectionEndFraction) {
+                    val draggingStart = mutableStateOf<Boolean?>(null)
+                    detectHorizontalDragGestures(
+                        onDragStart = { offset ->
+                            val fraction = offset.x / size.width
+                            val distToStart = abs(fraction - selectionStartFraction)
+                            val distToEnd = abs(fraction - selectionEndFraction)
+                            draggingStart.value = distToStart <= distToEnd
+                        },
+                        onDragEnd = { draggingStart.value = null },
+                        onDragCancel = { draggingStart.value = null },
+                        onHorizontalDrag = { change, _ ->
+                            val fraction = change.position.x / size.width
+                            when (draggingStart.value) {
+                                true -> onSelectionStartChanged(fraction.coerceIn(0f, 1f))
+                                false -> onSelectionEndChanged(fraction.coerceIn(0f, 1f))
+                                null -> {}
+                            }
                         }
-                    }
+                    )
                 }
         ) {
             val canvasWidth = size.width
@@ -212,4 +217,22 @@ private fun DrawScope.drawHandle(x: Float, canvasHeight: Float, color: Color) {
         radius = 8f,
         center = Offset(x, canvasHeight - 8f)
     )
+}
+
+private fun downsampleAmplitudes(amplitudes: FloatArray, targetSize: Int): FloatArray {
+    if (amplitudes.isEmpty() || targetSize <= 0) return floatArrayOf()
+    if (amplitudes.size <= targetSize) return amplitudes
+
+    val result = FloatArray(targetSize)
+    val bucketSize = amplitudes.size.toFloat() / targetSize
+    for (i in 0 until targetSize) {
+        val start = (i * bucketSize).toInt()
+        val end = ((i + 1) * bucketSize).toInt().coerceAtMost(amplitudes.size)
+        var peak = 0f
+        for (j in start until end) {
+            if (amplitudes[j] > peak) peak = amplitudes[j]
+        }
+        result[i] = peak
+    }
+    return result
 }

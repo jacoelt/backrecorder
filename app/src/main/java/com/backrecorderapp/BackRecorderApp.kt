@@ -3,10 +3,14 @@ package com.backrecorderapp
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import com.backrecorderapp.data.billing.BillingRepository
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 
 @HiltAndroidApp
 class BackRecorderApp : Application() {
+
+    @Inject lateinit var billingRepository: BillingRepository
 
     companion object {
         const val RECORDING_CHANNEL_ID = "recording_channel"
@@ -17,6 +21,7 @@ class BackRecorderApp : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
+        billingRepository.connect()
     }
 
     private fun createNotificationChannels() {

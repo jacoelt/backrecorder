@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.backrecorderapp.BackRecorderApp
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
@@ -79,7 +80,8 @@ class RecordingService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(
+        ServiceCompat.startForeground(
+            this,
             NOTIFICATION_ID,
             createNotification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
@@ -173,10 +175,14 @@ class RecordingService : Service() {
     private suspend fun rotateSegment() {
         val segmentToFinalize = currentSegment ?: return
 
+        // Stop amplitude capture first to avoid concurrent access to the buffer
+        amplitudeJob?.cancel()
+        amplitudeJob = null
+
         // Stop current recording
         stopCurrentRecording()
 
-        // Save waveform data for completed segment
+        // Save waveform data for completed segment (safe — amplitude job is stopped)
         currentWaveformFile?.let { file ->
             waveformRepository.saveAmplitudes(file, amplitudeBuffer.toList())
         }
@@ -187,7 +193,7 @@ class RecordingService : Service() {
         // Prune old segments
         segmentManager.pruneOldSegments()
 
-        // Start new segment
+        // Start new segment and restart amplitude capture
         startNewSegment()
         startAmplitudeCapture()
     }

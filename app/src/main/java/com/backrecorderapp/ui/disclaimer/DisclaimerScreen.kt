@@ -30,6 +30,7 @@ import com.backrecorderapp.R
 fun DisclaimerScreen(
     onAccepted: () -> Unit,
     onDeclined: () -> Unit,
+    readOnly: Boolean = false,
     viewModel: DisclaimerViewModel = hiltViewModel()
 ) {
     val scrollState = rememberScrollState()
@@ -73,41 +74,50 @@ fun DisclaimerScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (!hasScrolledToBottom) {
-                Text(
-                    text = "Please scroll to the bottom to read the full disclaimer",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
+            if (readOnly) {
+                OutlinedButton(
+                    onClick = onDeclined,
                     modifier = Modifier.fillMaxWidth()
-                )
+                ) {
+                    Text(text = "Close")
+                }
+            } else {
+                if (!hasScrolledToBottom) {
+                    Text(
+                        text = "Please scroll to the bottom to read the full disclaimer",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                Button(
+                    onClick = {
+                        viewModel.acceptDisclaimer()
+                        onAccepted()
+                    },
+                    enabled = hasScrolledToBottom,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text(
+                        text = stringResource(R.string.disclaimer_accept),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(8.dp))
-            }
 
-            Button(
-                onClick = {
-                    viewModel.acceptDisclaimer()
-                    onAccepted()
-                },
-                enabled = hasScrolledToBottom,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error
-                )
-            ) {
-                Text(
-                    text = stringResource(R.string.disclaimer_accept),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedButton(
-                onClick = onDeclined,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(text = stringResource(R.string.disclaimer_decline))
+                OutlinedButton(
+                    onClick = onDeclined,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = stringResource(R.string.disclaimer_decline))
+                }
             }
         }
     }

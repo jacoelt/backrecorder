@@ -52,6 +52,14 @@ class SaveRecordingUseCase @Inject constructor(
         }
     }
 
+    private fun effectiveDurationMs(segment: SegmentEntity): Long {
+        return if (segment.isComplete) {
+            segment.durationMs
+        } else {
+            System.currentTimeMillis() - segment.startTime
+        }
+    }
+
     private fun saveSingleSegment(
         segment: SegmentEntity,
         startTime: Long,
@@ -59,8 +67,9 @@ class SaveRecordingUseCase @Inject constructor(
         outputUri: Uri
     ) {
         val inputFile = File(segment.filePath)
+        val duration = effectiveDurationMs(segment)
         val startUs = ((startTime - segment.startTime) * 1000).coerceAtLeast(0)
-        val endUs = ((endTime - segment.startTime) * 1000).coerceAtMost(segment.durationMs * 1000)
+        val endUs = ((endTime - segment.startTime) * 1000).coerceAtMost(duration * 1000)
 
         val tempFile = File(context.cacheDir, "temp_save_${System.currentTimeMillis()}.m4a")
         try {
@@ -87,12 +96,14 @@ class SaveRecordingUseCase @Inject constructor(
                 val inputFile = File(segment.filePath)
                 when (index) {
                     0 -> {
+                        val duration = effectiveDurationMs(segment)
                         val startUs = ((startTime - segment.startTime) * 1000).coerceAtLeast(0)
-                        val endUs = segment.durationMs * 1000
+                        val endUs = duration * 1000
                         trimUseCase.trim(inputFile, tempFile, startUs, endUs)
                     }
                     segments.lastIndex -> {
-                        val endUs = ((endTime - segment.startTime) * 1000).coerceAtMost(segment.durationMs * 1000)
+                        val duration = effectiveDurationMs(segment)
+                        val endUs = ((endTime - segment.startTime) * 1000).coerceAtMost(duration * 1000)
                         trimUseCase.trim(inputFile, tempFile, 0, endUs)
                     }
                     else -> {

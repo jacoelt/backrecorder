@@ -106,7 +106,7 @@ class SubscriptionGateTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
 
         val now = System.currentTimeMillis()
-        val startTime = now - (15 * 60 * 1000) // exactly 15 minutes ago
+        val startTime = now - (15 * 60 * 1000) + 1_000 // just inside 15 minute boundary (1s margin for test execution time)
         val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)

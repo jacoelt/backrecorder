@@ -58,7 +58,22 @@ data class MainUiState(
             recoveryMessage == other.recoveryMessage
     }
 
-    override fun hashCode(): Int = waveformData.contentHashCode()
+    override fun hashCode(): Int {
+        var result = isRecording.hashCode()
+        result = 31 * result + segments.hashCode()
+        result = 31 * result + waveformData.contentHashCode()
+        result = 31 * result + bufferStartTime.hashCode()
+        result = 31 * result + bufferEndTime.hashCode()
+        result = 31 * result + selectionStartTime.hashCode()
+        result = 31 * result + selectionEndTime.hashCode()
+        result = 31 * result + saveInProgress.hashCode()
+        result = 31 * result + showUpgradeDialog.hashCode()
+        result = 31 * result + (upgradeReason?.hashCode() ?: 0)
+        result = 31 * result + (errorMessage?.hashCode() ?: 0)
+        result = 31 * result + (successMessage?.hashCode() ?: 0)
+        result = 31 * result + (recoveryMessage?.hashCode() ?: 0)
+        return result
+    }
 }
 
 @HiltViewModel
@@ -123,7 +138,7 @@ class MainViewModel @Inject constructor(
 
     private fun loadWaveformData(segments: List<SegmentEntity>): FloatArray {
         val allAmplitudes = mutableListOf<Float>()
-        for (segment in segments.filter { it.isComplete }) {
+        for (segment in segments) {
             val file = File(segment.waveformPath)
             val amplitudes = waveformRepository.loadAmplitudes(file)
             allAmplitudes.addAll(amplitudes.toList())
@@ -136,7 +151,7 @@ class MainViewModel @Inject constructor(
         val range = state.bufferEndTime - state.bufferStartTime
         if (range <= 0) return
         val time = state.bufferStartTime + (fraction * range).toLong()
-        val clamped = time.coerceIn(state.bufferStartTime, state.selectionEndTime - 60_000)
+        val clamped = time.coerceIn(state.bufferStartTime, state.selectionEndTime - 1_000)
         _uiState.value = state.copy(selectionStartTime = clamped)
     }
 
@@ -145,7 +160,7 @@ class MainViewModel @Inject constructor(
         val range = state.bufferEndTime - state.bufferStartTime
         if (range <= 0) return
         val time = state.bufferStartTime + (fraction * range).toLong()
-        val clamped = time.coerceIn(state.selectionStartTime + 60_000, state.bufferEndTime)
+        val clamped = time.coerceIn(state.selectionStartTime + 1_000, state.bufferEndTime)
         _uiState.value = state.copy(selectionEndTime = clamped)
     }
 
