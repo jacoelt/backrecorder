@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Back Recorder</string>
+
+    <!-- Notification -->
+    <string name="notification_recording_title">Back Recorder</string>
+    <string name="notification_recording_text">Recording in background</string>
+    <string name="notification_cloud_uploading">Uploading to cloud…</string>
+
+    <!-- Disclaimer -->
+    <string name="disclaimer_title">Important Legal Notice</string>
+    <string name="disclaimer_body">This application continuously records audio from your device\'s microphone while active.\n\n
+        <b>RECORDING OTHER PEOPLE WITHOUT THEIR EXPLICIT CONSENT MAY BE ILLEGAL IN YOUR JURISDICTION.</b>\n\n
+        Many countries and regions have strict laws regarding audio recording, including but not limited to:\n\n
+        • Two-party (or all-party) consent laws that require every person being recorded to give explicit permission\n
+        • Privacy laws such as GDPR (EU), CCPA (California), and similar regulations worldwide\n
+        • Wiretapping and eavesdropping statutes\n\n
+        <b>By using this application, you acknowledge and agree that:</b>\n\n
+        1. YOU are solely and entirely responsible for ensuring that your use of this application complies with all applicable local, regional, national, and international laws and regulations.\n\n
+        2. YOU must obtain proper consent from all individuals who may be recorded before activating the recording feature.\n\n
+        3. The developer of this application assumes ZERO liability for any legal consequences, damages, claims, or penalties arising from your use or misuse of this application.\n\n
+        4. The developer does NOT encourage or endorse the recording of any person without their knowledge and explicit consent.\n\n
+        5. This application may record voices, conversations, and sounds of people around you. It is YOUR responsibility to inform them and obtain their consent.\n\n
+        <b>If you do not understand or do not agree to these terms, do not use this application.</b>
+    </string>
+    <string name="disclaimer_accept">I understand and accept full responsibility</string>
+    <string name="disclaimer_decline">I do not agree</string>
+    <string name="disclaimer_reminder">Recording active — ensure you have consent from those around you</string>
+
+    <!-- Main Screen -->
+    <string name="save_recording">Save Recording</string>
+    <string name="select_time_range">Select time range to save</string>
+    <string name="no_recording_data">No recording data available</string>
+    <string name="start_recording">Start Recording</string>
+    <string name="stop_recording">Stop Recording</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_recording">Recording</string>
+    <string name="settings_recording_enabled">Recording enabled</string>
+    <string name="settings_cloud_storage">Cloud Storage</string>
+    <string name="settings_cloud_upload">Continuous upload</string>
+    <string name="settings_cloud_off">Off</string>
+    <string name="settings_cloud_wifi_only">Wi-Fi only</string>
+    <string name="settings_cloud_always">Always on</string>
+    <string name="settings_cloud_off_desc">Recordings are not uploaded to the cloud</string>
+    <string name="settings_cloud_wifi_desc">Segments are uploaded automatically when connected to Wi-Fi. Uses ~345 MB/day. Recommended for most users.</string>
+    <string name="settings_cloud_always_desc">Segments are uploaded over any connection including mobile data. Uses ~345 MB/day of data. May incur significant mobile data charges.</string>
+    <string name="settings_subscription">Subscription</string>
+    <string name="settings_manage_subscription">Manage subscription</string>
+    <string name="settings_legal">Legal</string>
+    <string name="settings_view_disclaimer">View legal disclaimer</string>
+
+    <!-- Subscription -->
+    <string name="premium_required">Premium Required</string>
+    <string name="upgrade_save_title">Upgrade to Save Older Recordings</string>
+    <string name="upgrade_save_message">Free users can only save recordings from the last 15 minutes. Upgrade to Premium to access the full 24-hour buffer.</string>
+    <string name="upgrade_cloud_title">Upgrade to Enable Cloud Storage</string>
+    <string name="upgrade_cloud_message">Cloud storage is a premium feature. Upgrade to automatically back up your recordings to Google Drive for safekeeping.</string>
+    <string name="upgrade_button">Upgrade to Premium</string>
+    <string name="trial_active">Trial active — %d days remaining</string>
+    <string name="cancel">Cancel</string>
+
+    <!-- Cloud Recovery -->
+    <string name="recovery_notification_title">Recordings Recovered</string>
+    <string name="recovery_notification_text">Older recordings have been moved to a recovery folder on Google Drive. Open Back Recorder for details.</string>
+    <string name="recovery_banner">Recovered recordings are available in your Google Drive under BackRecorder/staging/recovery_%1$s. Please move them to a safe location — they will not be automatically deleted.</string>
+</resources>
