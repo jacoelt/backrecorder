@@ -9,6 +9,7 @@ import com.backrecorderapp.MAX_MINUTES_FREE_MODE
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.openid.appauth.AuthorizationException
@@ -27,11 +28,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-class GDriveHelper(
+class GDriveHelper private constructor(
     context: Context
 ) {
     companion object {
         private const val TAG = "GDriveHelper"
+
+        @Volatile private var INSTANCE: GDriveHelper? = null
+
+        fun getInstance(context: Context): GDriveHelper =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: GDriveHelper(context.applicationContext).also { INSTANCE = it }
+            }
         private const val ANDROID_CLIENT_ID =
             "580864635782-kspun7adi7q2743bsfmun2u40taauu76.apps.googleusercontent.com"
         private const val REDIRECT_URI = "com.backrecorderapp:/oauth2redirect"
@@ -51,10 +59,10 @@ class GDriveHelper(
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
 
-    private val authService = AuthorizationService(context)
+    private val appContext = context.applicationContext
     private val httpClient = OkHttpClient()
-    private val settingsDataStore = SettingsDataStore.getInstance(context)
-    private val securePreferences = SecurePreferences(context)
+    private val settingsDataStore = SettingsDataStore.getInstance(appContext)
+    private val securePreferences = SecurePreferences(appContext)
 
     private val serviceConfig = AuthorizationServiceConfiguration(
         Uri.parse("https://accounts.google.com/o/oauth2/auth"),
@@ -77,6 +85,7 @@ class GDriveHelper(
     fun launchSignIn(authLauncher: ActivityResultLauncher<Intent>) {
         scope.launch {
             withContext(Dispatchers.Main) {
+                val authService = AuthorizationService(appContext)
                 val request = AuthorizationRequest.Builder(
                     serviceConfig,
                     ANDROID_CLIENT_ID,
@@ -85,6 +94,7 @@ class GDriveHelper(
                 ).setScopes("openid", "profile", DRIVE_SCOPE).build()
 
                 val authIntent = authService.getAuthorizationRequestIntent(request)
+                authService.dispose()
                 authLauncher.launch(authIntent)
             }
         }
@@ -101,7 +111,9 @@ class GDriveHelper(
         val ex = AuthorizationException.fromIntent(data)
 
         if (ex == null) {
+            val authService = AuthorizationService(appContext)
             authService.performTokenRequest(response.createTokenExchangeRequest()) { tokenResponse, exception ->
+                authService.dispose()
                 if (tokenResponse != null) {
                     scope.launch {
                         securePreferences.saveString(PREF_KEY_ACCESS_TOKEN, tokenResponse.accessToken ?: "")
@@ -365,8 +377,7 @@ class GDriveHelper(
         }
     }
 
-    fun clear() {
-        job.cancel()
-        authService.dispose()
+    fun cancelPendingUploads() {
+        job.cancelChildren()
     }
 }

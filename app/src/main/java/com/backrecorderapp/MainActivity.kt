@@ -17,8 +17,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,7 +45,6 @@ import com.backrecorderapp.ui.TermsOfUseScreen
 import com.backrecorderapp.ui.model.MainViewModel
 import com.backrecorderapp.ui.theme.BackRecorderTheme
 import com.google.crypto.tink.config.TinkConfig
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.time.LocalDate
@@ -60,18 +59,13 @@ class MainActivity : AppCompatActivity() {
 
     private var recordingService: RecordingService? = null
     private var isBound = false
-    private val recordingStatus = mutableStateOf(RecordingService.RecordingStatus.STOPPED)
-    private val uiRecordingStatus = mutableStateOf(RecordingService.RecordingStatus.STOPPED)
-    private var currentRecordingDuration = mutableIntStateOf(0)
-    private var trialDaysRemaining: Int = TrialManager.TRIAL_PERIOD
+    private var pendingSaveStart: Int? = null
+    private var pendingSaveEnd: Int? = null
     private lateinit var trialManager: TrialManager
     private lateinit var settings: SettingsDataStore
     private lateinit var gDriveHelper: GDriveHelper
     private lateinit var billingManager: BillingManager
     private var subscriptionOffers: SubscriptionOffers? = null
-    private var pendingSaveStart = mutableStateOf<Int?>(null)
-    private var pendingSaveEnd = mutableStateOf<Int?>(null)
-    private var usingCloud = mutableStateOf(false)
     private lateinit var subscriptionManager: SubscriptionManager
     private lateinit var viewModel: MainViewModel
 
@@ -85,20 +79,18 @@ class MainActivity : AppCompatActivity() {
             recordingService = binder.getService()
             isBound = true
 
-            recordingService?.registerRecordingStateCallback { recordingState: RecordingService.RecordingStatus ->
-                recordingStatus.value = recordingState
+            recordingService?.registerRecordingStateCallback { status ->
+                viewModel.onRecordingStatusChanged(status)
             }
 
-            recordingService?.registerCallbackCurrentDuration {
-                updateCurrentRecordingDuration(it)
+            recordingService?.registerCallbackCurrentDuration { duration ->
+                viewModel.onDurationChanged(duration)
             }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             recordingService = null
             isBound = false
-
-            // Try to re-bind
             bindRecordingService()
         }
     }
@@ -110,14 +102,14 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(this, SaveRecordingService::class.java).apply {
                 action = SaveRecordingService.ACTION_START
                 putExtra(SaveRecordingService.EXTRA_OUTPUT_URI, uri)
-                putExtra(SaveRecordingService.EXTRA_DURATION_START, pendingSaveStart.value)
-                putExtra(SaveRecordingService.EXTRA_DURATION_END, pendingSaveEnd.value)
+                putExtra(SaveRecordingService.EXTRA_DURATION_START, pendingSaveStart)
+                putExtra(SaveRecordingService.EXTRA_DURATION_END, pendingSaveEnd)
             }
 
             ContextCompat.startForegroundService(this, intent)
 
-            pendingSaveStart.value = null
-            pendingSaveEnd.value = null
+            pendingSaveStart = null
+            pendingSaveEnd = null
         }
     }
 
@@ -143,7 +135,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-
         bindRecordingService()
     }
 
@@ -182,9 +173,9 @@ class MainActivity : AppCompatActivity() {
         try {
             TinkConfig.register()
             settings = SettingsDataStore.getInstance(this.applicationContext)
-            trialManager = TrialManager(settings)
-            subscriptionManager = SubscriptionManager(settings)
-            gDriveHelper = GDriveHelper(this.applicationContext)
+            trialManager = TrialManager.getInstance(this.applicationContext)
+            subscriptionManager = SubscriptionManager.getInstance(this.applicationContext)
+            gDriveHelper = GDriveHelper.getInstance(this.applicationContext)
             billingManager = BillingManager(this.applicationContext, subscriptionManager, trialManager)
             viewModel = MainViewModel(subscriptionManager)
         } catch (e: Exception) {
@@ -194,16 +185,13 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             trialManager.load()
-            trialDaysRemaining = trialManager.trialDaysRemaining()
         }
 
-        // Start billing connection, then evaluate subscription state
         try {
             billingManager.startConnection(onConnected = {
                 lifecycleScope.launch {
                     billingManager.syncSubscriptionState()
                     subscriptionManager.load()
-
                     switchUseGdrive(isUsingCloud())
                 }
             })
@@ -231,7 +219,10 @@ class MainActivity : AppCompatActivity() {
                     var screenMode by rememberSaveable { mutableStateOf(MainScreenMode.RECORDING) }
                     var selectedOffer by remember { mutableStateOf<SubscriptionOffer?>(null) }
 
-                    // Load state
+                    val uiRecordingStatus by viewModel.uiRecordingStatus.collectAsState()
+                    val currentRecordingDuration by viewModel.currentDuration.collectAsState()
+                    val usingCloud by viewModel.usingCloud.collectAsState()
+
                     LaunchedEffect(Unit) {
                         hasAcceptedTerms = settings.isTermsAccepted()
                         if (hasAcceptedTerms == false) {
@@ -242,18 +233,6 @@ class MainActivity : AppCompatActivity() {
                         switchUseGdrive(isUsingCloud())
                     }
 
-                    LaunchedEffect(recordingStatus.value) {
-                        if (recordingStatus.value != RecordingService.RecordingStatus.STOPPED) {
-                            uiRecordingStatus.value = recordingStatus.value
-                        } else {
-                            delay(300)
-                            if (recordingStatus.value == RecordingService.RecordingStatus.STOPPED) {
-                                uiRecordingStatus.value = RecordingService.RecordingStatus.STOPPED
-                            }
-                        }
-                    }
-
-                    // Display either Terms screen or main content
                     if (showTerms && mustAcceptTerms) {
                         TermsOfUseScreen(
                             onAccepted = {
@@ -273,7 +252,6 @@ class MainActivity : AppCompatActivity() {
 
                     } else {
 
-                        // Display dialogs
                         if (premiumDialogReason != null) {
                             if (subscriptionOffers != null) {
                                 PremiumPaywallDialog(
@@ -290,7 +268,6 @@ class MainActivity : AppCompatActivity() {
                                 )
                             } else {
                                 Toast.makeText(this, stringResource(R.string.error_no_offers), Toast.LENGTH_SHORT).show()
-                                //TODO: Display an error window
                             }
                         }
 
@@ -311,7 +288,6 @@ class MainActivity : AppCompatActivity() {
                                 )
                             } else {
                                 Toast.makeText(this, stringResource(R.string.error_no_offers), Toast.LENGTH_SHORT).show()
-                                //TODO: Display an error window
                             }
                         }
 
@@ -319,9 +295,9 @@ class MainActivity : AppCompatActivity() {
                             startRecording = { startRecording() },
                             stopRecording = { stopRecording() },
                             recordingStatus = uiRecordingStatus,
-                            currentRecordingDuration,
+                            currentRecordingDuration = currentRecordingDuration,
                             startSaveRecording = { start, end ->
-                                if (subscriptionManager.isFree() && start < (currentRecordingDuration.intValue - MAX_MINUTES_FREE_MODE)) {
+                                if (subscriptionManager.isFree() && start < (currentRecordingDuration - MAX_MINUTES_FREE_MODE)) {
                                     lifecycleScope.launch {
                                         if (ensureSubscriptionOffersLoaded()) {
                                             premiumDialogReason = PaywallReason.RECORDING_DURATION
@@ -330,12 +306,12 @@ class MainActivity : AppCompatActivity() {
                                     return@MainScreen false
                                 }
 
-                                pendingSaveStart.value = start
-                                pendingSaveEnd.value = end
+                                pendingSaveStart = start
+                                pendingSaveEnd = end
                                 launchFilePicker()
                                 true
                             },
-                            useGDrive = usingCloud.value,
+                            useGDrive = usingCloud,
                             onToggleGDrive = { enabled ->
                                 if (subscriptionManager.isFree()) {
                                     lifecycleScope.launch {
@@ -375,7 +351,7 @@ class MainActivity : AppCompatActivity() {
     private fun switchUseGdrive(newStatus: Boolean) {
         lifecycleScope.launch {
             settings.setUseGDrive(newStatus)
-            usingCloud.value = newStatus
+            viewModel.setUsingCloud(newStatus)
         }
     }
 
@@ -396,11 +372,7 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.startForegroundService(this, intent)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
-            Toast.makeText(
-                this,
-                "Unable to start recording: ${e.message}",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, "Unable to start recording: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -414,14 +386,9 @@ class MainActivity : AppCompatActivity() {
             startService(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Error while stopping recording", e)
-            Toast.makeText(
-                this,
-                "Error while stopping recording: ${e.message}",
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, "Error while stopping recording: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
-
 
     private fun launchFilePicker() {
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -435,11 +402,6 @@ class MainActivity : AppCompatActivity() {
         saveAudioLauncher.launch(intent)
     }
 
-    private fun updateCurrentRecordingDuration(duration: Int) {
-        Log.d(TAG, "Update recording duration: $duration")
-        currentRecordingDuration.intValue = duration
-    }
-
     private fun initiateSetupGDrive() {
         gDriveHelper.launchSignIn(authResultLauncher)
     }
@@ -447,11 +409,7 @@ class MainActivity : AppCompatActivity() {
     private fun afterGoogleSignIn(success: Boolean) {
         fun onFail() {
             switchUseGdrive(false)
-            Toast.makeText(
-                this.applicationContext,
-                R.string.error_setup_gdrive,
-                Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this.applicationContext, R.string.error_setup_gdrive, Toast.LENGTH_SHORT).show()
         }
 
         if (success) {
@@ -472,12 +430,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getTrialEndDate(): String {
-        val date = LocalDate.now().plusDays(TrialManager.TRIAL_PERIOD.toLong())  // TODO: Check how to get actual remaining days if user has already started a trial
+        val date = trialManager.trialEndDate()
+            ?: LocalDate.now().plusDays(TrialManager.TRIAL_PERIOD.toLong())
 
-        val formatter = DateTimeFormatter
-            .ofPattern("d MMM", Locale.getDefault())
-
-        return date.format(formatter)
+        return date.format(DateTimeFormatter.ofPattern("d MMM", Locale.getDefault()))
     }
 
     private suspend fun ensureSubscriptionOffersLoaded(): Boolean {
@@ -494,7 +450,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         billingManager.endConnection()
-        gDriveHelper.clear()
         super.onDestroy()
     }
 }

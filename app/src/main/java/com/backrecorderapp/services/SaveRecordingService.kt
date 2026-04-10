@@ -94,7 +94,7 @@ class SaveRecordingService : Service() {
     private fun startSave(outputUri: Uri, start: Int, end: Int) {
         val context = this.applicationContext
         val settings = SettingsDataStore.getInstance(this.applicationContext)
-        val gDriveHelper = GDriveHelper(this.applicationContext)
+        val gDriveHelper = GDriveHelper.getInstance(this.applicationContext)
 
         serviceScope.launch {
             val mergedFile = File.createTempFile(
@@ -156,22 +156,18 @@ class SaveRecordingService : Service() {
                 Log.d(TAG, "Uploading file: ${mergedFile.path} (${mergedFile.exists()})")
                 val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                 if (settings.getUseGDrive()) {
-                    try {
-                        gDriveHelper.uploadFile(
-                            mergedFile,
-                            GDriveHelper.FolderType.FINAL,
-                            fileName = "record_$timeStamp.m4a"
-                        ) { isSuccess ->
-                            if (!isSuccess) {
-                                Toast.makeText(
-                                    context,
-                                    R.string.error_save_gdrive,
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
+                    gDriveHelper.uploadFile(
+                        mergedFile,
+                        GDriveHelper.FolderType.FINAL,
+                        fileName = "record_$timeStamp.m4a"
+                    ) { isSuccess ->
+                        if (!isSuccess) {
+                            Toast.makeText(
+                                context,
+                                R.string.error_save_gdrive,
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
-                    } finally {
-                        gDriveHelper.clear()
                     }
                 }
 

@@ -14,7 +14,6 @@ import androidx.compose.material3.MaterialTheme.colorScheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -39,8 +38,8 @@ enum class MainScreenMode {
 fun MainScreen(
     startRecording: () -> Unit,
     stopRecording: () -> Unit,
-    recordingStatus: MutableState<RecordingService.RecordingStatus>,
-    currentRecordingDuration: MutableState<Int>,
+    recordingStatus: RecordingService.RecordingStatus,
+    currentRecordingDuration: Int,
     startSaveRecording: (start: Int, end: Int) -> Boolean,
     useGDrive: Boolean,
     onToggleGDrive: (Boolean) -> Unit,
@@ -85,7 +84,7 @@ fun MainScreen(
 
             // ===== Recording state (dominant surface) =====
             Surface(
-                color = when (recordingStatus.value) {
+                color = when (recordingStatus) {
                     RecordingService.RecordingStatus.RECORDING -> colorScheme.errorContainer
                     RecordingService.RecordingStatus.STOPPED -> colorScheme.surfaceVariant
                     RecordingService.RecordingStatus.PAUSED_BY_CALL -> colorScheme.secondaryContainer
@@ -110,7 +109,7 @@ fun MainScreen(
                     ) {
                         Text(
                             text = stringResource(
-                                when (recordingStatus.value) {
+                                when (recordingStatus) {
                                     RecordingService.RecordingStatus.RECORDING -> R.string.recording_on
                                     RecordingService.RecordingStatus.STOPPED -> R.string.recording_idle
                                     RecordingService.RecordingStatus.PAUSED_BY_CALL -> R.string.recording_paused_by_call
@@ -120,10 +119,10 @@ fun MainScreen(
                         )
                     }
 
-                    if (recordingStatus.value != RecordingService.RecordingStatus.STOPPED) {
+                    if (recordingStatus != RecordingService.RecordingStatus.STOPPED) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = TimeHelper.formatDuration(currentRecordingDuration.value),
+                            text = TimeHelper.formatDuration(currentRecordingDuration),
                             style = MaterialTheme.typography.bodyLarge
                         )
                     }
@@ -154,7 +153,7 @@ fun MainScreen(
 
                 MainScreenMode.SAVING -> {
                     SavingContent(
-                        maxMinutes = currentRecordingDuration.value,
+                        maxMinutes = currentRecordingDuration,
                         onConfirmSave = { start, end ->
                             if (startSaveRecording(start, end)) {
                                 onModeChange(MainScreenMode.RECORDING)

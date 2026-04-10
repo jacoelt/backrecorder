@@ -1,5 +1,6 @@
 package com.backrecorderapp.helpers
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,6 +17,15 @@ class SubscriptionManager(
 ) {
     companion object {
         private const val TAG = "SubscriptionManager"
+
+        @Volatile private var INSTANCE: SubscriptionManager? = null
+
+        fun getInstance(context: Context): SubscriptionManager =
+            INSTANCE ?: synchronized(this) {
+                INSTANCE ?: SubscriptionManager(
+                    SettingsDataStore.getInstance(context.applicationContext)
+                ).also { INSTANCE = it }
+            }
     }
 
     private val _mode = MutableStateFlow<SubscriptionMode?>(null)
