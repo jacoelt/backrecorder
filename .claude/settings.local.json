@@ -1,1 +1,8 @@
-{}
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew assembleDebug)",
+      "Bash(gh pr create --draft --title 'refactor: fix architectural issues — singletons, thread safety, state ownership' --body ':*)"
+    ]
+  }
+}

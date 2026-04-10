@@ -4,8 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Project: BackRecorder
 
-Android application that records continuously, stores the recordings into 1 minute blocks and rotate them after a certain time.
-The user can save any portion of these blocks into a single continuous file to save something the phone has recorded earlier.
+Android application that allows the user to save the recording of a past event without having explicitely started a recording session in preparation for said event.
 
 
 ## Build Commands
