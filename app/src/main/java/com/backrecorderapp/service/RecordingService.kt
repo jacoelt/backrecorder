@@ -21,17 +21,21 @@ import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import javax.inject.Inject
 
@@ -45,6 +49,22 @@ class RecordingService : Service() {
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+
+        private val flushRequests = MutableSharedFlow<CompletableDeferred<Unit>>(
+            extraBufferCapacity = 8
+        )
+
+        /**
+         * Force the current in-progress segment to be finalized (MOOV atom written)
+         * so it can be read by MediaExtractor. Suspends until the rotation completes.
+         * Returns immediately if the service is not running.
+         */
+        suspend fun flushCurrentSegment() {
+            if (!_isRunning.value) return
+            val deferred = CompletableDeferred<Unit>()
+            flushRequests.emit(deferred)
+            deferred.await()
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, RecordingService::class.java)
@@ -62,12 +82,14 @@ class RecordingService : Service() {
     @Inject lateinit var appPreferences: AppPreferences
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val rotationMutex = Mutex()
     private var mediaRecorder: MediaRecorder? = null
     private var currentSegment: SegmentEntity? = null
     private var currentWaveformFile: File? = null
     private var amplitudeBuffer = mutableListOf<Float>()
     private var amplitudeJob: Job? = null
     private var rotationJob: Job? = null
+    private var flushJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -107,6 +129,7 @@ class RecordingService : Service() {
         _isRunning.value = false
         stopCurrentRecording()
         rotationJob?.cancel()
+        flushJob?.cancel()
         amplitudeJob?.cancel()
         serviceScope.cancel()
         releaseWakeLock()
@@ -120,6 +143,18 @@ class RecordingService : Service() {
             while (isActive) {
                 delay(SegmentManager.SEGMENT_DURATION_MS)
                 rotateSegment()
+            }
+        }
+
+        flushJob = serviceScope.launch {
+            flushRequests.collect { deferred ->
+                try {
+                    rotateSegment()
+                    deferred.complete(Unit)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Flush rotation failed", e)
+                    deferred.completeExceptionally(e)
+                }
             }
         }
     }
@@ -181,8 +216,8 @@ class RecordingService : Service() {
         }
     }
 
-    private suspend fun rotateSegment() {
-        val segmentToFinalize = currentSegment ?: return
+    private suspend fun rotateSegment() = rotationMutex.withLock {
+        val segmentToFinalize = currentSegment ?: return@withLock
 
         // Stop amplitude capture first to avoid concurrent access to the buffer
         amplitudeJob?.cancel()

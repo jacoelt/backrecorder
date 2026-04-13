@@ -14,7 +14,13 @@ class TrimSegmentUseCase @Inject constructor() {
         val extractor = MediaExtractor()
         extractor.setDataSource(inputFile.absolutePath)
 
-        val trackIndex = findAudioTrack(extractor) ?: return
+        val trackIndex = findAudioTrack(extractor)
+            ?: run {
+                extractor.release()
+                throw IllegalStateException(
+                    "No audio track found in ${inputFile.name} (file may be incomplete or corrupt)"
+                )
+            }
         extractor.selectTrack(trackIndex)
 
         val format = extractor.getTrackFormat(trackIndex)

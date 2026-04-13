@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import com.backrecorderapp.data.db.AppDatabase
 import com.backrecorderapp.data.db.SegmentDao
+import com.backrecorderapp.domain.RecordingFlusher
+import com.backrecorderapp.service.RecordingService
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -28,5 +30,13 @@ object AppModule {
     @Provides
     fun provideSegmentDao(database: AppDatabase): SegmentDao {
         return database.segmentDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideRecordingFlusher(): RecordingFlusher = object : RecordingFlusher {
+        override suspend fun flushCurrentSegment() {
+            RecordingService.flushCurrentSegment()
+        }
     }
 }

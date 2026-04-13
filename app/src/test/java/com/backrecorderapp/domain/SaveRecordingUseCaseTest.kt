@@ -8,9 +8,11 @@ import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -22,6 +24,7 @@ class SaveRecordingUseCaseTest {
     private lateinit var trimUseCase: TrimSegmentUseCase
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
+    private lateinit var recordingFlusher: RecordingFlusher
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
 
     @Before
@@ -31,10 +34,13 @@ class SaveRecordingUseCaseTest {
         trimUseCase = mockk(relaxed = true)
         billingRepository = mockk()
         subscriptionGate = SubscriptionGate(billingRepository)
+        recordingFlusher = mockk(relaxed = true)
 
         every { context.contentResolver } returns mockk<ContentResolver>(relaxed = true)
 
-        saveRecordingUseCase = SaveRecordingUseCase(context, segmentManager, trimUseCase, subscriptionGate)
+        saveRecordingUseCase = SaveRecordingUseCase(
+            context, segmentManager, trimUseCase, subscriptionGate, recordingFlusher
+        )
     }
 
     @Test
@@ -109,8 +115,16 @@ class SaveRecordingUseCaseTest {
             durationMs = 0,
             isComplete = false
         )
+        val finalizedSegment = incompleteSegment.copy(
+            endTime = now,
+            durationMs = 30_000,
+            isComplete = true
+        )
 
-        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incompleteSegment)
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returnsMany listOf(
+            listOf(incompleteSegment),
+            listOf(finalizedSegment)
+        )
 
         val result = saveRecordingUseCase.execute(
             startTime = now - 20_000,
@@ -138,8 +152,12 @@ class SaveRecordingUseCaseTest {
             durationMs = 0,
             isComplete = false
         )
+        val finalized = shortSegment.copy(endTime = now, durationMs = 15_000, isComplete = true)
 
-        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(shortSegment)
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returnsMany listOf(
+            listOf(shortSegment),
+            listOf(finalized)
+        )
 
         val result = saveRecordingUseCase.execute(
             startTime = now - 10_000,
@@ -149,5 +167,95 @@ class SaveRecordingUseCaseTest {
 
         // Should not reject with "no segments found"
         assertTrue(result !is SaveResult.Error || (result as SaveResult.Error).message != "No recorded data found for the selected time range")
+    }
+
+    @Test
+    fun `flushes in-progress segment before saving (issue 18)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        val finalized = incomplete.copy(
+            endTime = now,
+            durationMs = 30_000,
+            isComplete = true
+        )
+
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returnsMany listOf(
+            listOf(incomplete),
+            listOf(finalized)
+        )
+
+        saveRecordingUseCase.execute(
+            startTime = now - 20_000,
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        coVerify(exactly = 1) { recordingFlusher.flushCurrentSegment() }
+    }
+
+    @Test
+    fun `does not flush when all segments are already complete`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+
+        val now = System.currentTimeMillis()
+        val complete = SegmentEntity(
+            id = "done",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 120_000,
+            endTime = now - 60_000,
+            durationMs = 60_000,
+            isComplete = true
+        )
+
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(complete)
+
+        saveRecordingUseCase.execute(
+            startTime = now - 120_000,
+            endTime = now - 60_000,
+            outputUri = mockk()
+        )
+
+        coVerify(exactly = 0) { recordingFlusher.flushCurrentSegment() }
+    }
+
+    @Test
+    fun `returns error when flush fails`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } throws RuntimeException("boom")
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        val result = saveRecordingUseCase.execute(
+            startTime = now - 20_000,
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        assertTrue(result is SaveResult.Error)
+        assertEquals(
+            "Failed to finalize in-progress recording: boom",
+            (result as SaveResult.Error).message
+        )
     }
 }

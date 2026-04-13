@@ -14,6 +14,10 @@ import java.io.File
 import java.nio.ByteBuffer
 import javax.inject.Inject
 
+interface RecordingFlusher {
+    suspend fun flushCurrentSegment()
+}
+
 sealed class SaveResult {
     data object Success : SaveResult()
     data class UpgradeRequired(val reason: BlockReason) : SaveResult()
@@ -24,7 +28,8 @@ class SaveRecordingUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
     private val segmentManager: SegmentManager,
     private val trimUseCase: TrimSegmentUseCase,
-    private val subscriptionGate: SubscriptionGate
+    private val subscriptionGate: SubscriptionGate,
+    private val recordingFlusher: RecordingFlusher
 ) {
 
     suspend fun execute(startTime: Long, endTime: Long, outputUri: Uri): SaveResult {
@@ -35,16 +40,36 @@ class SaveRecordingUseCase @Inject constructor(
         }
 
         // Get overlapping segments
-        val segments = segmentManager.getSegmentsInRange(startTime, endTime)
+        var segments = segmentManager.getSegmentsInRange(startTime, endTime)
         if (segments.isEmpty()) {
             return SaveResult.Error("No recorded data found for the selected time range")
         }
 
+        // If any segment is still being recorded, its MP4 moov atom hasn't been
+        // written yet — MediaExtractor cannot read it. Ask the recording service
+        // to finalize the current segment, then clamp endTime and refetch so only
+        // complete segments are processed.
+        var effectiveEndTime = endTime
+        if (segments.any { !it.isComplete }) {
+            val flushMoment = System.currentTimeMillis()
+            try {
+                recordingFlusher.flushCurrentSegment()
+            } catch (e: Exception) {
+                return SaveResult.Error("Failed to finalize in-progress recording: ${e.message}")
+            }
+            effectiveEndTime = minOf(endTime, flushMoment)
+            segments = segmentManager.getSegmentsInRange(startTime, effectiveEndTime)
+                .filter { it.isComplete }
+            if (segments.isEmpty()) {
+                return SaveResult.Error("No recorded data found for the selected time range")
+            }
+        }
+
         return try {
             if (segments.size == 1) {
-                saveSingleSegment(segments[0], startTime, endTime, outputUri)
+                saveSingleSegment(segments[0], startTime, effectiveEndTime, outputUri)
             } else {
-                saveMultipleSegments(segments, startTime, endTime, outputUri)
+                saveMultipleSegments(segments, startTime, effectiveEndTime, outputUri)
             }
             SaveResult.Success
         } catch (e: Exception) {
