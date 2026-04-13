@@ -29,8 +29,11 @@ class BillingRepository @Inject constructor(
 ) : PurchasesUpdatedListener {
 
     companion object {
-        const val PRODUCT_MONTHLY = "premium_monthly"
-        const val PRODUCT_YEARLY = "premium_yearly"
+        const val PRODUCT_SUBSCRIPTION = "main_subscription"
+        const val BASE_PLAN_MONTHLY = "monthly"
+        const val BASE_PLAN_YEARLY = "yearly"
+        const val OFFER_MONTHLY_TRIAL = "monthly-free-trial"
+        const val OFFER_YEARLY_TRIAL = "yearly-free-trial"
     }
 
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
@@ -67,11 +70,7 @@ class BillingRepository @Inject constructor(
     private fun queryProductDetails() {
         val productList = listOf(
             QueryProductDetailsParams.Product.newBuilder()
-                .setProductId(PRODUCT_MONTHLY)
-                .setProductType(BillingClient.ProductType.SUBS)
-                .build(),
-            QueryProductDetailsParams.Product.newBuilder()
-                .setProductId(PRODUCT_YEARLY)
+                .setProductId(PRODUCT_SUBSCRIPTION)
                 .setProductType(BillingClient.ProductType.SUBS)
                 .build()
         )
@@ -85,6 +84,19 @@ class BillingRepository @Inject constructor(
                 _productDetails.value = detailsList
             }
         }
+    }
+
+    fun getOfferDetails(basePlanId: String): ProductDetails.SubscriptionOfferDetails? {
+        val product = _productDetails.value.firstOrNull() ?: return null
+        val offers = product.subscriptionOfferDetails ?: return null
+        // Prefer the free trial offer if available, otherwise fall back to the base offer
+        val trialOfferId = when (basePlanId) {
+            BASE_PLAN_MONTHLY -> OFFER_MONTHLY_TRIAL
+            BASE_PLAN_YEARLY -> OFFER_YEARLY_TRIAL
+            else -> null
+        }
+        return offers.firstOrNull { it.basePlanId == basePlanId && it.offerId == trialOfferId }
+            ?: offers.firstOrNull { it.basePlanId == basePlanId }
     }
 
     fun queryPurchases() {
