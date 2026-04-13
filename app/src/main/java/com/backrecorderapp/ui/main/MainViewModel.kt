@@ -25,6 +25,8 @@ import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 
+private const val MINUTE_MS = 60_000L
+
 data class MainUiState(
     val isRecording: Boolean = false,
     val segments: List<SegmentEntity> = emptyList(),
@@ -150,8 +152,9 @@ class MainViewModel @Inject constructor(
         val state = _uiState.value
         val range = state.bufferEndTime - state.bufferStartTime
         if (range <= 0) return
-        val time = state.bufferStartTime + (fraction * range).toLong()
-        val clamped = time.coerceIn(state.bufferStartTime, state.selectionEndTime - 1_000)
+        val raw = state.bufferStartTime + (fraction * range).toLong()
+        val snapped = ((raw + MINUTE_MS / 2) / MINUTE_MS) * MINUTE_MS
+        val clamped = snapped.coerceIn(state.bufferStartTime, state.selectionEndTime - MINUTE_MS)
         _uiState.value = state.copy(selectionStartTime = clamped)
     }
 
@@ -159,8 +162,9 @@ class MainViewModel @Inject constructor(
         val state = _uiState.value
         val range = state.bufferEndTime - state.bufferStartTime
         if (range <= 0) return
-        val time = state.bufferStartTime + (fraction * range).toLong()
-        val clamped = time.coerceIn(state.selectionStartTime + 1_000, state.bufferEndTime)
+        val raw = state.bufferStartTime + (fraction * range).toLong()
+        val snapped = ((raw + MINUTE_MS / 2) / MINUTE_MS) * MINUTE_MS
+        val clamped = snapped.coerceIn(state.selectionStartTime + MINUTE_MS, state.bufferEndTime)
         _uiState.value = state.copy(selectionEndTime = clamped)
     }
 
