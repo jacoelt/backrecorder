@@ -25,16 +25,12 @@ class AppPreferences @Inject constructor(
 ) {
     companion object {
         private val KEY_DISCLAIMER_ACCEPTED = booleanPreferencesKey("disclaimer_accepted")
-        private val KEY_RECORDING_ENABLED = booleanPreferencesKey("recording_enabled")
         private val KEY_CLOUD_UPLOAD_MODE = stringPreferencesKey("cloud_upload_mode")
         private val KEY_WAS_RECORDING_BEFORE_SHUTDOWN = booleanPreferencesKey("was_recording")
     }
 
     val disclaimerAccepted: Flow<Boolean> = context.dataStore.data
         .map { it[KEY_DISCLAIMER_ACCEPTED] ?: false }
-
-    val recordingEnabled: Flow<Boolean> = context.dataStore.data
-        .map { it[KEY_RECORDING_ENABLED] ?: false }
 
     val cloudUploadMode: Flow<CloudUploadMode> = context.dataStore.data
         .map {
@@ -47,13 +43,6 @@ class AppPreferences @Inject constructor(
 
     suspend fun setDisclaimerAccepted(accepted: Boolean) {
         context.dataStore.edit { it[KEY_DISCLAIMER_ACCEPTED] = accepted }
-    }
-
-    suspend fun setRecordingEnabled(enabled: Boolean) {
-        context.dataStore.edit {
-            it[KEY_RECORDING_ENABLED] = enabled
-            it[KEY_WAS_RECORDING_BEFORE_SHUTDOWN] = enabled
-        }
     }
 
     suspend fun setCloudUploadMode(mode: CloudUploadMode) {

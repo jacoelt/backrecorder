@@ -100,7 +100,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             combine(
                 segmentManager.getAllSegments(),
-                appPreferences.recordingEnabled
+                RecordingService.isRunning
             ) { segments, isRecording ->
                 Pair(segments, isRecording)
             }.collect { (segments, isRecording) ->
@@ -173,9 +173,9 @@ class MainViewModel @Inject constructor(
             val isCurrentlyRecording = _uiState.value.isRecording
             if (isCurrentlyRecording) {
                 RecordingService.stop(context)
-                appPreferences.setRecordingEnabled(false)
+                appPreferences.setWasRecordingBeforeShutdown(false)
             } else {
-                appPreferences.setRecordingEnabled(true)
+                appPreferences.setWasRecordingBeforeShutdown(true)
                 RecordingService.start(context)
             }
         }

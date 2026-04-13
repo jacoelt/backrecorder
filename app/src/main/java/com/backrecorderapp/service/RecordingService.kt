@@ -27,6 +27,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -39,6 +42,9 @@ class RecordingService : Service() {
         private const val TAG = "RecordingService"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "com.backrecorderapp.STOP_RECORDING"
+
+        private val _isRunning = MutableStateFlow(false)
+        val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
         fun start(context: Context) {
             val intent = Intent(context, RecordingService::class.java)
@@ -74,7 +80,7 @@ class RecordingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             serviceScope.launch {
-                appPreferences.setRecordingEnabled(false)
+                appPreferences.setWasRecordingBeforeShutdown(false)
             }
             stopSelf()
             return START_NOT_STICKY
@@ -87,6 +93,8 @@ class RecordingService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         )
 
+        _isRunning.value = true
+
         serviceScope.launch {
             startRecordingLoop()
         }
@@ -96,6 +104,7 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        _isRunning.value = false
         stopCurrentRecording()
         rotationJob?.cancel()
         amplitudeJob?.cancel()
