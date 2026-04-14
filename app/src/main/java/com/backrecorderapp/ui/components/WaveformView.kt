@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.util.TimeUtils
 import kotlin.math.abs
+import kotlin.math.hypot
 
 private val HANDLE_ZONE_HEIGHT = 32.dp
 private val LABEL_ROW_HEIGHT = 20.dp
@@ -66,20 +67,74 @@ fun WaveformView(
     val onEndChanged by rememberUpdatedState(onSelectionEndChanged)
 
     Box(modifier = modifier) {
-        // Canvas (back layer) — captures all touches across the full area, including
-        // the regions where labels are overlaid. Labels have no pointer modifiers, so
-        // touches on them propagate through to the Canvas.
+        // Labels are declared first so they sit BEHIND the Canvas in Z-order.
+        // The Canvas (declared last) draws the handles on top and owns the pointer
+        // input for the full area, so label composables can't intercept edge touches.
+
+        // Top labels overlay — positioned at the top of the canvas.
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(LABEL_ROW_HEIGHT)
+                .padding(horizontal = 4.dp),
+        ) {
+            Text(
+                text = TimeUtils.formatTime(selectionStartTime),
+                style = MaterialTheme.typography.labelSmall,
+                color = handleColor
+            )
+            Box(modifier = Modifier.weight(1f))
+            Text(
+                text = TimeUtils.formatTime(selectionEndTime),
+                style = MaterialTheme.typography.labelSmall,
+                color = handleColor
+            )
+        }
+
+        // Bottom labels overlay
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(LABEL_ROW_HEIGHT)
+                .padding(horizontal = 4.dp),
+        ) {
+            Text(
+                text = TimeUtils.formatTime(bufferStartTime),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                val duration = selectionEndTime - selectionStartTime
+                Text(
+                    text = "Selected: ${TimeUtils.durationString(duration)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = handleColor
+                )
+            }
+            Text(
+                text = TimeUtils.formatTime(bufferEndTime),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        // Canvas (top layer) — draws the waveform, selection, and handles, and
+        // captures all touches across the full area. Handles are drawn only in
+        // the handle zones, so labels remain visible through the transparent
+        // label regions of the canvas.
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(LABEL_ROW_HEIGHT + HANDLE_ZONE_HEIGHT + 150.dp + HANDLE_ZONE_HEIGHT + LABEL_ROW_HEIGHT)
                 .pointerInput(Unit) {
+                    val hitWidthPx = 32.dp.toPx()
                     val handleZonePx = HANDLE_ZONE_HEIGHT.toPx()
                     val labelPx = LABEL_ROW_HEIGHT.toPx()
-                    val waveformTop = labelPx + handleZonePx
-                    val waveformBottom = size.height - labelPx - handleZonePx
-                    val waveformHeight = waveformBottom - waveformTop
-                    val hitWidthPx = 32.dp.toPx()
+                    // Y coordinates of the visible handle tab centers.
+                    val startTabCenterY = labelPx + handleZonePx / 2f
+                    val endTabCenterY = size.height - labelPx - handleZonePx / 2f
 
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
@@ -88,21 +143,24 @@ fun WaveformView(
                         val distToStart = abs(down.position.x - selStartX)
                         val distToEnd = abs(down.position.x - selEndX)
 
-                        // Start handle hit zone: top label area + start handle zone
-                        // + upper 40% of waveform.
-                        val onStartHandle =
-                            down.position.y <= waveformTop + waveformHeight * 0.4f &&
-                            distToStart <= hitWidthPx
-                        // End handle hit zone: lower 40% of waveform + end handle zone
-                        // + bottom label area.
-                        val onEndHandle =
-                            down.position.y >= waveformBottom - waveformHeight * 0.4f &&
-                            distToEnd <= hitWidthPx
+                        // In-range test uses only x distance (no y restriction) so
+                        // taps anywhere along the vertical cursor line register,
+                        // including at extremes where the tab is clipped off-screen.
+                        val startInRange = distToStart <= hitWidthPx
+                        val endInRange = distToEnd <= hitWidthPx
 
                         val draggingStart: Boolean? = when {
-                            onStartHandle && !onEndHandle -> true
-                            onEndHandle && !onStartHandle -> false
-                            onStartHandle && onEndHandle -> down.position.y < size.height / 2
+                            startInRange && !endInRange -> true
+                            endInRange && !startInRange -> false
+                            startInRange && endInRange -> {
+                                // Both in range: pick the handle whose visible tab is
+                                // closer to the tap in 2D. This lets the vertical axis
+                                // disambiguate when the two handles are horizontally
+                                // close, while x still dominates when they're far apart.
+                                val d2Start = hypot(distToStart, abs(down.position.y - startTabCenterY))
+                                val d2End = hypot(distToEnd, abs(down.position.y - endTabCenterY))
+                                d2Start <= d2End
+                            }
                             else -> null
                         }
 
@@ -181,56 +239,6 @@ fun WaveformView(
             // Handle tabs in the handle zones (between label area and waveform)
             drawStartHandle(selStartX, labelPx, waveformTop, handleColor)
             drawEndHandle(selEndX, waveformBottom, canvasHeight - labelPx, handleColor)
-        }
-
-        // Top labels overlay — positioned at the top of the canvas. No pointer
-        // modifiers, so taps propagate through to the Canvas behind.
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .height(LABEL_ROW_HEIGHT)
-                .padding(horizontal = 4.dp),
-        ) {
-            Text(
-                text = TimeUtils.formatTime(selectionStartTime),
-                style = MaterialTheme.typography.labelSmall,
-                color = handleColor
-            )
-            Box(modifier = Modifier.weight(1f))
-            Text(
-                text = TimeUtils.formatTime(selectionEndTime),
-                style = MaterialTheme.typography.labelSmall,
-                color = handleColor
-            )
-        }
-
-        // Bottom labels overlay
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(LABEL_ROW_HEIGHT)
-                .padding(horizontal = 4.dp),
-        ) {
-            Text(
-                text = TimeUtils.formatTime(bufferStartTime),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                val duration = selectionEndTime - selectionStartTime
-                Text(
-                    text = "Selected: ${TimeUtils.durationString(duration)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = handleColor
-                )
-            }
-            Text(
-                text = TimeUtils.formatTime(bufferEndTime),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }
