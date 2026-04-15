@@ -219,4 +219,92 @@ class MainViewModelSelectionTest {
 
         assertEquals(selectionStart + MINUTE_MS, result)
     }
+
+    // ---- Tests for preset selection logic (issue #14) ----
+
+    // Reproduce MainViewModel.selectLastDuration: end ceils to next minute then
+    // clamps to bufferEnd; start is (rawEnd - duration) coerced to bufferStart,
+    // floored to previous minute, then re-coerced to bufferStart.
+    private fun presetLastDuration(
+        durationMs: Long,
+        bufferStart: Long,
+        bufferEnd: Long
+    ): Pair<Long, Long> {
+        if (bufferEnd <= bufferStart) return bufferStart to bufferEnd
+        val rawEnd = bufferEnd
+        val rawStart = (rawEnd - durationMs).coerceAtLeast(bufferStart)
+        val snappedEnd = (((rawEnd + MINUTE_MS - 1) / MINUTE_MS) * MINUTE_MS)
+            .coerceAtMost(bufferEnd)
+        val snappedStart = ((rawStart / MINUTE_MS) * MINUTE_MS)
+            .coerceAtLeast(bufferStart)
+        return snappedStart to snappedEnd
+    }
+
+    @Test
+    fun `preset last 5 min selects exactly the trailing window when buffer is large enough`() {
+        val bufferStart = 0L
+        val bufferEnd = 60 * MINUTE_MS
+        val (start, end) = presetLastDuration(5 * MINUTE_MS, bufferStart, bufferEnd)
+        assertEquals(55 * MINUTE_MS, start)
+        assertEquals(60 * MINUTE_MS, end)
+    }
+
+    @Test
+    fun `preset last 1 hour clamps to bufferStart when buffer is shorter than 1 hour`() {
+        val bufferStart = 0L
+        val bufferEnd = 20 * MINUTE_MS
+        val (start, end) = presetLastDuration(60 * MINUTE_MS, bufferStart, bufferEnd)
+        assertEquals(bufferStart, start)
+        assertEquals(bufferEnd, end)
+    }
+
+    @Test
+    fun `preset produces minute-aligned timestamps when buffer ends on a minute boundary`() {
+        val bufferStart = 0L
+        val bufferEnd = 30 * MINUTE_MS
+        val (start, end) = presetLastDuration(15 * MINUTE_MS, bufferStart, bufferEnd)
+        assertEquals(0L, start % MINUTE_MS)
+        assertEquals(0L, end % MINUTE_MS)
+    }
+
+    @Test
+    fun `preset end stays at mid-minute bufferEnd while recording`() {
+        // bufferEnd is 20 seconds into the 36th minute — recording in progress.
+        val bufferStart = 0L
+        val bufferEnd = 36 * MINUTE_MS + 20_000L
+        val (start, end) = presetLastDuration(5 * MINUTE_MS, bufferStart, bufferEnd)
+        // End must include the in-progress minute, not snap back to 36:00.
+        assertEquals(bufferEnd, end)
+        // Start is rawEnd - 5min = 31:20, floored to 31:00.
+        assertEquals(31 * MINUTE_MS, start)
+    }
+
+    @Test
+    fun `preset start floors to previous minute boundary`() {
+        val bufferStart = 0L
+        val bufferEnd = 60 * MINUTE_MS + 30_000L
+        val (start, _) = presetLastDuration(15 * MINUTE_MS, bufferStart, bufferEnd)
+        // rawStart = 60:30 - 15:00 = 45:30, floored to 45:00.
+        assertEquals(45 * MINUTE_MS, start)
+    }
+
+    @Test
+    fun `preset start clamps to mid-minute bufferStart when window reaches the left edge`() {
+        // bufferStart is 40 seconds past a minute boundary (e.g., very young buffer).
+        val bufferStart = 5 * MINUTE_MS + 40_000L
+        val bufferEnd = 8 * MINUTE_MS
+        val (start, end) = presetLastDuration(15 * MINUTE_MS, bufferStart, bufferEnd)
+        assertEquals(bufferStart, start)
+        assertEquals(bufferEnd, end)
+    }
+
+    @Test
+    fun `preset is no-op when buffer is empty`() {
+        val bufferStart = 1_000L
+        val bufferEnd = 1_000L
+        val (start, end) = presetLastDuration(5 * MINUTE_MS, bufferStart, bufferEnd)
+        // Reproduces the early-return; values unchanged from the initial buffer.
+        assertEquals(bufferStart, start)
+        assertEquals(bufferEnd, end)
+    }
 }

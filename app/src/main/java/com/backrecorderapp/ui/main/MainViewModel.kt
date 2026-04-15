@@ -173,6 +173,35 @@ class MainViewModel @Inject constructor(
         _uiState.value = state.copy(selectionEndTime = clamped)
     }
 
+    fun selectLastDuration(durationMs: Long) {
+        val state = _uiState.value
+        if (state.bufferEndTime <= state.bufferStartTime) return
+
+        val rawEnd = state.bufferEndTime
+        val rawStart = (rawEnd - durationMs).coerceAtLeast(state.bufferStartTime)
+
+        // Match drag snapping: end ceils to next minute (then clamps to bufferEnd
+        // so the in-progress minute stays reachable), start floors to previous minute.
+        val snappedEnd = (((rawEnd + MINUTE_MS - 1) / MINUTE_MS) * MINUTE_MS)
+            .coerceAtMost(state.bufferEndTime)
+        val snappedStart = ((rawStart / MINUTE_MS) * MINUTE_MS)
+            .coerceAtLeast(state.bufferStartTime)
+
+        _uiState.value = state.copy(
+            selectionStartTime = snappedStart,
+            selectionEndTime = snappedEnd
+        )
+    }
+
+    fun selectWholeBuffer() {
+        val state = _uiState.value
+        if (state.bufferEndTime <= state.bufferStartTime) return
+        _uiState.value = state.copy(
+            selectionStartTime = state.bufferStartTime,
+            selectionEndTime = state.bufferEndTime
+        )
+    }
+
     fun toggleRecording() {
         viewModelScope.launch {
             val isCurrentlyRecording = _uiState.value.isRecording

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -262,6 +263,14 @@ fun MainScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
+                TimePresetRow(
+                    onLast5Min = { viewModel.selectLastDuration(5 * 60_000L) },
+                    onLast15Min = { viewModel.selectLastDuration(15 * 60_000L) },
+                    onLast1Hour = { viewModel.selectLastDuration(60 * 60_000L) },
+                    onWholeBuffer = { viewModel.selectWholeBuffer() }
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
                 WaveformView(
                     waveformData = state.waveformData,
                     bufferStartTime = state.bufferStartTime,
@@ -315,6 +324,37 @@ fun MainScreen(
                     Text(stringResource(R.string.cancel))
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun TimePresetRow(
+    onLast5Min: () -> Unit,
+    onLast15Min: () -> Unit,
+    onLast1Hour: () -> Unit,
+    onWholeBuffer: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+    ) {
+        AssistChip(
+            onClick = onLast5Min,
+            label = { Text(stringResource(R.string.preset_5_min)) }
+        )
+        AssistChip(
+            onClick = onLast15Min,
+            label = { Text(stringResource(R.string.preset_15_min)) }
+        )
+        AssistChip(
+            onClick = onLast1Hour,
+            label = { Text(stringResource(R.string.preset_1_hour)) }
+        )
+        AssistChip(
+            onClick = onWholeBuffer,
+            label = { Text(stringResource(R.string.preset_all)) }
         )
     }
 }
