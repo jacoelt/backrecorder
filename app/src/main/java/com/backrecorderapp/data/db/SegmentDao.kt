@@ -23,9 +23,6 @@ interface SegmentDao {
     @Query("SELECT * FROM segments ORDER BY startTime ASC")
     fun getAllSegments(): Flow<List<SegmentEntity>>
 
-    @Query("SELECT * FROM segments ORDER BY startTime ASC")
-    suspend fun getAllSegmentsList(): List<SegmentEntity>
-
     @Query("SELECT * FROM segments WHERE id = :id")
     suspend fun getById(id: String): SegmentEntity?
 
@@ -37,16 +34,4 @@ interface SegmentDao {
 
     @Query("SELECT * FROM segments WHERE isComplete = 1 AND cloudUploaded = 0 ORDER BY startTime ASC")
     suspend fun getSegmentsPendingUpload(): List<SegmentEntity>
-
-    @Query("SELECT * FROM segments WHERE isComplete = 1 ORDER BY startTime DESC LIMIT 1")
-    suspend fun getLatestCompleteSegment(): SegmentEntity?
-
-    @Query("SELECT * FROM segments WHERE isComplete = 1 ORDER BY startTime ASC LIMIT 1")
-    suspend fun getOldestSegment(): SegmentEntity?
-
-    @Query("SELECT COUNT(*) FROM segments WHERE isComplete = 1")
-    suspend fun getCompleteSegmentCount(): Int
-
-    @Query("DELETE FROM segments WHERE startTime < :cutoffTime AND isComplete = 1")
-    suspend fun deleteSegmentsOlderThan(cutoffTime: Long)
 }

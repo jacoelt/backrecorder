@@ -8,7 +8,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -85,17 +84,6 @@ class SegmentDaoTest {
     }
 
     @Test
-    fun deleteSegmentsOlderThan() = runTest {
-        dao.insert(makeSegment("old", startTime = 1000, endTime = 61000))
-        dao.insert(makeSegment("new", startTime = 500000, endTime = 560000))
-
-        dao.deleteSegmentsOlderThan(100000)
-
-        assertNull(dao.getById("old"))
-        assertNotNull(dao.getById("new"))
-    }
-
-    @Test
     fun getSegmentsPendingUpload() = runTest {
         dao.insert(makeSegment("uploaded", startTime = 1000, endTime = 61000, cloudUploaded = true))
         dao.insert(makeSegment("pending", startTime = 61000, endTime = 121000, cloudUploaded = false))
@@ -127,17 +115,6 @@ class SegmentDaoTest {
         val updated = dao.getById("1")!!
         assertEquals(61000L, updated.endTime)
         assertTrue(updated.isComplete)
-    }
-
-    @Test
-    fun getLatestCompleteSegment() = runTest {
-        dao.insert(makeSegment("1", startTime = 1000, endTime = 61000))
-        dao.insert(makeSegment("2", startTime = 61000, endTime = 121000))
-        dao.insert(makeSegment("3", startTime = 121000, endTime = 0, isComplete = false))
-
-        val latest = dao.getLatestCompleteSegment()
-        assertNotNull(latest)
-        assertEquals("2", latest!!.id)
     }
 
     private fun makeSegment(

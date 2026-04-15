@@ -11,11 +11,6 @@ val Typography = Typography(
         fontSize = 28.sp,
         lineHeight = 36.sp
     ),
-    headlineMedium = TextStyle(
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp
-    ),
     titleMedium = TextStyle(
         fontWeight = FontWeight.Medium,
         fontSize = 16.sp,

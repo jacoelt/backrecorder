@@ -1,13 +1,7 @@
 package com.backrecorderapp.data.cloud
 
-import android.content.Context
-import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
 import com.google.api.client.http.FileContent
-import com.google.api.client.http.javanet.NetHttpTransport
-import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
-import com.google.api.services.drive.DriveScopes
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -15,11 +9,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class DriveCloudStorage @Inject constructor(
-    @ApplicationContext private val context: Context
-) {
+class DriveCloudStorage @Inject constructor() {
     companion object {
-        private const val APP_NAME = "BackRecorder"
         private const val ROOT_FOLDER = "BackRecorder"
         private const val STAGING_FOLDER = "staging"
     }
@@ -27,22 +18,6 @@ class DriveCloudStorage @Inject constructor(
     private var driveService: Drive? = null
     private var rootFolderId: String? = null
     private var stagingFolderId: String? = null
-
-    fun initialize(accountEmail: String) {
-        val credential = GoogleAccountCredential.usingOAuth2(
-            context,
-            listOf(DriveScopes.DRIVE_FILE)
-        )
-        credential.selectedAccountName = accountEmail
-
-        driveService = Drive.Builder(
-            NetHttpTransport(),
-            GsonFactory.getDefaultInstance(),
-            credential
-        )
-            .setApplicationName(APP_NAME)
-            .build()
-    }
 
     val isInitialized: Boolean get() = driveService != null
 
@@ -54,10 +29,6 @@ class DriveCloudStorage @Inject constructor(
 
     suspend fun uploadSegment(file: File): String? = withContext(Dispatchers.IO) {
         uploadFile(file, stagingFolderId)
-    }
-
-    suspend fun uploadSavedRecording(file: File): String? = withContext(Dispatchers.IO) {
-        uploadFile(file, rootFolderId)
     }
 
     private fun uploadFile(file: File, parentFolderId: String?): String? {
@@ -106,14 +77,13 @@ class DriveCloudStorage @Inject constructor(
 
         val result = drive.files().list()
             .setQ("'$folderId' in parents and trashed = false")
-            .setFields("files(id, name, createdTime)")
+            .setFields("files(id, createdTime)")
             .setOrderBy("createdTime")
             .execute()
 
         result.files?.map { file ->
             DriveFileInfo(
                 id = file.id,
-                name = file.name,
                 createdTime = file.createdTime?.value ?: 0L
             )
         } ?: emptyList()
@@ -156,6 +126,5 @@ class DriveCloudStorage @Inject constructor(
 
 data class DriveFileInfo(
     val id: String,
-    val name: String,
     val createdTime: Long
 )

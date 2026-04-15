@@ -24,8 +24,7 @@ data class SettingsUiState(
     val recordingEnabled: Boolean = false,
     val cloudUploadMode: CloudUploadMode = CloudUploadMode.OFF,
     val subscriptionStatus: SubscriptionStatus = SubscriptionStatus.FREE,
-    val trialDaysRemaining: Int = 0,
-    val showUpgradeDialog: Boolean = false
+    val trialDaysRemaining: Int = 0
 )
 
 @HiltViewModel

@@ -93,8 +93,4 @@ class SegmentManager @Inject constructor(
         val segment = segmentDao.getById(segmentId) ?: return
         segmentDao.update(segment.copy(cloudUploaded = true, cloudFileId = cloudFileId))
     }
-
-    suspend fun getOldestSegment(): SegmentEntity? = segmentDao.getOldestSegment()
-
-    suspend fun getLatestCompleteSegment(): SegmentEntity? = segmentDao.getLatestCompleteSegment()
 }

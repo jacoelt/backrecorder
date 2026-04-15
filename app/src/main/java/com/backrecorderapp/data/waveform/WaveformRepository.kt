@@ -28,22 +28,4 @@ class WaveformRepository @Inject constructor() {
         val count = bytes.size / 4
         return FloatArray(count) { buffer.getFloat() }
     }
-
-    fun downsample(amplitudes: FloatArray, targetSize: Int): FloatArray {
-        if (amplitudes.isEmpty() || targetSize <= 0) return floatArrayOf()
-        if (amplitudes.size <= targetSize) return amplitudes
-
-        val result = FloatArray(targetSize)
-        val bucketSize = amplitudes.size.toFloat() / targetSize
-        for (i in 0 until targetSize) {
-            val start = (i * bucketSize).toInt()
-            val end = ((i + 1) * bucketSize).toInt().coerceAtMost(amplitudes.size)
-            var max = 0f
-            for (j in start until end) {
-                if (amplitudes[j] > max) max = amplitudes[j]
-            }
-            result[i] = max
-        }
-        return result
-    }
 }

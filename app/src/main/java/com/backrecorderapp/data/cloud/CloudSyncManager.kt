@@ -11,7 +11,6 @@ import androidx.core.app.NotificationCompat
 import com.backrecorderapp.BackRecorderApp
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
-import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.segment.SegmentManager
@@ -207,19 +206,6 @@ class CloudSyncManager @Inject constructor(
             CloudUploadMode.WIFI_ONLY -> capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
             CloudUploadMode.ALWAYS_ON -> capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             CloudUploadMode.OFF -> false
-        }
-    }
-
-    suspend fun uploadSavedRecording(file: File): String? {
-        val mode = appPreferences.cloudUploadMode.first()
-        if (mode == CloudUploadMode.OFF) return null
-        if (!isNetworkAvailable(mode)) return null
-
-        return try {
-            driveCloudStorage.uploadSavedRecording(file)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to upload saved recording", e)
-            null
         }
     }
 }

@@ -8,7 +8,6 @@ import android.media.MediaMuxer
 import android.net.Uri
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
-import com.backrecorderapp.util.TimeUtils
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.nio.ByteBuffer

@@ -1,14 +1,12 @@
 package com.backrecorderapp.domain
 
 import android.content.Context
-import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveCloudStorage
 import com.backrecorderapp.data.cloud.DriveFileInfo
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.segment.SegmentManager
 import io.mockk.coEvery
-import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.flowOf
@@ -43,7 +41,6 @@ class CloudSyncRecoveryTest {
         val staleFiles = (0 until 120).map { i ->
             DriveFileInfo(
                 id = "file_$i",
-                name = "segment_$i.m4a",
                 createdTime = bufferStart - (2 * 60 * 60 * 1000) + (i * 60 * 1000L)
             )
         }
@@ -64,7 +61,6 @@ class CloudSyncRecoveryTest {
         val recentFiles = (0 until 10).map { i ->
             DriveFileInfo(
                 id = "file_$i",
-                name = "segment_$i.m4a",
                 createdTime = now - (i * 60 * 1000L) // Within last 10 minutes
             )
         }
@@ -84,7 +80,6 @@ class CloudSyncRecoveryTest {
         val staleFiles = listOf(
             DriveFileInfo(
                 id = "file_1",
-                name = "segment_1.m4a",
                 createdTime = bufferStart - (13 * 60 * 60 * 1000)
             )
         )
@@ -104,7 +99,6 @@ class CloudSyncRecoveryTest {
         val staleFiles = listOf(
             DriveFileInfo(
                 id = "file_1",
-                name = "segment_1.m4a",
                 createdTime = bufferStart - (30 * 60 * 1000)
             )
         )

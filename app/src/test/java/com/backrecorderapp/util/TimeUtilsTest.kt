@@ -26,14 +26,4 @@ class TimeUtilsTest {
     fun `durationString handles zero`() {
         assertEquals("0:00", TimeUtils.durationString(0))
     }
-
-    @Test
-    fun `startOfBufferWindow returns 24h ago`() {
-        val before = System.currentTimeMillis() - (24 * 60 * 60 * 1000)
-        val result = TimeUtils.startOfBufferWindow()
-        val after = System.currentTimeMillis() - (24 * 60 * 60 * 1000)
-
-        // Result should be between before and after (within a few ms)
-        assert(result in (before - 100)..(after + 100))
-    }
 }
