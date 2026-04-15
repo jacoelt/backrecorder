@@ -105,4 +105,118 @@ class MainViewModelSelectionTest {
         val result = clampSelectionEnd(1.5f, bufferStart, bufferEnd, selectionStart)
         assertEquals(bufferEnd, result)
     }
+
+    // ---- Tests for minute-snapping logic with outward rounding (issue #7) ----
+
+    private val MINUTE_MS = 60_000L
+
+    // Reproduce the snap+clamp logic from MainViewModel.updateSelectionStart
+    // (floor to previous minute, clamped to buffer bounds and minimum gap).
+    private fun snapSelectionStart(
+        fraction: Float,
+        bufferStart: Long,
+        bufferEnd: Long,
+        selectionEnd: Long
+    ): Long {
+        val range = bufferEnd - bufferStart
+        if (range <= 0) return bufferStart
+        val raw = bufferStart + (fraction * range).toLong()
+        val snapped = (raw / MINUTE_MS) * MINUTE_MS
+        return snapped.coerceIn(bufferStart, selectionEnd - MINUTE_MS)
+    }
+
+    // Reproduce the snap+clamp logic from MainViewModel.updateSelectionEnd
+    // (ceil to next minute, clamped to buffer bounds and minimum gap).
+    private fun snapSelectionEnd(
+        fraction: Float,
+        bufferStart: Long,
+        bufferEnd: Long,
+        selectionStart: Long
+    ): Long {
+        val range = bufferEnd - bufferStart
+        if (range <= 0) return bufferEnd
+        val raw = bufferStart + (fraction * range).toLong()
+        val snapped = ((raw + MINUTE_MS - 1) / MINUTE_MS) * MINUTE_MS
+        return snapped.coerceIn(selectionStart + MINUTE_MS, bufferEnd)
+    }
+
+    @Test
+    fun `end handle reaches currently-recording minute when bufferEnd is mid-minute (issue 7)`() {
+        // bufferEnd is 20 seconds into the 36th minute — recording in progress.
+        val bufferStart = 0L
+        val bufferEnd = 36 * MINUTE_MS + 20_000L
+        val selectionStart = 30 * MINUTE_MS
+
+        // User drags end handle all the way to the right.
+        val result = snapSelectionEnd(1.0f, bufferStart, bufferEnd, selectionStart)
+
+        // Must include the currently-recording minute (i.e., reach bufferEnd),
+        // not snap back to the previous minute boundary at 36:00.
+        assertEquals(bufferEnd, result)
+        assertTrue("end must include the in-progress minute", result > 36 * MINUTE_MS)
+    }
+
+    @Test
+    fun `end handle reaches bufferEnd even when dragged into the in-progress minute`() {
+        val bufferStart = 0L
+        val bufferEnd = 36 * MINUTE_MS + 20_000L
+        val selectionStart = 30 * MINUTE_MS
+
+        // User drags to a point inside the current incomplete minute (~36:10).
+        val fraction = (36 * MINUTE_MS + 10_000L).toFloat() / bufferEnd
+        val result = snapSelectionEnd(fraction, bufferStart, bufferEnd, selectionStart)
+
+        assertEquals(bufferEnd, result)
+    }
+
+    @Test
+    fun `end handle ceils to next minute boundary when dragged inside a complete minute`() {
+        val bufferStart = 0L
+        val bufferEnd = 60 * MINUTE_MS
+        val selectionStart = 0L
+
+        // Drag to ~33:20 — should round UP to 34:00, not nearest (33:00).
+        val fraction = (33 * MINUTE_MS + 20_000L).toFloat() / bufferEnd
+        val result = snapSelectionEnd(fraction, bufferStart, bufferEnd, selectionStart)
+
+        assertEquals(34 * MINUTE_MS, result)
+    }
+
+    @Test
+    fun `start handle floors to previous minute boundary`() {
+        val bufferStart = 0L
+        val bufferEnd = 60 * MINUTE_MS
+        val selectionEnd = 50 * MINUTE_MS
+
+        // Drag to ~10:50 — should round DOWN to 10:00, not nearest (11:00).
+        val fraction = (10 * MINUTE_MS + 50_000L).toFloat() / bufferEnd
+        val result = snapSelectionStart(fraction, bufferStart, bufferEnd, selectionEnd)
+
+        assertEquals(10 * MINUTE_MS, result)
+    }
+
+    @Test
+    fun `start handle reaches bufferStart when bufferStart is mid-minute`() {
+        // bufferStart is 40 seconds past a minute boundary.
+        val bufferStart = 5 * MINUTE_MS + 40_000L
+        val bufferEnd = 60 * MINUTE_MS
+        val selectionEnd = 30 * MINUTE_MS
+
+        val result = snapSelectionStart(0.0f, bufferStart, bufferEnd, selectionEnd)
+
+        assertEquals(bufferStart, result)
+    }
+
+    @Test
+    fun `end handle preserves minimum one-minute gap`() {
+        val bufferStart = 0L
+        val bufferEnd = 60 * MINUTE_MS
+        val selectionStart = 30 * MINUTE_MS
+
+        // Try to drag end below selectionStart.
+        val fraction = (29 * MINUTE_MS).toFloat() / bufferEnd
+        val result = snapSelectionEnd(fraction, bufferStart, bufferEnd, selectionStart)
+
+        assertEquals(selectionStart + MINUTE_MS, result)
+    }
 }

@@ -153,7 +153,9 @@ class MainViewModel @Inject constructor(
         val range = state.bufferEndTime - state.bufferStartTime
         if (range <= 0) return
         val raw = state.bufferStartTime + (fraction * range).toLong()
-        val snapped = ((raw + MINUTE_MS / 2) / MINUTE_MS) * MINUTE_MS
+        // Floor to previous minute so the start always rounds outward (earlier),
+        // preserving any audio the user dragged near.
+        val snapped = (raw / MINUTE_MS) * MINUTE_MS
         val clamped = snapped.coerceIn(state.bufferStartTime, state.selectionEndTime - MINUTE_MS)
         _uiState.value = state.copy(selectionStartTime = clamped)
     }
@@ -163,7 +165,10 @@ class MainViewModel @Inject constructor(
         val range = state.bufferEndTime - state.bufferStartTime
         if (range <= 0) return
         val raw = state.bufferStartTime + (fraction * range).toLong()
-        val snapped = ((raw + MINUTE_MS / 2) / MINUTE_MS) * MINUTE_MS
+        // Ceil to next minute so the end always rounds outward (later). The
+        // clamp to bufferEndTime then lets the user reach the currently-recording
+        // minute even when bufferEndTime is not on a minute boundary (issue #7).
+        val snapped = ((raw + MINUTE_MS - 1) / MINUTE_MS) * MINUTE_MS
         val clamped = snapped.coerceIn(state.selectionStartTime + MINUTE_MS, state.bufferEndTime)
         _uiState.value = state.copy(selectionEndTime = clamped)
     }
