@@ -101,6 +101,15 @@ fun MainScreen(
         }
     }
 
+    // Launch file picker after subscription gate passes
+    LaunchedEffect(state.launchSavePicker) {
+        if (state.launchSavePicker) {
+            val filename = "recording_${TimeUtils.formatForFilename(state.selectionStartTime)}.m4a"
+            saveLauncher.launch(filename)
+            viewModel.onSavePickerLaunched()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -116,10 +125,7 @@ fun MainScreen(
         floatingActionButton = {
             if (state.segments.isNotEmpty()) {
                 FloatingActionButton(
-                    onClick = {
-                        val filename = "recording_${TimeUtils.formatForFilename(state.selectionStartTime)}.m4a"
-                        saveLauncher.launch(filename)
-                    },
+                    onClick = { viewModel.requestSave() },
                     containerColor = MaterialTheme.colorScheme.primary
                 ) {
                     if (state.saveInProgress) {

@@ -12,8 +12,10 @@ import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
 import com.backrecorderapp.domain.BlockReason
+import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SaveResult
+import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.service.RecordingService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -38,6 +40,7 @@ data class MainUiState(
     val selectionStartTime: Long = 0L,
     val selectionEndTime: Long = 0L,
     val saveInProgress: Boolean = false,
+    val launchSavePicker: Boolean = false,
     val showUpgradeDialog: Boolean = false,
     val upgradeReason: BlockReason? = null,
     val errorMessage: String? = null,
@@ -55,6 +58,7 @@ data class MainUiState(
             selectionStartTime == other.selectionStartTime &&
             selectionEndTime == other.selectionEndTime &&
             saveInProgress == other.saveInProgress &&
+            launchSavePicker == other.launchSavePicker &&
             showUpgradeDialog == other.showUpgradeDialog &&
             upgradeReason == other.upgradeReason &&
             errorMessage == other.errorMessage &&
@@ -71,6 +75,7 @@ data class MainUiState(
         result = 31 * result + selectionStartTime.hashCode()
         result = 31 * result + selectionEndTime.hashCode()
         result = 31 * result + saveInProgress.hashCode()
+        result = 31 * result + launchSavePicker.hashCode()
         result = 31 * result + showUpgradeDialog.hashCode()
         result = 31 * result + (upgradeReason?.hashCode() ?: 0)
         result = 31 * result + (errorMessage?.hashCode() ?: 0)
@@ -88,7 +93,8 @@ class MainViewModel @Inject constructor(
     private val saveRecordingUseCase: SaveRecordingUseCase,
     private val appPreferences: AppPreferences,
     private val cloudSyncManager: CloudSyncManager,
-    private val billingRepository: BillingRepository
+    private val billingRepository: BillingRepository,
+    private val subscriptionGate: SubscriptionGate
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
@@ -213,6 +219,31 @@ class MainViewModel @Inject constructor(
                 RecordingService.start(context)
             }
         }
+    }
+
+    fun requestSave() {
+        viewModelScope.launch {
+            val state = _uiState.value
+            val gateResult = subscriptionGate.checkSaveAccess(
+                state.selectionStartTime,
+                state.selectionEndTime
+            )
+            when (gateResult) {
+                is GateResult.Allowed -> {
+                    _uiState.value = state.copy(launchSavePicker = true)
+                }
+                is GateResult.Blocked -> {
+                    _uiState.value = state.copy(
+                        showUpgradeDialog = true,
+                        upgradeReason = gateResult.reason
+                    )
+                }
+            }
+        }
+    }
+
+    fun onSavePickerLaunched() {
+        _uiState.value = _uiState.value.copy(launchSavePicker = false)
     }
 
     fun saveRecording(outputUri: Uri) {
