@@ -1,67 +1,22 @@
-# CLAUDE.md — Back Recorder
+# Back Recorder
 
-Android background audio recorder app with Google Drive cloud sync and in-app billing.
+Android background audio recorder with Google Drive sync and in-app billing.
 
-## Tech Stack
-
-- **Language:** Kotlin (JVM 17)
-- **UI:** Jetpack Compose + Material 3
-- **DI:** Hilt (with KSP)
-- **Database:** Room
-- **Preferences:** DataStore
-- **Background work:** WorkManager, foreground Service
-- **Billing:** Google Play Billing Library
-- **Cloud:** Google Drive API + Play Services Auth
-- **Build:** Gradle with version catalog (`gradle/libs.versions.toml`)
-- **Testing:** JUnit 4, MockK, Turbine, Espresso
-
-## Project Structure
+Kotlin 17 · Jetpack Compose/M3 · Hilt (KSP) · Room · DataStore · WorkManager · Play Billing · Google Drive API · Gradle version catalog (`gradle/libs.versions.toml`) · Tests: JUnit 4, MockK, Turbine, Espresso
 
 Single `:app` module. Package root: `com.backrecorderapp`.
 
-```
-data/
-  billing/       — Google Play billing (BillingRepository)
-  cloud/         — Google Drive sync (CloudSyncManager, DriveCloudStorage)
-  db/            — Room database, DAO, entities
-  preferences/   — DataStore wrapper (AppPreferences)
-  segment/       — Audio segment management
-  waveform/      — Waveform data for UI visualization
-domain/          — Use cases (SaveRecording, TrimSegment, SubscriptionGate)
-service/         — RecordingService (foreground), BootReceiver
-ui/
-  main/          — Main screen + ViewModel
-  settings/      — Settings screen + ViewModel
-  disclaimer/    — Disclaimer screen + ViewModel
-  components/    — Reusable composables (WaveformView)
-  navigation/    — NavGraph
-  theme/         — Colors, typography, theme
-di/              — Hilt AppModule
-util/            — TimeUtils
-```
-
-## Build & Run
-
-```bash
-# Debug build
-./gradlew assembleDebug
-
-# Run unit tests
-./gradlew testDebugUnitTest
-
-# Run instrumented tests (requires device/emulator)
-./gradlew connectedDebugAndroidTest
-```
-
 ## Key Concepts
 
-- **Segments:** Recordings are composed of segments — recording can be interrupted (e.g., phone call) and resumed.
-- **Subscription gate:** Premium features (Drive sync, extended recording) are gated via `SubscriptionGate`.
-- **Recovery:** Crash/interrupt recovery with a dedicated notification channel.
-- **Three notification channels:** recording, cloud sync, recovery.
+- **Segments:** Recordings are composed of segments — recording can be interrupted and resumed.
+- **Recording state:** `RecordingService` exposes static `isRunning: StateFlow<Boolean>`. UI observes this directly — no DataStore pref. `AppPreferences.wasRecordingBeforeShutdown` is only for crash-recovery restart.
+- **Segment flushing:** `SaveRecordingUseCase` → `RecordingFlusher.flushCurrentSegment()` finalizes the in-progress segment (writes MP4 MOOV atom) for `MediaExtractor`. Flusher is a Hilt interface backed by `RecordingService.flushCurrentSegment()` (static, `CompletableDeferred`). Rotation guarded by `Mutex`.
+- **Minute-snapped selection:** Waveform handles snap to minute boundaries (start floors, end ceils) for drags and time-preset chips. End handle clamps to `bufferEndTime` so the currently-recording minute stays reachable.
+- **WaveformView touch:** Custom `awaitEachGesture` pointer-input loop (not `detectHorizontalDragGestures`). Dedicated handle zones above/below waveform; 2D distance disambiguates overlapping handles.
+- **Billing:** `BillingRepository` checks subscription status (FREE/ACTIVE) only. Purchases happen via Play Store, not in-app.
+- **Subscription gate:** Premium features (Drive sync, extended recording) gated via `SubscriptionGate`.
+- **Notifications:** Three channels — recording, cloud sync, recovery.
 
 ## Sensitive Files (do not commit)
 
-- `google-services.json` — Firebase/Google config
-- `*.jks` / `*.keystore` — signing keys
-- `local.properties` — SDK paths
+`google-services.json`, `*.jks`/`*.keystore`, `local.properties`
