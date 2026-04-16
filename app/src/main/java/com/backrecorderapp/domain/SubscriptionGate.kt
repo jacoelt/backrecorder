@@ -21,13 +21,17 @@ class SubscriptionGate @Inject constructor(
 ) {
     companion object {
         const val FREE_SAVE_LIMIT_MS = 15 * 60 * 1000L // 15 minutes
+        private const val MINUTE_MS = 60_000L
     }
 
     suspend fun checkSaveAccess(startTime: Long, endTime: Long): GateResult {
         if (isPremium()) return GateResult.Allowed
 
         val now = System.currentTimeMillis()
-        val freeWindowStart = now - FREE_SAVE_LIMIT_MS
+        // One-minute grace: the selection start was computed against a
+        // slightly-stale bufferEndTime, and the in-progress minute at the
+        // recording edge may add extra seconds — both are acceptable.
+        val freeWindowStart = now - FREE_SAVE_LIMIT_MS - MINUTE_MS
 
         return if (startTime >= freeWindowStart) {
             GateResult.Allowed

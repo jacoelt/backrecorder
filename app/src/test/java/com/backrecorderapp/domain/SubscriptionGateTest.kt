@@ -27,19 +27,19 @@ class SubscriptionGateTest {
 
         val now = System.currentTimeMillis()
         val startTime = now - (10 * 60 * 1000) // 10 minutes ago
-        val endTime = now - (5 * 60 * 1000) // 5 minutes ago
+        val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
         assertTrue(result is GateResult.Allowed)
     }
 
     @Test
-    fun `free user blocked from saving older than 15 minutes`() = runTest {
+    fun `free user blocked when start is well beyond free window`() = runTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
 
         val now = System.currentTimeMillis()
         val startTime = now - (20 * 60 * 1000) // 20 minutes ago
-        val endTime = now - (16 * 60 * 1000) // 16 minutes ago
+        val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
         assertTrue(result is GateResult.Blocked)
@@ -54,8 +54,8 @@ class SubscriptionGateTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
 
         val now = System.currentTimeMillis()
-        val startTime = now - (23 * 60 * 60 * 1000) // 23 hours ago
-        val endTime = now - (22 * 60 * 60 * 1000) // 22 hours ago
+        val startTime = now - (2 * 60 * 60 * 1000) // 2 hours ago
+        val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
         assertTrue(result is GateResult.Allowed)
@@ -66,8 +66,8 @@ class SubscriptionGateTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.TRIAL
 
         val now = System.currentTimeMillis()
-        val startTime = now - (20 * 60 * 60 * 1000) // 20 hours ago
-        val endTime = now - (19 * 60 * 60 * 1000) // 19 hours ago
+        val startTime = now - (2 * 60 * 60 * 1000) // 2 hours ago
+        val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
         assertTrue(result is GateResult.Allowed)
@@ -102,14 +102,43 @@ class SubscriptionGateTest {
     }
 
     @Test
-    fun `free user at exactly 15 minute boundary is allowed`() = runTest {
+    fun `free user at exactly 15 minutes ago is allowed thanks to grace period`() = runTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
 
         val now = System.currentTimeMillis()
-        val startTime = now - (15 * 60 * 1000) + 1_000 // just inside 15 minute boundary (1s margin for test execution time)
+        val startTime = now - (15 * 60 * 1000) // exactly 15 minutes ago
         val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
         assertTrue(result is GateResult.Allowed)
+    }
+
+    @Test
+    fun `free user with 15 min selection plus in-progress seconds is allowed`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
+
+        val now = System.currentTimeMillis()
+        // Start 15 min ago, end includes 45 extra seconds from in-progress minute
+        val startTime = now - (15 * 60 * 1000)
+        val endTime = now + 45_000
+
+        val result = subscriptionGate.checkSaveAccess(startTime, endTime)
+        assertTrue(result is GateResult.Allowed)
+    }
+
+    @Test
+    fun `free user blocked when start is 16 minutes ago`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
+
+        val now = System.currentTimeMillis()
+        val startTime = now - (16 * 60 * 1000) // 16 minutes ago
+        val endTime = now
+
+        val result = subscriptionGate.checkSaveAccess(startTime, endTime)
+        assertTrue(result is GateResult.Blocked)
+        assertEquals(
+            BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT,
+            (result as GateResult.Blocked).reason
+        )
     }
 }

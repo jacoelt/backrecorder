@@ -44,13 +44,13 @@ class SaveRecordingUseCaseTest {
     }
 
     @Test
-    fun `returns upgrade required when free user tries to save old recording`() = runTest {
+    fun `returns upgrade required when free user tries to save over 15 min`() = runTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
 
         val now = System.currentTimeMillis()
         val result = saveRecordingUseCase.execute(
-            startTime = now - (30 * 60 * 1000), // 30 min ago
-            endTime = now - (20 * 60 * 1000),   // 20 min ago
+            startTime = now - (20 * 60 * 1000), // 20 min duration
+            endTime = now,
             outputUri = mockk()
         )
 

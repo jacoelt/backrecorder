@@ -222,22 +222,16 @@ class MainViewModelSelectionTest {
 
     // ---- Tests for preset selection logic (issue #14) ----
 
-    // Reproduce MainViewModel.selectLastDuration: end ceils to next minute then
-    // clamps to bufferEnd; start is (rawEnd - duration) coerced to bufferStart,
-    // floored to previous minute, then re-coerced to bufferStart.
+    // Reproduce MainViewModel.selectLastDuration: exact duration, no snapping.
     private fun presetLastDuration(
         durationMs: Long,
         bufferStart: Long,
         bufferEnd: Long
     ): Pair<Long, Long> {
         if (bufferEnd <= bufferStart) return bufferStart to bufferEnd
-        val rawEnd = bufferEnd
-        val rawStart = (rawEnd - durationMs).coerceAtLeast(bufferStart)
-        val snappedEnd = (((rawEnd + MINUTE_MS - 1) / MINUTE_MS) * MINUTE_MS)
-            .coerceAtMost(bufferEnd)
-        val snappedStart = ((rawStart / MINUTE_MS) * MINUTE_MS)
-            .coerceAtLeast(bufferStart)
-        return snappedStart to snappedEnd
+        val end = bufferEnd
+        val start = (end - durationMs).coerceAtLeast(bufferStart)
+        return start to end
     }
 
     @Test
@@ -268,24 +262,25 @@ class MainViewModelSelectionTest {
     }
 
     @Test
-    fun `preset end stays at mid-minute bufferEnd while recording`() {
+    fun `preset selects exact duration when bufferEnd is mid-minute`() {
         // bufferEnd is 20 seconds into the 36th minute — recording in progress.
         val bufferStart = 0L
         val bufferEnd = 36 * MINUTE_MS + 20_000L
         val (start, end) = presetLastDuration(5 * MINUTE_MS, bufferStart, bufferEnd)
-        // End must include the in-progress minute, not snap back to 36:00.
         assertEquals(bufferEnd, end)
-        // Start is rawEnd - 5min = 31:20, floored to 31:00.
-        assertEquals(31 * MINUTE_MS, start)
+        // Exact 5 min before bufferEnd: 36:20 - 5:00 = 31:20.
+        assertEquals(31 * MINUTE_MS + 20_000L, start)
+        assertEquals(5 * MINUTE_MS, end - start)
     }
 
     @Test
-    fun `preset start floors to previous minute boundary`() {
+    fun `preset selects exact duration even when start would be mid-minute`() {
         val bufferStart = 0L
         val bufferEnd = 60 * MINUTE_MS + 30_000L
-        val (start, _) = presetLastDuration(15 * MINUTE_MS, bufferStart, bufferEnd)
-        // rawStart = 60:30 - 15:00 = 45:30, floored to 45:00.
-        assertEquals(45 * MINUTE_MS, start)
+        val (start, end) = presetLastDuration(15 * MINUTE_MS, bufferStart, bufferEnd)
+        // 60:30 - 15:00 = 45:30, no snapping.
+        assertEquals(45 * MINUTE_MS + 30_000L, start)
+        assertEquals(15 * MINUTE_MS, end - start)
     }
 
     @Test

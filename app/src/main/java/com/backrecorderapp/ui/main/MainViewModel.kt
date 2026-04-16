@@ -180,19 +180,15 @@ class MainViewModel @Inject constructor(
         val state = _uiState.value
         if (state.bufferEndTime <= state.bufferStartTime) return
 
-        val rawEnd = state.bufferEndTime
-        val rawStart = (rawEnd - durationMs).coerceAtLeast(state.bufferStartTime)
-
-        // Match drag snapping: end ceils to next minute (then clamps to bufferEnd
-        // so the in-progress minute stays reachable), start floors to previous minute.
-        val snappedEnd = (((rawEnd + MINUTE_MS - 1) / MINUTE_MS) * MINUTE_MS)
-            .coerceAtMost(state.bufferEndTime)
-        val snappedStart = ((rawStart / MINUTE_MS) * MINUTE_MS)
-            .coerceAtLeast(state.bufferStartTime)
+        // Presets select an exact duration — no minute-snapping (that's for drag
+        // handles only). End stays at the buffer edge; start is exactly
+        // durationMs earlier, clamped to bufferStart.
+        val end = state.bufferEndTime
+        val start = (end - durationMs).coerceAtLeast(state.bufferStartTime)
 
         _uiState.value = state.copy(
-            selectionStartTime = snappedStart,
-            selectionEndTime = snappedEnd
+            selectionStartTime = start,
+            selectionEndTime = end
         )
     }
 
