@@ -1,6 +1,7 @@
 package com.backrecorderapp.ui.main
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -314,7 +315,7 @@ fun MainScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    // Navigate to subscription / launch billing
+                    (context as? Activity)?.let { viewModel.launchPurchaseFlow(it) }
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }

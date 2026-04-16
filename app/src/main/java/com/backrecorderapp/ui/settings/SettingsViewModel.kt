@@ -1,5 +1,6 @@
 package com.backrecorderapp.ui.settings
 
+import android.app.Activity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
@@ -69,6 +70,10 @@ class SettingsViewModel @Inject constructor(
                 cloudSyncManager.stopSync()
             }
         }
+    }
+
+    fun launchPurchaseFlow(activity: Activity) {
+        billingRepository.launchPurchaseFlow(activity)
     }
 
     fun dismissUpgradeDialog() {

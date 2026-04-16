@@ -1,9 +1,11 @@
 package com.backrecorderapp.ui.main
 
+import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
@@ -85,7 +87,8 @@ class MainViewModel @Inject constructor(
     private val waveformRepository: WaveformRepository,
     private val saveRecordingUseCase: SaveRecordingUseCase,
     private val appPreferences: AppPreferences,
-    private val cloudSyncManager: CloudSyncManager
+    private val cloudSyncManager: CloudSyncManager,
+    private val billingRepository: BillingRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MainUiState())
@@ -248,6 +251,10 @@ class MainViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    fun launchPurchaseFlow(activity: Activity) {
+        billingRepository.launchPurchaseFlow(activity)
     }
 
     fun dismissUpgradeDialog() {

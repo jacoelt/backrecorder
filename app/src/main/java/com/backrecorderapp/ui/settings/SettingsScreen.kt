@@ -29,8 +29,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import android.app.Activity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -47,6 +49,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
+    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -101,7 +104,9 @@ fun SettingsScreen(
                         state.subscriptionStatus == SubscriptionStatus.EXPIRED
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Button(onClick = { /* Launch billing flow */ }) {
+                        Button(onClick = {
+                            (context as? Activity)?.let { viewModel.launchPurchaseFlow(it) }
+                        }) {
                             Text(stringResource(R.string.upgrade_button))
                         }
                     }
@@ -173,7 +178,7 @@ fun SettingsScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    // Launch billing flow
+                    (context as? Activity)?.let { viewModel.launchPurchaseFlow(it) }
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }
