@@ -15,7 +15,7 @@ class DisclaimerViewModel @Inject constructor(
 ) : ViewModel() {
 
     val disclaimerAccepted = appPreferences.disclaimerAccepted
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     fun acceptDisclaimer() {
         viewModelScope.launch {

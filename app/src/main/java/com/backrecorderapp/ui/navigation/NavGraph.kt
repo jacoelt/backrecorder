@@ -1,8 +1,17 @@
 package com.backrecorderapp.ui.navigation
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -25,7 +34,23 @@ fun NavGraph() {
     val disclaimerViewModel: DisclaimerViewModel = hiltViewModel()
     val disclaimerAccepted by disclaimerViewModel.disclaimerAccepted.collectAsState()
 
-    val startDestination = if (disclaimerAccepted) Routes.MAIN else Routes.DISCLAIMER
+    // Wait for DataStore to load before choosing start destination
+    val accepted = disclaimerAccepted ?: run {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(48.dp),
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        return
+    }
+
+    val startDestination = if (accepted) Routes.MAIN else Routes.DISCLAIMER
 
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.DISCLAIMER) {
