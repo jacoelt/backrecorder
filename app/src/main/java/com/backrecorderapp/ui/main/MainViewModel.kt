@@ -181,9 +181,9 @@ class MainViewModel @Inject constructor(
         if (state.bufferEndTime <= state.bufferStartTime) return
 
         // Presets select an exact duration — no minute-snapping (that's for drag
-        // handles only). End stays at the buffer edge; start is exactly
-        // durationMs earlier, clamped to bufferStart.
-        val end = state.bufferEndTime
+        // handles only). When recording is active, use current wall-clock time
+        // instead of stale bufferEndTime (which only updates on segment rotation).
+        val end = if (state.isRecording) System.currentTimeMillis() else state.bufferEndTime
         val start = (end - durationMs).coerceAtLeast(state.bufferStartTime)
 
         _uiState.value = state.copy(
@@ -195,9 +195,10 @@ class MainViewModel @Inject constructor(
     fun selectWholeBuffer() {
         val state = _uiState.value
         if (state.bufferEndTime <= state.bufferStartTime) return
+        val end = if (state.isRecording) System.currentTimeMillis() else state.bufferEndTime
         _uiState.value = state.copy(
             selectionStartTime = state.bufferStartTime,
-            selectionEndTime = state.bufferEndTime
+            selectionEndTime = end
         )
     }
 
@@ -219,9 +220,19 @@ class MainViewModel @Inject constructor(
             val state = _uiState.value
             _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
 
+            // When recording is active and the selection end is at the buffer edge,
+            // snap to current wall-clock time so the in-progress segment is included.
+            // bufferEndTime is stale between segment rotations (~60 s); without this
+            // the most recent audio would be silently excluded.
+            val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
+                System.currentTimeMillis()
+            } else {
+                state.selectionEndTime
+            }
+
             val result = saveRecordingUseCase.execute(
                 startTime = state.selectionStartTime,
-                endTime = state.selectionEndTime,
+                endTime = endTime,
                 outputUri = outputUri
             )
 
