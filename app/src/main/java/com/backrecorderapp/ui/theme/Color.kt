@@ -2,9 +2,10 @@ package com.backrecorderapp.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
+val Blue500 = Color(0xFF3B82F6)
+val Blue700 = Color(0xFF1D4ED8)
+val Cyan500 = Color(0xFF06B6D4)
 val Red500 = Color(0xFFEF4444)
-val Red700 = Color(0xFFB91C1C)
-val Orange500 = Color(0xFFF97316)
 val Gray900 = Color(0xFF111827)
 val Gray800 = Color(0xFF1F2937)
 val Gray700 = Color(0xFF374151)
