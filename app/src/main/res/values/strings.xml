@@ -24,7 +24,7 @@
     </string>
     <string name="disclaimer_accept">I understand and accept full responsibility</string>
     <string name="disclaimer_decline">I do not agree</string>
-    <string name="disclaimer_reminder">Recording active — ensure you have consent from those around you</string>
+    <string name="disclaimer_reminder">Recording others without consent may be illegal</string>
 
     <!-- Main Screen -->
     <string name="select_time_range">Select time range to save</string>

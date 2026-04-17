@@ -158,7 +158,9 @@ fun MainScreen(
                     text = stringResource(R.string.disclaimer_reminder),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp),
                     textAlign = TextAlign.Center
                 )
             }
