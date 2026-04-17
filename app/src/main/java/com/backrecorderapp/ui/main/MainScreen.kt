@@ -360,20 +360,20 @@ private fun TimePresetRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
     ) {
         AssistChip(
-            onClick = onLast5Min,
-            label = { Text(stringResource(R.string.preset_5_min)) }
-        )
-        AssistChip(
-            onClick = onLast15Min,
-            label = { Text(stringResource(R.string.preset_15_min)) }
+            onClick = onWholeBuffer,
+            label = { Text(stringResource(R.string.preset_all)) }
         )
         AssistChip(
             onClick = onLast1Hour,
             label = { Text(stringResource(R.string.preset_1_hour)) }
         )
         AssistChip(
-            onClick = onWholeBuffer,
-            label = { Text(stringResource(R.string.preset_all)) }
+            onClick = onLast15Min,
+            label = { Text(stringResource(R.string.preset_15_min)) }
+        )
+        AssistChip(
+            onClick = onLast5Min,
+            label = { Text(stringResource(R.string.preset_5_min)) }
         )
     }
 }
