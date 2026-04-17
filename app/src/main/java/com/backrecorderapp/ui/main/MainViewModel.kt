@@ -3,6 +3,7 @@ package com.backrecorderapp.ui.main
 import android.app.Activity
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
@@ -224,6 +225,24 @@ class MainViewModel @Inject constructor(
     fun requestSave() {
         viewModelScope.launch {
             val state = _uiState.value
+
+            // Preflight: never launch the SAF picker if the selection has no
+            // recorded data — SAF creates a 0-byte file as soon as the picker
+            // returns a URI, and the save would then fail on an empty selection
+            // leaving that empty file behind (issue #23).
+            val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
+                System.currentTimeMillis()
+            } else {
+                state.selectionEndTime
+            }
+            val segments = segmentManager.getSegmentsInRange(state.selectionStartTime, endTime)
+            if (segments.isEmpty()) {
+                _uiState.value = state.copy(
+                    errorMessage = "No recorded data found for the selected time range"
+                )
+                return@launch
+            }
+
             val gateResult = subscriptionGate.checkSaveAccess(
                 state.selectionStartTime,
                 state.selectionEndTime
@@ -275,6 +294,7 @@ class MainViewModel @Inject constructor(
                     )
                 }
                 is SaveResult.UpgradeRequired -> {
+                    deleteOutputUri(outputUri)
                     _uiState.value = _uiState.value.copy(
                         saveInProgress = false,
                         showUpgradeDialog = true,
@@ -282,12 +302,24 @@ class MainViewModel @Inject constructor(
                     )
                 }
                 is SaveResult.Error -> {
+                    deleteOutputUri(outputUri)
                     _uiState.value = _uiState.value.copy(
                         saveInProgress = false,
                         errorMessage = result.message
                     )
                 }
             }
+        }
+    }
+
+    // SAF creates a 0-byte destination file as soon as the picker returns a URI.
+    // If the save fails for any reason, delete that empty file so we never leave
+    // empty recordings on the user's storage (issue #23).
+    private fun deleteOutputUri(uri: Uri) {
+        try {
+            DocumentsContract.deleteDocument(context.contentResolver, uri)
+        } catch (_: Exception) {
+            // Best-effort cleanup; ignore if the provider rejects deletion.
         }
     }
 
