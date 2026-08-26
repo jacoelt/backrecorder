@@ -114,7 +114,8 @@ class BillingRepository @Inject constructor(
             .setProductList(productList)
             .build()
 
-        billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
+        billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
+            val productDetailsList = productDetailsResult.productDetailsList
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK &&
                 productDetailsList.isNotEmpty()
             ) {

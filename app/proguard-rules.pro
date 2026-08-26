@@ -9,6 +9,11 @@
 -dontwarn com.google.api.client.**
 -dontwarn com.google.common.**
 
+# Apache HttpClient (transitive dep of google-api-client) references optional
+# Kerberos/LDAP auth classes that don't exist on Android and are never used.
+-dontwarn javax.naming.**
+-dontwarn org.ietf.jgss.**
+
 # Google Play Billing
 -keep class com.android.vending.billing.**
 

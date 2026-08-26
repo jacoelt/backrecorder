@@ -127,11 +127,13 @@ class SubscriptionGateTest {
     }
 
     @Test
-    fun `free user blocked when start is 16 minutes ago`() = runTest {
+    fun `free user blocked when start is 17 minutes ago`() = runTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
 
         val now = System.currentTimeMillis()
-        val startTime = now - (16 * 60 * 1000) // 16 minutes ago
+        // 17 minutes ago is safely past the 16-minute grace boundary (15 min limit +
+        // 1 min grace), avoiding a same-millisecond race with the gate's own clock read.
+        val startTime = now - (17 * 60 * 1000)
         val endTime = now
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
