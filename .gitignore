@@ -18,3 +18,4 @@ google-services.json
 .kotlin
 *.stackdump
 .claude/settings.local.json
+.claude/.creds
