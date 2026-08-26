@@ -14,6 +14,7 @@ import com.backrecorderapp.R
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.segment.SegmentManager
+import com.google.api.client.http.HttpResponseException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,20 +56,43 @@ class CloudSyncManager @Inject constructor(
     private val _recoveryMessage = MutableStateFlow<String?>(null)
     val recoveryMessage: StateFlow<String?> = _recoveryMessage.asStateFlow()
 
+    private val _needsReauth = MutableStateFlow(false)
+
+    /** True once Drive rejected our credentials and the user has to grant access again. */
+    val needsReauth: StateFlow<Boolean> = _needsReauth.asStateFlow()
+
     fun startSync() {
         syncJob?.cancel()
         syncJob = scope.launch {
-            // Ensure folder structure exists
-            driveCloudStorage.ensureFolderStructure()
+            // The account may connect after the loop starts (or drop out mid-run), so folder
+            // setup and the stale-file scan are deferred until Drive is actually reachable
+            // rather than done once up front.
+            var sessionPrepared = false
 
-            // Check for stale files on startup
-            handleStaleFiles()
-
-            // Continuous sync loop
             while (isActive) {
                 try {
-                    syncPendingSegments()
-                    cleanupOldCloudSegments()
+                    if (driveCloudStorage.isInitialized) {
+                        if (!sessionPrepared) {
+                            driveCloudStorage.ensureFolderStructure()
+                            handleStaleFiles()
+                            sessionPrepared = true
+                            _needsReauth.value = false
+                        }
+                        syncPendingSegments()
+                        cleanupOldCloudSegments()
+                    } else {
+                        sessionPrepared = false
+                    }
+                } catch (e: HttpResponseException) {
+                    if (isAuthFailure(e)) {
+                        // Consent was revoked or the grant expired; uploads stay queued
+                        // until the user reconnects, so surface it rather than retry forever.
+                        Log.w(TAG, "Drive authorization needs to be renewed", e)
+                        _needsReauth.value = true
+                        sessionPrepared = false
+                    } else {
+                        Log.e(TAG, "Sync error", e)
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Sync error", e)
                 }
@@ -97,6 +121,9 @@ class CloudSyncManager @Inject constructor(
                 if (cloudFileId != null) {
                     segmentManager.markAsUploaded(segment.id, cloudFileId)
                 }
+            } catch (e: HttpResponseException) {
+                if (isAuthFailure(e)) throw e // sync loop flags this for re-consent
+                Log.e(TAG, "Failed to upload segment ${segment.id}", e)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to upload segment ${segment.id}", e)
                 // Will retry on next cycle
@@ -112,6 +139,9 @@ class CloudSyncManager @Inject constructor(
         for (file in filesToDelete) {
             try {
                 driveCloudStorage.deleteFile(file.id)
+            } catch (e: HttpResponseException) {
+                if (isAuthFailure(e)) throw e
+                Log.e(TAG, "Failed to delete cloud file ${file.id}", e)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to delete cloud file ${file.id}", e)
             }
@@ -171,6 +201,13 @@ class CloudSyncManager @Inject constructor(
             }
         }
     }
+
+    /**
+     * Drive answers 401 when the token is rejected and 403 when the grant no longer covers
+     * the scope; both mean the user must re-authorize, not that we should keep retrying.
+     */
+    private fun isAuthFailure(e: HttpResponseException): Boolean =
+        e.statusCode == 401 || e.statusCode == 403
 
     fun dismissRecoveryMessage() {
         _recoveryMessage.value = null

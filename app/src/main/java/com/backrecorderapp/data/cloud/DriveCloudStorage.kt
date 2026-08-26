@@ -3,36 +3,63 @@ package com.backrecorderapp.data.cloud
 import com.google.api.client.http.FileContent
 import com.google.api.services.drive.Drive
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class DriveCloudStorage @Inject constructor() {
+class DriveCloudStorage @Inject constructor(
+    private val driveAuthManager: DriveAuthManager
+) {
     companion object {
         private const val ROOT_FOLDER = "BackRecorder"
         private const val STAGING_FOLDER = "staging"
+
+        /** Drive caps `files.list` at 1000 per page; ask for the maximum to keep round-trips low. */
+        private const val PAGE_SIZE = 1000
     }
 
-    private var driveService: Drive? = null
+    private val drive: Drive? get() = driveAuthManager.drive
+
+    private val folderMutex = Mutex()
+
     private var rootFolderId: String? = null
     private var stagingFolderId: String? = null
 
-    val isInitialized: Boolean get() = driveService != null
+    val isInitialized: Boolean get() = drive != null
 
     suspend fun ensureFolderStructure() = withContext(Dispatchers.IO) {
-        val drive = driveService ?: return@withContext
-        rootFolderId = getOrCreateFolder(drive, ROOT_FOLDER, null)
-        stagingFolderId = getOrCreateFolder(drive, STAGING_FOLDER, rootFolderId)
+        val drive = drive ?: return@withContext
+
+        folderMutex.withLock {
+            if (stagingFolderId != null) return@withLock
+
+            val root = getOrCreateFolder(drive, ROOT_FOLDER, null)
+            rootFolderId = root
+            stagingFolderId = getOrCreateFolder(drive, STAGING_FOLDER, root)
+        }
     }
 
-    suspend fun uploadSegment(file: File): String? = withContext(Dispatchers.IO) {
-        uploadFile(file, stagingFolderId)
+    /**
+     * Drops the cached folder ids. Must be called when the grant changes, otherwise a
+     * reconnect (possibly to a different account) would keep writing to folder ids that the
+     * new grant cannot see.
+     */
+    suspend fun reset() = folderMutex.withLock {
+        rootFolderId = null
+        stagingFolderId = null
+    }
+
+    suspend fun uploadSegment(file: File): String? {
+        ensureFolderStructure()
+        return withContext(Dispatchers.IO) { uploadFile(file, stagingFolderId) }
     }
 
     private fun uploadFile(file: File, parentFolderId: String?): String? {
-        val drive = driveService ?: return null
+        val drive = drive ?: return null
 
         val metadata = com.google.api.services.drive.model.File().apply {
             name = file.name
@@ -50,12 +77,13 @@ class DriveCloudStorage @Inject constructor() {
     }
 
     suspend fun deleteFile(fileId: String) = withContext(Dispatchers.IO) {
-        driveService?.files()?.delete(fileId)?.execute()
+        drive?.files()?.delete(fileId)?.execute()
+        Unit
     }
 
     suspend fun moveToRecoveryFolder(fileIds: List<String>, recoveryFolderName: String) =
         withContext(Dispatchers.IO) {
-            val drive = driveService ?: return@withContext
+            val drive = drive ?: return@withContext
             val recoveryFolderId = getOrCreateFolder(drive, recoveryFolderName, stagingFolderId)
 
             for (fileId in fileIds) {
@@ -71,22 +99,40 @@ class DriveCloudStorage @Inject constructor() {
             }
         }
 
+    /**
+     * Lists every staging file, oldest first.
+     *
+     * Paginates deliberately: a full 24h buffer is ~1440 one-minute segments, so a single
+     * unpaginated page silently hides everything past the first 1000 and cleanup then never
+     * catches up. This regressed once already — keep the loop.
+     */
     suspend fun listStagingFiles(): List<DriveFileInfo> = withContext(Dispatchers.IO) {
-        val drive = driveService ?: return@withContext emptyList()
+        val drive = drive ?: return@withContext emptyList()
         val folderId = stagingFolderId ?: return@withContext emptyList()
 
-        val result = drive.files().list()
-            .setQ("'$folderId' in parents and trashed = false")
-            .setFields("files(id, createdTime)")
-            .setOrderBy("createdTime")
-            .execute()
+        val files = mutableListOf<DriveFileInfo>()
+        var pageToken: String? = null
 
-        result.files?.map { file ->
-            DriveFileInfo(
-                id = file.id,
-                createdTime = file.createdTime?.value ?: 0L
-            )
-        } ?: emptyList()
+        do {
+            val result = drive.files().list()
+                .setQ("'$folderId' in parents and trashed = false")
+                .setFields("nextPageToken, files(id, createdTime)")
+                .setOrderBy("createdTime")
+                .setPageSize(PAGE_SIZE)
+                .setPageToken(pageToken)
+                .execute()
+
+            result.files?.forEach { file ->
+                files += DriveFileInfo(
+                    id = file.id,
+                    createdTime = file.createdTime?.value ?: 0L
+                )
+            }
+
+            pageToken = result.nextPageToken?.takeIf { it.isNotEmpty() }
+        } while (pageToken != null)
+
+        files
     }
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String?): String {

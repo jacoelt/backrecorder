@@ -45,6 +45,13 @@
     <string name="settings_cloud_off_desc">Recordings are not uploaded to the cloud</string>
     <string name="settings_cloud_wifi_desc">Segments are uploaded automatically when connected to Wi-Fi. Uses ~345 MB/day. Recommended for most users.</string>
     <string name="settings_cloud_always_desc">Segments are uploaded over any connection including mobile data. Uses ~345 MB/day of data. May incur significant mobile data charges.</string>
+    <string name="settings_drive_account">Google Drive account</string>
+    <string name="settings_drive_not_connected">Not connected</string>
+    <string name="settings_drive_connected">Connected</string>
+    <string name="settings_drive_connect">Connect</string>
+    <string name="settings_drive_disconnect">Disconnect</string>
+    <string name="settings_drive_connect_prompt">Connect a Google Drive account to enable cloud uploads.</string>
+    <string name="drive_sign_in_failed">Could not connect to Google Drive. Please try again.</string>
     <string name="settings_subscription">Subscription</string>
     <string name="settings_legal">Legal</string>
     <string name="settings_view_disclaimer">View legal disclaimer</string>
@@ -57,6 +64,7 @@
     <string name="upgrade_button">Upgrade to Premium</string>
     <string name="trial_active">Trial active — %d days remaining</string>
     <string name="cancel">Cancel</string>
+    <string name="ok">OK</string>
 
     <!-- Cloud Recovery -->
     <string name="recovery_notification_title">Recordings Recovered</string>

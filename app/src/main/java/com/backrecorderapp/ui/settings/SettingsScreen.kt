@@ -29,6 +29,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.OutlinedButton
 import android.app.Activity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,7 +54,22 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
+    val signInError by viewModel.signInError.collectAsState()
+    val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
+
+    val consentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onConsentResult(result.data)
+    }
+
+    LaunchedEffect(consentRequest) {
+        consentRequest?.let { pendingIntent ->
+            viewModel.onConsentLaunched()
+            consentLauncher.launch(IntentSenderRequest.Builder(pendingIntent).build())
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -122,6 +142,15 @@ fun SettingsScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
 
+            DriveAccountRow(
+                connected = state.driveConnected,
+                needsReauth = state.driveNeedsReauth,
+                onConnect = { viewModel.connectDrive() },
+                onDisconnect = { viewModel.disconnectDrive() }
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             CloudUploadOption(
                 title = stringResource(R.string.settings_cloud_off),
                 description = stringResource(R.string.settings_cloud_off_desc),
@@ -189,6 +218,71 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    if (signInError) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissSignInError() },
+            title = { Text(stringResource(R.string.settings_drive_account)) },
+            text = { Text(stringResource(R.string.drive_sign_in_failed)) },
+            confirmButton = {
+                Button(onClick = { viewModel.dismissSignInError() }) {
+                    Text(stringResource(R.string.ok))
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun DriveAccountRow(
+    connected: Boolean,
+    needsReauth: Boolean,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.settings_drive_account),
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = if (connected) {
+                    stringResource(R.string.settings_drive_connected)
+                } else {
+                    stringResource(R.string.settings_drive_not_connected)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (connected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            if (needsReauth) {
+                Text(
+                    text = stringResource(R.string.settings_drive_connect_prompt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
+        if (!connected || needsReauth) {
+            Button(onClick = onConnect) {
+                Text(stringResource(R.string.settings_drive_connect))
+            }
+        } else {
+            OutlinedButton(onClick = onDisconnect) {
+                Text(stringResource(R.string.settings_drive_disconnect))
+            }
+        }
     }
 }
 
