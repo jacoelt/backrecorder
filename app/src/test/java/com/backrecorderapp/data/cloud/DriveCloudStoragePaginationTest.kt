@@ -1,13 +1,17 @@
 package com.backrecorderapp.data.cloud
 
+import android.util.Log
 import com.google.api.client.util.DateTime
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.FileList
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import io.mockk.slot
+import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -39,6 +43,12 @@ class DriveCloudStoragePaginationTest {
 
     @Before
     fun setup() {
+        // listStagingFiles() logs when it skips a malformed entry, and the unit-test android.jar
+        // throws rather than returning a default.
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any<String>(), any()) } returns 0
+
         drive = mockk()
         files = mockk()
         listRequest = mockk()
@@ -66,6 +76,11 @@ class DriveCloudStoragePaginationTest {
         }
 
         storage = DriveCloudStorage(authManager)
+    }
+
+    @After
+    fun tearDown() {
+        unmockkStatic(Log::class)
     }
 
     private fun page(ids: List<String>, nextToken: String?): FileList {
@@ -201,8 +216,7 @@ class DriveCloudStoragePaginationTest {
     fun `re-resolves the folders when the grant changes`() = runTest {
         // Folder ids belong to the account that granted access. Reusing them across a reconnect
         // would target the previous account's Drive, which the new grant cannot even see.
-        every { listRequest.execute() } returnsMany
-            folderLookups() + folderLookups() + listOf(page(listOf("file_a"), null))
+        every { listRequest.execute() } returnsMany folderLookups() + folderLookups()
 
         every { authManager.grantGeneration } returns 1
         val first = storage.ensureFolderStructure()
@@ -212,7 +226,18 @@ class DriveCloudStoragePaginationTest {
 
         assertEquals("staging-folder-id", first?.stagingId)
         assertEquals("staging-folder-id", second?.stagingId)
-        // Four lookups: two per resolution, so the second one really did go back to Drive.
+        // Four lookups: two per resolution, so the second one really did go back to Drive
+        // instead of handing back the previous account's cached ids.
         verify(exactly = 4) { listRequest.setFields("files(id)") }
+    }
+
+    @Test(timeout = TEST_TIMEOUT_MS)
+    fun `reuses the cached folders while the grant is unchanged`() = runTest {
+        every { listRequest.execute() } returnsMany folderLookups()
+
+        storage.ensureFolderStructure()
+        storage.ensureFolderStructure()
+
+        verify(exactly = 2) { listRequest.setFields("files(id)") }
     }
 }

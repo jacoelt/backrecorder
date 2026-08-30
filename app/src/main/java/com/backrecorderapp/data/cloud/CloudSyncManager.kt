@@ -14,12 +14,16 @@ import com.backrecorderapp.R
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.segment.SegmentManager
+import com.backrecorderapp.domain.GateResult
+import com.backrecorderapp.domain.SubscriptionGate
 import com.google.api.client.http.HttpResponseException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -41,7 +46,8 @@ class CloudSyncManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val driveCloudStorage: DriveCloudStorage,
     private val segmentManager: SegmentManager,
-    private val appPreferences: AppPreferences
+    private val appPreferences: AppPreferences,
+    private val subscriptionGate: SubscriptionGate
 ) {
     companion object {
         private const val TAG = "CloudSyncManager"
@@ -52,24 +58,34 @@ class CloudSyncManager @Inject constructor(
         private const val HOUR_MS = 60 * 60 * 1000L
 
         /**
-         * Uploading is capped per tick so a full 24h backlog (~1440 segments, ~1 GB) is drained
-         * over several passes instead of one uninterruptible run that ignores every later
-         * cancellation and transport change.
+         * Uploading is capped per tick so a full 24h backlog (~1440 segments, ~1 GB) drains over
+         * several passes instead of one uninterruptible run that ignores every later cancellation
+         * and transport change. At 20 per 30s a full backlog still clears in well under two hours,
+         * far inside the 24h eviction horizon.
          */
         private const val MAX_UPLOADS_PER_TICK = 20
+
+        /** Recovery moves are two write requests each, so they are capped harder than uploads. */
+        private const val MAX_RECOVERY_MOVES_PER_TICK = 200
+
+        /**
+         * Cleanup paginates the whole staging folder, which is far too expensive to repeat every
+         * 30s just to find the ~1 file per minute that ages out of the buffer.
+         */
+        private const val CLEANUP_EVERY_N_TICKS = 30
 
         /** Doubling per consecutive failure, up to this many doublings. */
         private const val MAX_BACKOFF_SHIFT = 5
         private const val MAX_BACKOFF_MS = 15 * 60 * 1000L
 
-        /** Drive reports throttling and a full account with 403, the same status as scope loss. */
-        private val RATE_LIMIT_REASONS = listOf(
-            "rateLimitExceeded",
-            "userRateLimitExceeded",
-            "storageQuotaExceeded"
-        )
+        /**
+         * Drive reports throttling with 403, the same status as scope loss. These reasons are
+         * transient and want a back-off, not a reconnect prompt.
+         */
+        private val RATE_LIMIT_REASONS = listOf("rateLimitExceeded", "userRateLimitExceeded")
 
-        private val RECOVERY_DATE_FORMAT = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
+        /** Also a 403, but terminal: retrying cannot help until the user frees space. */
+        private const val QUOTA_EXCEEDED_REASON = "storageQuotaExceeded"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -82,6 +98,9 @@ class CloudSyncManager @Inject constructor(
      */
     private val syncJob = AtomicReference<Job?>(null)
 
+    /** SimpleDateFormat is not thread-safe, so it is per-instance and only touched by the loop. */
+    private val recoveryDateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
+
     private val _recoveryMessage = MutableStateFlow<String?>(null)
     val recoveryMessage: StateFlow<String?> = _recoveryMessage.asStateFlow()
 
@@ -90,16 +109,31 @@ class CloudSyncManager @Inject constructor(
     /** True once Drive rejected our credentials and the user has to grant access again. */
     val needsReauth: StateFlow<Boolean> = _needsReauth.asStateFlow()
 
+    private val _storageFull = MutableStateFlow(false)
+
+    /**
+     * True once Drive reports the account is out of space. Unlike throttling this cannot clear on
+     * its own, so it is surfaced rather than quietly retried - otherwise uploads stop for good
+     * while the buffer keeps evicting recordings that were never backed up.
+     */
+    val storageFull: StateFlow<Boolean> = _storageFull.asStateFlow()
+
     fun startSync() {
-        val job = scope.launch { runSyncLoop() }
+        // Started lazily so the reference swap happens first: launching eagerly let a concurrent
+        // stopSync() clear the reference while this job was already running, leaving a loop that
+        // nothing could ever cancel.
+        val job = scope.launch(start = CoroutineStart.LAZY) { runSyncLoop() }
         syncJob.getAndSet(job)?.cancel()
+        if (syncJob.get() === job) job.start() else job.cancel()
     }
 
     fun stopSync() {
         syncJob.getAndSet(null)?.cancel()
-        // Nothing is going to clear this later: without a running loop the flag would keep the
-        // reconnect prompt on screen for an account the user has already disconnected.
+        // Nothing is going to clear these later: without a running loop they would keep stale
+        // prompts on screen for an account the user has already disconnected.
         _needsReauth.value = false
+        _storageFull.value = false
+        _recoveryMessage.value = null
     }
 
     /** Called once the user has re-granted access, so the prompt clears without waiting a tick. */
@@ -108,48 +142,61 @@ class CloudSyncManager @Inject constructor(
     }
 
     private suspend fun CoroutineScope.runSyncLoop() {
-        // The account may connect after the loop starts (or drop out mid-run), so folder setup
-        // and the stale-file scan are deferred until Drive is actually reachable rather than
-        // done once up front.
-        var sessionPrepared = false
+        // The stale scan runs once per authorized session. It is deliberately NOT reset when the
+        // network drops or the mode changes - only when the grant does - because stale files can
+        // only appear at session start, and re-scanning on every connectivity flap costs a full
+        // paginated listing each time.
+        var staleScanDone = false
         var consecutiveFailures = 0
+        var ticksSinceCleanup = CLEANUP_EVERY_N_TICKS
 
         while (isActive) {
             var failed = false
             try {
                 val mode = appPreferences.cloudUploadMode.first()
 
-                // Cleanup and the stale scan paginate the whole staging folder, so they have to
-                // respect the transport choice exactly as uploads do. Without this a Wi-Fi-only
-                // user pays for a full listing over cellular every thirty seconds.
-                if (mode != CloudUploadMode.OFF &&
-                    driveCloudStorage.isInitialized &&
-                    isNetworkAvailable(mode)
-                ) {
-                    if (!sessionPrepared) {
+                if (canSyncNow(mode)) {
+                    if (!staleScanDone) {
                         driveCloudStorage.ensureFolderStructure()
-                        // Only count the session as prepared once the scan actually finished; a
-                        // half-completed recovery move has to be retried, not skipped forever.
-                        sessionPrepared = handleStaleFiles()
-                        if (sessionPrepared) _needsReauth.value = false
+                        staleScanDone = handleStaleFiles()
+                        if (staleScanDone) {
+                            _needsReauth.value = false
+                        } else {
+                            // A recovery move that did not finish must be retried, and must back
+                            // off - otherwise it re-paginates the whole folder every 30 seconds.
+                            failed = true
+                        }
                     }
+
                     syncPendingSegments(mode)
-                    cleanupOldCloudSegments()
-                } else {
-                    sessionPrepared = false
+
+                    // Only safe once the stale scan completed: cleanup deletes on the same
+                    // "older than the buffer" predicate as the recovery scan, so running it after
+                    // a partial move would permanently delete exactly the files still queued to
+                    // be rescued.
+                    if (staleScanDone && ++ticksSinceCleanup >= CLEANUP_EVERY_N_TICKS) {
+                        cleanupOldCloudSegments()
+                        ticksSinceCleanup = 0
+                    }
+                    if (!failed) _storageFull.value = false
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HttpResponseException) {
                 failed = true
-                sessionPrepared = false
-                if (isAuthFailure(e)) {
-                    // Consent was revoked or the grant expired; uploads stay queued until the
-                    // user reconnects, so surface it rather than retry forever.
-                    Log.w(TAG, "Drive authorization needs to be renewed", e)
-                    _needsReauth.value = true
-                } else {
-                    Log.e(TAG, "Sync error", e)
+                when {
+                    isQuotaExceeded(e) -> {
+                        Log.w(TAG, "Drive is out of space; uploads are paused", e)
+                        _storageFull.value = true
+                    }
+                    isAuthFailure(e) -> {
+                        // Consent was revoked or the grant expired; uploads stay queued until the
+                        // user reconnects, so surface it rather than retry forever.
+                        Log.w(TAG, "Drive authorization needs to be renewed", e)
+                        _needsReauth.value = true
+                        staleScanDone = false
+                    }
+                    else -> Log.e(TAG, "Sync error", e)
                 }
             } catch (e: Exception) {
                 failed = true
@@ -162,24 +209,38 @@ class CloudSyncManager @Inject constructor(
     }
 
     /**
+     * Cloud sync is premium, and this is the one place that enforces it - every entry point runs
+     * through this loop, so the check cannot be forgotten at a new one.
+     *
+     * A blocked gate only skips the tick; it never writes the preference. At process start
+     * billing has not answered yet and reports FREE for everyone, so persisting OFF here would
+     * wipe a paying subscriber's configuration on every launch.
+     */
+    private suspend fun canSyncNow(mode: CloudUploadMode): Boolean {
+        if (mode == CloudUploadMode.OFF) return false
+        if (!subscriptionGate.statusResolved.value) return false
+        if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return false
+        if (!driveCloudStorage.isInitialized) return false
+        // Cleanup and the stale scan paginate the whole staging folder, so they respect the
+        // transport choice exactly as uploads do.
+        return isNetworkAvailable(mode)
+    }
+
+    /**
      * Backs off after consecutive failures, so a Drive outage, a quota block or a dead grant does
      * not mean replaying the entire backlog every thirty seconds indefinitely.
      */
-    private fun backoffMs(consecutiveFailures: Int): Long {
+    internal fun backoffMs(consecutiveFailures: Int): Long {
         if (consecutiveFailures <= 0) return SYNC_INTERVAL_MS
         val shift = minOf(consecutiveFailures, MAX_BACKOFF_SHIFT)
         return minOf(SYNC_INTERVAL_MS shl shift, MAX_BACKOFF_MS)
     }
 
     private suspend fun syncPendingSegments(mode: CloudUploadMode) {
-        val pending = segmentManager.getSegmentsPendingUpload()
-        var uploaded = 0
+        val pending = segmentManager.getSegmentsPendingUpload(MAX_UPLOADS_PER_TICK)
+        if (pending.isEmpty()) return
 
         for (segment in pending) {
-            if (uploaded >= MAX_UPLOADS_PER_TICK) {
-                Log.i(TAG, "Per-tick upload cap reached; ${pending.size - uploaded} still queued")
-                return
-            }
             // The transport can change part-way through a long backlog: a Wi-Fi-only user who
             // walks out of range must not finish the queue over cellular.
             if (!isNetworkAvailable(mode)) return
@@ -190,20 +251,26 @@ class CloudSyncManager @Inject constructor(
             try {
                 val cloudFileId = driveCloudStorage.uploadSegment(file)
                 if (cloudFileId != null) {
-                    segmentManager.markAsUploaded(segment.id, cloudFileId)
-                    uploaded++
+                    // Non-cancellable: losing this write after the upload succeeded would leave
+                    // an orphan on Drive and upload the same segment again next tick.
+                    withContext(NonCancellable) {
+                        segmentManager.markAsUploaded(segment.id, cloudFileId)
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HttpResponseException) {
                 // Auth and quota failures are not per-segment; let the loop flag or back off.
-                if (isAuthFailure(e) || isRateLimited(e)) throw e
+                if (isAuthFailure(e) || isRateLimited(e) || isQuotaExceeded(e)) throw e
                 Log.e(TAG, "Failed to upload segment ${segment.id}", e)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to upload segment ${segment.id}", e)
                 // Will retry on next cycle
             }
         }
+
+        val remaining = segmentManager.countSegmentsPendingUpload()
+        if (remaining > 0) Log.i(TAG, "$remaining segment(s) still queued for upload")
     }
 
     private suspend fun cleanupOldCloudSegments() {
@@ -216,17 +283,18 @@ class CloudSyncManager @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: HttpResponseException) {
-                if (isAuthFailure(e) || isRateLimited(e)) throw e
-                Log.e(TAG, "Failed to delete cloud file ${file.id}", e)
+                if (isAuthFailure(e) || isRateLimited(e) || isQuotaExceeded(e)) throw e
+                Log.e(TAG, "Failed to delete an aged cloud file", e)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to delete cloud file ${file.id}", e)
+                Log.e(TAG, "Failed to delete an aged cloud file", e)
             }
         }
     }
 
     /**
      * Returns true when the scan finished. A partial recovery move returns false so the caller
-     * leaves the session unprepared and retries, instead of abandoning the remaining files.
+     * retries it - and, critically, holds off cleanup, which would otherwise delete exactly the
+     * files still waiting to be rescued.
      */
     private suspend fun handleStaleFiles(): Boolean {
         val cloudFiles = driveCloudStorage.listStagingFiles()
@@ -237,7 +305,10 @@ class CloudSyncManager @Inject constructor(
 
         // Find files outside the 24h window
         val staleFiles = cloudFiles.filter { it.createdTime < bufferStart }
-        if (staleFiles.isEmpty()) return true
+        if (staleFiles.isEmpty()) {
+            appPreferences.setPendingRecoveryFolder(null)
+            return true
+        }
 
         // Span and gap use min/max rather than first/last: the list is ordered by Drive, and a
         // single out-of-order entry would otherwise invert the span and force a false recovery.
@@ -260,43 +331,58 @@ class CloudSyncManager @Inject constructor(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to delete stale file ${file.id}", e)
+                    Log.e(TAG, "Failed to delete a stale file", e)
                 }
             }
             return true
         }
 
-        val recoveryFolderName = "recovery_${RECOVERY_DATE_FORMAT.format(Date(now))}"
-        // Auth and quota failures propagate: the loop must see them rather than have the move
-        // silently abandoned with the session marked prepared.
-        val moved = driveCloudStorage.moveToRecoveryFolder(
-            staleFiles.map { it.id },
-            recoveryFolderName
-        )
+        // Reuse the folder from an interrupted run. A fresh timestamp each pass would scatter one
+        // recording session across several folders, and only the last would be named to the user.
+        val existingFolder = appPreferences.pendingRecoveryFolder.first()
+        val recoveryFolderName = existingFolder
+            ?: "recovery_${recoveryDateFormat.format(Date(now))}".also {
+                appPreferences.setPendingRecoveryFolder(it)
+            }
 
-        if (moved == 0) {
+        val batch = staleFiles.take(MAX_RECOVERY_MOVES_PER_TICK).map { it.id }
+        // Auth and quota failures propagate: the loop must see them rather than have the move
+        // silently abandoned with the scan marked complete.
+        val handled = driveCloudStorage.moveToRecoveryFolder(batch, recoveryFolderName)
+
+        if (handled == 0) {
             Log.e(TAG, "Recovery move for $recoveryFolderName moved nothing")
             return false
         }
 
-        _recoveryMessage.value = context.getString(R.string.recovery_banner, recoveryFolderName)
-        showRecoveryNotification(recoveryFolderName)
+        // Announced once per folder, not once per pass: a resumed move must not re-fire a
+        // high-priority notification and resurrect a banner the user already dismissed.
+        if (existingFolder == null) {
+            _recoveryMessage.value = context.getString(R.string.recovery_banner, recoveryFolderName)
+            showRecoveryNotification(recoveryFolderName)
+        }
 
-        return moved == staleFiles.size
+        val complete = handled == batch.size && batch.size == staleFiles.size
+        if (complete) appPreferences.setPendingRecoveryFolder(null)
+        return complete
     }
 
     /**
      * Drive answers 401 when the token is rejected and 403 when the grant no longer covers the
      * scope; both mean the user must re-authorize. But 403 is also how Drive reports throttling
-     * and a full account, which need a back-off rather than a misleading reconnect prompt.
+     * and a full account, neither of which is an authorization problem.
      */
-    private fun isAuthFailure(e: HttpResponseException): Boolean =
-        e.statusCode == 401 || (e.statusCode == 403 && !isRateLimited(e))
+    internal fun isAuthFailure(e: HttpResponseException): Boolean =
+        e.statusCode == 401 ||
+            (e.statusCode == 403 && !isRateLimited(e) && !isQuotaExceeded(e))
 
-    private fun isRateLimited(e: HttpResponseException): Boolean {
+    internal fun isRateLimited(e: HttpResponseException): Boolean {
         val content = e.content ?: return false
         return RATE_LIMIT_REASONS.any { content.contains(it, ignoreCase = true) }
     }
+
+    internal fun isQuotaExceeded(e: HttpResponseException): Boolean =
+        e.content?.contains(QUOTA_EXCEEDED_REASON, ignoreCase = true) == true
 
     fun dismissRecoveryMessage() {
         _recoveryMessage.value = null

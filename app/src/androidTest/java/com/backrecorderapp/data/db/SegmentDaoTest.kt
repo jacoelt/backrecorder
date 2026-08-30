@@ -88,7 +88,7 @@ class SegmentDaoTest {
         dao.insert(makeSegment("uploaded", startTime = 1000, endTime = 61000, cloudUploaded = true))
         dao.insert(makeSegment("pending", startTime = 61000, endTime = 121000, cloudUploaded = false))
 
-        val pending = dao.getSegmentsPendingUpload()
+        val pending = dao.getSegmentsPendingUpload(limit = 100)
         assertEquals(1, pending.size)
         assertEquals("pending", pending[0].id)
     }

@@ -16,6 +16,7 @@ import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,6 +24,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -79,8 +81,11 @@ class DriveAuthManager @Inject constructor(
 
     /**
      * Guards the whole authorize/adopt/clear sequence, so a transient failure in one caller
-     * cannot wipe the session another caller just established. [tokenMutex] guards only the
-     * cached token and is always taken inside this one, never the other way round.
+     * cannot wipe the session another caller just established.
+     *
+     * Lock order is [sessionMutex] then [tokenMutex], never the reverse. [validToken] is the one
+     * path that takes [tokenMutex] alone: it runs inside the Drive client's request initializer,
+     * which cannot wait on a session operation without deadlocking the request it is serving.
      */
     private val sessionMutex = Mutex()
 
@@ -110,9 +115,12 @@ class DriveAuthManager @Inject constructor(
     suspend fun authorize(): AuthorizationOutcome = sessionMutex.withLock {
         val result = try {
             authorizationClient.authorize(authorizationRequest).await()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            // A failed request is not evidence the grant is gone - it is usually the network.
+            // Tearing the session down here would kill an upload session that still works.
             Log.e(TAG, "Drive authorization request failed", e)
-            clearLocked()
             return@withLock AuthorizationOutcome.Failed
         }
 
@@ -142,6 +150,8 @@ class DriveAuthManager @Inject constructor(
         }
         try {
             adoptLocked(authorizationClient.getAuthorizationResultFromIntent(data))
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Drive consent result could not be read", e)
             clearLocked()
@@ -208,6 +218,11 @@ class DriveAuthManager @Inject constructor(
      * reported the account as connected.
      */
     private suspend fun validToken(forceRefresh: Boolean): String? = tokenMutex.withLock {
+        // Refuse to mint a token for a session that has been signed out. Without this a request
+        // already in flight when the user disconnects would quietly re-authorize and complete.
+        if (driveService == null) return@withLock null
+        val entryGeneration = generation.get()
+
         val now = SystemClock.elapsedRealtime()
         val cached = cachedToken
         if (!forceRefresh && cached != null && now - cachedTokenAt < TOKEN_TTL_MS) {
@@ -216,12 +231,20 @@ class DriveAuthManager @Inject constructor(
 
         val result = try {
             authorizationClient.authorize(authorizationRequest).await()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
+            // A failed request is not evidence the grant is gone; it is usually the network.
+            // Dropping the session here would null the Drive client from inside a live request
+            // and leave sync dead for the rest of the process over one blip.
             Log.e(TAG, "Silent token refresh failed", e)
-            return@withLock dropSessionLocked()
+            return@withLock null
         }
 
-        // Needing a resolution here means consent was revoked.
+        // The session may have been signed out while the request was in flight.
+        if (driveService == null || generation.get() != entryGeneration) return@withLock null
+
+        // These three DO mean the grant is gone, so the session goes with them.
         if (result.hasResolution()) return@withLock dropSessionLocked()
 
         // A refresh is a fresh grant decision, so re-check the scope exactly as adoptLocked
@@ -255,9 +278,9 @@ class DriveAuthManager @Inject constructor(
                 "Drive requests must not run on the main thread"
             }
 
-            runBlocking { validToken(forceRefresh = false) }?.let { token ->
-                request.headers.setAuthorization("Bearer $token")
-            }
+            val token = runBlocking { validToken(forceRefresh = false) }
+                ?: throw IOException("No Drive access token available")
+            request.headers.setAuthorization("Bearer $token")
 
             request.setUnsuccessfulResponseHandler { httpRequest, response, supportsRetry ->
                 val refreshed = if (response.statusCode == 401 && supportsRetry) {

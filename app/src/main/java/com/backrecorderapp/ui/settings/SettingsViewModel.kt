@@ -3,6 +3,7 @@ package com.backrecorderapp.ui.settings
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.Intent
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.IOException
 import javax.inject.Inject
 
 data class SettingsUiState(
@@ -31,7 +33,8 @@ data class SettingsUiState(
     val subscriptionStatus: SubscriptionStatus = SubscriptionStatus.FREE,
     val trialDaysRemaining: Int = 0,
     val driveConnected: Boolean = false,
-    val driveNeedsReauth: Boolean = false
+    val driveNeedsReauth: Boolean = false,
+    val driveStorageFull: Boolean = false
 )
 
 @HiltViewModel
@@ -43,20 +46,32 @@ class SettingsViewModel @Inject constructor(
     private val driveAuthManager: DriveAuthManager
 ) : ViewModel() {
 
+    companion object {
+        private const val TAG = "SettingsViewModel"
+    }
+
+    // The two Drive problem states are paired first because combine() only has typed overloads
+    // up to five sources.
+    private val driveProblems = combine(
+        cloudSyncManager.needsReauth,
+        cloudSyncManager.storageFull
+    ) { needsReauth, storageFull -> needsReauth to storageFull }
+
     val uiState: StateFlow<SettingsUiState> = combine(
         RecordingService.isRunning,
         appPreferences.cloudUploadMode,
         billingRepository.subscriptionStatus,
         driveAuthManager.isAuthorized,
-        cloudSyncManager.needsReauth
-    ) { recording, cloudMode, subStatus, driveConnected, needsReauth ->
+        driveProblems
+    ) { recording, cloudMode, subStatus, driveConnected, problems ->
         SettingsUiState(
             recordingEnabled = recording,
             cloudUploadMode = cloudMode,
             subscriptionStatus = subStatus,
             trialDaysRemaining = billingRepository.getTrialDaysRemaining(),
             driveConnected = driveConnected,
-            driveNeedsReauth = needsReauth
+            driveNeedsReauth = problems.first,
+            driveStorageFull = problems.second
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 
@@ -163,9 +178,9 @@ class SettingsViewModel @Inject constructor(
     fun onConsentResult(data: Intent?) {
         viewModelScope.launch {
             if (!driveAuthManager.handleAuthorizationResult(data)) {
+                // Backing out of the consent sheet is a routine cancel, so the chosen upload mode
+                // is left alone. Without a grant the sync loop simply never becomes active.
                 _signInError.value = true
-                // Don't leave the app in a mode that cannot upload anything.
-                appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
                 cloudSyncManager.stopSync()
                 return@launch
             }
@@ -180,8 +195,14 @@ class SettingsViewModel @Inject constructor(
     fun disconnectDrive() {
         viewModelScope.launch {
             cloudSyncManager.stopSync()
+            // Recorded before signing out: the OAuth grant survives sign-out, so if this write
+            // never lands the next launch would silently restore the account the user removed.
+            try {
+                appPreferences.setDriveDisconnected(true)
+            } catch (e: IOException) {
+                Log.e(TAG, "Could not record the Drive disconnect", e)
+            }
             driveAuthManager.signOut()
-            appPreferences.setDriveDisconnected(true)
             appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
         }
     }

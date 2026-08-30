@@ -1,6 +1,7 @@
 package com.backrecorderapp.ui.settings
 
 import android.app.PendingIntent
+import app.cash.turbine.test
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
@@ -12,6 +13,7 @@ import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -47,6 +49,9 @@ class SettingsViewModelTest {
 
     private lateinit var cloudUploadMode: MutableStateFlow<CloudUploadMode>
     private lateinit var driveDisconnected: MutableStateFlow<Boolean>
+    private lateinit var driveAuthorized: MutableStateFlow<Boolean>
+    private lateinit var needsReauth: MutableStateFlow<Boolean>
+    private lateinit var storageFull: MutableStateFlow<Boolean>
 
     @Before
     fun setup() {
@@ -60,13 +65,18 @@ class SettingsViewModelTest {
 
         cloudUploadMode = MutableStateFlow(CloudUploadMode.WIFI_ONLY)
         driveDisconnected = MutableStateFlow(false)
+        driveAuthorized = MutableStateFlow(false)
+        needsReauth = MutableStateFlow(false)
+        storageFull = MutableStateFlow(false)
 
         every { appPreferences.cloudUploadMode } returns cloudUploadMode
         every { appPreferences.driveDisconnected } returns driveDisconnected
         every { billingRepository.subscriptionStatus } returns
             MutableStateFlow(SubscriptionStatus.ACTIVE)
-        every { driveAuthManager.isAuthorized } returns MutableStateFlow(false)
-        every { cloudSyncManager.needsReauth } returns MutableStateFlow(false)
+        every { billingRepository.getTrialDaysRemaining() } returns 0
+        every { driveAuthManager.isAuthorized } returns driveAuthorized
+        every { cloudSyncManager.needsReauth } returns needsReauth
+        every { cloudSyncManager.storageFull } returns storageFull
 
         coEvery { subscriptionGate.checkCloudAccess() } returns GateResult.Allowed
         coEvery { driveAuthManager.restoreSession() } returns true
@@ -177,16 +187,18 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `a failed consent result turns the upload mode off and stops sync`() = runTest {
-        // Otherwise the app sits in a mode that queues segments which can never leave.
+    fun `a failed consent result stops sync but keeps the chosen upload mode`() = runTest {
+        // Backing out of the consent sheet is a routine cancel; erasing the mode the user just
+        // picked would be a surprising side effect of tapping Back.
         coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns false
+        cloudUploadMode.value = CloudUploadMode.WIFI_ONLY
 
         val viewModel = createViewModel()
         viewModel.onConsentResult(null)
         advanceUntilIdle()
 
         assertTrue(viewModel.signInError.value)
-        coVerify { appPreferences.setCloudUploadMode(CloudUploadMode.OFF) }
+        coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
         verify(exactly = 1) { cloudSyncManager.stopSync() }
         verify(exactly = 0) { cloudSyncManager.startSync() }
     }
@@ -206,14 +218,18 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `disconnectDrive stops sync, signs out and records the disconnect`() = runTest {
+    fun `disconnectDrive records the disconnect before signing out`() = runTest {
         val viewModel = createViewModel()
         viewModel.disconnectDrive()
         advanceUntilIdle()
 
         verify(exactly = 1) { cloudSyncManager.stopSync() }
-        coVerify { driveAuthManager.signOut() }
-        coVerify { appPreferences.setDriveDisconnected(true) }
+        // Order matters: the OAuth grant outlives sign-out, so if the flag write never lands the
+        // next launch would silently restore the account the user just removed.
+        coVerifyOrder {
+            appPreferences.setDriveDisconnected(true)
+            driveAuthManager.signOut()
+        }
         coVerify { appPreferences.setCloudUploadMode(CloudUploadMode.OFF) }
     }
 
@@ -240,6 +256,26 @@ class SettingsViewModelTest {
         assertTrue(viewModel.showUpgradeDialog.value)
         coVerify(exactly = 0) { appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON) }
         verify(exactly = 0) { cloudSyncManager.startSync() }
+    }
+
+    @Test
+    fun `uiState reflects the Drive connection and both problem states`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            assertTrue(awaitItem().driveConnected)
+
+            needsReauth.value = true
+            assertTrue(awaitItem().driveNeedsReauth)
+
+            storageFull.value = true
+            assertTrue(awaitItem().driveStorageFull)
+
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     @Test

@@ -21,3 +21,11 @@
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }
 -keep @dagger.hilt.android.lifecycle.HiltViewModel class * { *; }
+
+# Strip verbose/debug/info logging from release builds. proguard-android-optimize.txt does not,
+# and these lines carry Drive file ids and segment ids into user logcat and bug reports.
+-assumenosideeffects class android.util.Log {
+    public static *** v(...);
+    public static *** d(...);
+    public static *** i(...);
+}

@@ -34,6 +34,14 @@ class BillingRepository @Inject constructor(
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
     val subscriptionStatus: StateFlow<SubscriptionStatus> = _subscriptionStatus.asStateFlow()
 
+    private val _statusResolved = MutableStateFlow(false)
+
+    /**
+     * False until a purchase query has actually answered. Until then [subscriptionStatus] is only
+     * its FREE default, so gating a premium feature on it would block a paying subscriber.
+     */
+    val statusResolved: StateFlow<Boolean> = _statusResolved.asStateFlow()
+
     private var billingClient: BillingClient = BillingClient.newBuilder(context)
         .setListener(this)
         .enablePendingPurchases(
@@ -80,6 +88,7 @@ class BillingRepository @Inject constructor(
         } else {
             SubscriptionStatus.ACTIVE
         }
+        _statusResolved.value = true
     }
 
     override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {

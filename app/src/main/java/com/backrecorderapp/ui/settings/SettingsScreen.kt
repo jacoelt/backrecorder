@@ -145,6 +145,7 @@ fun SettingsScreen(
             DriveAccountRow(
                 connected = state.driveConnected,
                 needsReauth = state.driveNeedsReauth,
+                storageFull = state.driveStorageFull,
                 onConnect = { viewModel.connectDrive() },
                 onDisconnect = { viewModel.disconnectDrive() }
             )
@@ -238,6 +239,7 @@ fun SettingsScreen(
 private fun DriveAccountRow(
     connected: Boolean,
     needsReauth: Boolean,
+    storageFull: Boolean,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit
 ) {
@@ -268,6 +270,13 @@ private fun DriveAccountRow(
             if (needsReauth) {
                 Text(
                     text = stringResource(R.string.settings_drive_connect_prompt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (storageFull) {
+                Text(
+                    text = stringResource(R.string.settings_drive_storage_full),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )

@@ -9,8 +9,6 @@ import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
-import com.backrecorderapp.domain.GateResult
-import com.backrecorderapp.domain.SubscriptionGate
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +24,6 @@ class BackRecorderApp : Application() {
     @Inject lateinit var driveAuthManager: DriveAuthManager
     @Inject lateinit var cloudSyncManager: CloudSyncManager
     @Inject lateinit var appPreferences: AppPreferences
-    @Inject lateinit var subscriptionGate: SubscriptionGate
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -54,14 +51,9 @@ class BackRecorderApp : Application() {
         appScope.launch {
             if (appPreferences.cloudUploadMode.first() == CloudUploadMode.OFF) return@launch
 
-            // Cloud sync is a premium feature. setCloudUploadMode gates it when the user turns
-            // it on, but this path bypassed that entirely, so a lapsed subscription kept
-            // uploading on every launch.
-            if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) {
-                Log.i(TAG, "Cloud sync is no longer covered by the subscription; turning it off")
-                appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
-                return@launch
-            }
+            // The subscription gate is enforced inside the sync loop, not here: at this point
+            // billing has only just been asked and still reports FREE for everyone, so gating
+            // here would stop a paying subscriber - and persisting OFF would erase their setting.
 
             // The OAuth grant outlives an explicit disconnect, so restoring silently here would
             // reconnect the account the user just removed.

@@ -107,8 +107,9 @@ class DriveCloudStorage @Inject constructor(
     }
 
     /**
-     * Moves [fileIds] out of staging into a recovery folder, returning how many actually moved so
-     * the caller can retry a partial run.
+     * Moves [fileIds] out of staging into a recovery folder, returning how many no longer need
+     * moving - those relocated, plus any that had no parent to move out of - so the caller can
+     * tell a partial run from a complete one and retry the remainder.
      *
      * The recovery folder is created under the root, not inside staging: anything inside staging
      * is fair game for [listStagingFiles] and the buffer cleanup, which would delete the folder -
@@ -124,33 +125,40 @@ class DriveCloudStorage @Inject constructor(
 
         val recoveryFolderId = getOrCreateFolder(drive, recoveryFolderName, folders.rootId)
 
-        var moved = 0
+        var handled = 0
         val batches = fileIds.chunked(RECOVERY_BATCH_SIZE)
         batches.forEachIndexed { index, batch ->
             for (fileId in batch) {
                 try {
                     val file = drive.files().get(fileId).setFields("parents").execute()
-                    val previousParents = file.parents?.joinToString(",") ?: continue
+                    val previousParents = file.parents?.joinToString(",")
+                    if (previousParents.isNullOrBlank()) {
+                        // Nothing to move it out of. Counted as handled so one orphan cannot
+                        // hold the caller at "incomplete" and re-run this scan forever.
+                        Log.w(TAG, "Stale file has no parent to move it out of; skipping")
+                        handled++
+                        continue
+                    }
 
                     drive.files().update(fileId, null)
                         .setAddParents(recoveryFolderId)
                         .setRemoveParents(previousParents)
                         .execute()
-                    moved++
+                    handled++
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: HttpResponseException) {
                     // 401/403 are not per-file problems - the whole run is doomed until the user
                     // reconnects or the quota clears, so let the sync loop see and classify it.
                     if (e.statusCode == 401 || e.statusCode == 403) throw e
-                    Log.e(TAG, "Failed to move $fileId into $recoveryFolderName", e)
+                    Log.e(TAG, "Failed to move a stale file into the recovery folder", e)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to move $fileId into $recoveryFolderName", e)
+                    Log.e(TAG, "Failed to move a stale file into the recovery folder", e)
                 }
             }
             if (index < batches.lastIndex) delay(RECOVERY_BATCH_PAUSE_MS)
         }
-        moved
+        handled
     }
 
     /**
@@ -189,7 +197,7 @@ class DriveCloudStorage @Inject constructor(
                 // very next pass. Skipping it costs one retained file; defaulting costs the file.
                 val createdTime = file.createdTime?.value
                 if (createdTime == null) {
-                    Log.w(TAG, "Skipping staging file ${file.id}: no createdTime")
+                    Log.w(TAG, "Skipping a staging file with no createdTime")
                 } else {
                     files += DriveFileInfo(id = file.id, createdTime = createdTime)
                 }
@@ -206,9 +214,17 @@ class DriveCloudStorage @Inject constructor(
         files
     }
 
+    /**
+     * Drive's query language quotes literals with `'`, so a name containing one would break out
+     * of the literal and could match - and then write to - the wrong folder.
+     */
+    private fun escapeQueryLiteral(value: String): String =
+        value.replace("\\", "\\\\").replace("'", "\'")
+
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String?): String {
+        val escapedName = escapeQueryLiteral(name)
         val query = buildString {
-            append("name = '$name' and mimeType = '$FOLDER_MIME_TYPE' and trashed = false")
+            append("name = '$escapedName' and mimeType = '$FOLDER_MIME_TYPE' and trashed = false")
             if (parentId != null) {
                 append(" and '$parentId' in parents")
             }

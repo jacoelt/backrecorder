@@ -51,6 +51,7 @@
     <string name="settings_drive_connect">Connect</string>
     <string name="settings_drive_disconnect">Disconnect</string>
     <string name="settings_drive_connect_prompt">Connect a Google Drive account to enable cloud uploads.</string>
+    <string name="settings_drive_storage_full">Google Drive is out of space. Uploads are paused until you free some.</string>
     <string name="settings_drive_sign_in_failed">Could not connect to Google Drive. Please try again.</string>
     <string name="settings_subscription">Subscription</string>
     <string name="settings_legal">Legal</string>
@@ -69,5 +70,5 @@
     <!-- Cloud Recovery -->
     <string name="recovery_notification_title">Recordings Recovered</string>
     <string name="recovery_notification_text">Older recordings have been moved to a recovery folder on Google Drive. Open Back Recorder for details.</string>
-    <string name="recovery_banner">Recovered recordings are available in your Google Drive under BackRecorder/staging/recovery_%1$s. Please move them to a safe location — they will not be automatically deleted.</string>
+    <string name="recovery_banner">Recovered recordings are available in your Google Drive under BackRecorder/recovery_%1$s. Please move them to a safe location — they will not be automatically deleted.</string>
 </resources>
