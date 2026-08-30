@@ -1,6 +1,7 @@
 package com.backrecorderapp.data.cloud
 
 import android.util.Log
+import com.google.api.client.http.HttpHeaders
 import com.google.api.client.http.HttpResponseException
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.FileList
@@ -46,6 +47,16 @@ class DriveCloudStorageRecoveryTest {
     private val createdFolder = slot<DriveFile>()
     private val addedParents = mutableListOf<String>()
     private val removedParents = mutableListOf<String>()
+
+    /**
+     * A real exception, not a mock: this one is thrown across a `withContext` boundary, and the
+     * coroutine machinery reflectively copies a propagating throwable for stack-trace recovery -
+     * which a MockK proxy does not survive.
+     */
+    private fun httpError(status: Int, content: String): HttpResponseException =
+        HttpResponseException.Builder(status, "test", HttpHeaders())
+            .setContent(content)
+            .build()
 
     private fun folderPage(id: String?): FileList = FileList().apply {
         files = if (id == null) emptyList() else listOf(DriveFile().apply { this.id = id })
@@ -142,10 +153,7 @@ class DriveCloudStorageRecoveryTest {
             DriveFile().apply { parents = listOf(STAGING_ID) },
             DriveFile().apply { parents = listOf(STAGING_ID) }
         )
-        val notFound = mockk<HttpResponseException>()
-        every { notFound.statusCode } returns 404
-        every { notFound.content } returns "notFound"
-        every { updateRequest.execute() } throws notFound andThen DriveFile()
+        every { updateRequest.execute() } throws httpError(404, "notFound") andThen DriveFile()
 
         val handled = storage.moveToRecoveryFolder(listOf("file_a", "file_b"), "recovery_x")
 
@@ -157,10 +165,8 @@ class DriveCloudStorageRecoveryTest {
         runTest {
             every { getRequest.execute() } returns
                 DriveFile().apply { parents = listOf(STAGING_ID) }
-            val forbidden = mockk<HttpResponseException>()
-            every { forbidden.statusCode } returns 403
-            every { forbidden.content } returns "insufficientPermissions"
-            every { updateRequest.execute() } throws forbidden
+            every { updateRequest.execute() } throws
+                httpError(403, "insufficientPermissions")
 
             var thrown: HttpResponseException? = null
             try {

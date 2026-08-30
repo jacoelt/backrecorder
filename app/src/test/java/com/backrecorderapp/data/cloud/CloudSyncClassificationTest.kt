@@ -4,8 +4,8 @@ import android.content.Context
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.domain.SubscriptionGate
+import com.google.api.client.http.HttpHeaders
 import com.google.api.client.http.HttpResponseException
-import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -40,12 +40,14 @@ class CloudSyncClassificationTest {
         )
     }
 
-    private fun httpError(status: Int, content: String? = null): HttpResponseException {
-        val e = mockk<HttpResponseException>()
-        every { e.statusCode } returns status
-        every { e.content } returns content
-        return e
-    }
+    /**
+     * A real exception rather than a mock, so the classification is checked against Drive's
+     * actual `getContent()` behaviour instead of a stubbed value.
+     */
+    private fun httpError(status: Int, content: String? = null): HttpResponseException =
+        HttpResponseException.Builder(status, "test", HttpHeaders())
+            .setContent(content)
+            .build()
 
     @Test
     fun `401 is an authorization failure`() {
