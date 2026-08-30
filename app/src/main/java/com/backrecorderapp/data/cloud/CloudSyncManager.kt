@@ -14,14 +14,15 @@ import com.backrecorderapp.R
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.segment.SegmentManager
+import com.backrecorderapp.di.IoDispatcher
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
 import com.google.api.client.http.HttpResponseException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
@@ -47,7 +48,8 @@ class CloudSyncManager @Inject constructor(
     private val driveCloudStorage: DriveCloudStorage,
     private val segmentManager: SegmentManager,
     private val appPreferences: AppPreferences,
-    private val subscriptionGate: SubscriptionGate
+    private val subscriptionGate: SubscriptionGate,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) {
     companion object {
         private const val TAG = "CloudSyncManager"
@@ -88,7 +90,7 @@ class CloudSyncManager @Inject constructor(
         private const val QUOTA_EXCEEDED_REASON = "storageQuotaExceeded"
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     /**
      * Atomic because `startSync()` is reachable from the main thread (Settings) and from

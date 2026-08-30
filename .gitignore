@@ -19,3 +19,6 @@ google-services.json
 *.stackdump
 .claude/settings.local.json
 .claude/.creds
+
+# OAuth client configs downloaded from the Cloud console
+.config/

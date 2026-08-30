@@ -7,6 +7,8 @@ import com.backrecorderapp.domain.SubscriptionGate
 import com.google.api.client.http.HttpHeaders
 import com.google.api.client.http.HttpResponseException
 import io.mockk.mockk
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -25,6 +27,7 @@ import org.junit.Test
  * The loop itself is not driven here: it runs on an injected-free `Dispatchers.IO` scope with
  * real `delay()`s, so it cannot be advanced with virtual time as written.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class CloudSyncClassificationTest {
 
     private lateinit var manager: CloudSyncManager
@@ -36,7 +39,8 @@ class CloudSyncClassificationTest {
             driveCloudStorage = mockk(relaxed = true),
             segmentManager = mockk<SegmentManager>(relaxed = true),
             appPreferences = mockk<AppPreferences>(relaxed = true),
-            subscriptionGate = mockk<SubscriptionGate>(relaxed = true)
+            subscriptionGate = mockk<SubscriptionGate>(relaxed = true),
+            ioDispatcher = UnconfinedTestDispatcher()
         )
     }
 
