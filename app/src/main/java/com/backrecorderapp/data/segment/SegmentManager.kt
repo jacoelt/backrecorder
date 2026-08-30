@@ -90,10 +90,6 @@ class SegmentManager @Inject constructor(
         return segmentDao.getSegmentsPendingUpload(limit)
     }
 
-    suspend fun countSegmentsPendingUpload(): Int {
-        return segmentDao.countSegmentsPendingUpload()
-    }
-
     suspend fun markAsUploaded(segmentId: String, cloudFileId: String) {
         val segment = segmentDao.getById(segmentId) ?: return
         segmentDao.update(segment.copy(cloudUploaded = true, cloudFileId = cloudFileId))

@@ -268,9 +268,6 @@ class CloudSyncManager @Inject constructor(
                 // Will retry on next cycle
             }
         }
-
-        val remaining = segmentManager.countSegmentsPendingUpload()
-        if (remaining > 0) Log.i(TAG, "$remaining segment(s) still queued for upload")
     }
 
     private suspend fun cleanupOldCloudSegments() {

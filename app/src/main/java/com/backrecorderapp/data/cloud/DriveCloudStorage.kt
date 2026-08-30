@@ -219,7 +219,7 @@ class DriveCloudStorage @Inject constructor(
      * of the literal and could match - and then write to - the wrong folder.
      */
     private fun escapeQueryLiteral(value: String): String =
-        value.replace("\\", "\\\\").replace("'", "\'")
+        value.replace("""\""", """\\""").replace("'", """\'""")
 
     private fun getOrCreateFolder(drive: Drive, name: String, parentId: String?): String {
         val escapedName = escapeQueryLiteral(name)

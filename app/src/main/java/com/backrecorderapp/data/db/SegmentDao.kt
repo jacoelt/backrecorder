@@ -34,7 +34,4 @@ interface SegmentDao {
 
     @Query("SELECT * FROM segments WHERE isComplete = 1 AND cloudUploaded = 0 ORDER BY startTime ASC LIMIT :limit")
     suspend fun getSegmentsPendingUpload(limit: Int): List<SegmentEntity>
-
-    @Query("SELECT COUNT(*) FROM segments WHERE isComplete = 1 AND cloudUploaded = 0")
-    suspend fun countSegmentsPendingUpload(): Int
 }
