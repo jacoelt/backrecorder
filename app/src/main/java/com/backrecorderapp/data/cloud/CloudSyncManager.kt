@@ -83,8 +83,8 @@ class CloudSyncManager @Inject constructor(
                     } else {
                         sessionPrepared = false
                     }
-                } catch (e: HttpResponseException) {
-                    if (isAuthFailure(e)) {
+                } catch (e: Exception) {
+                    if (e is HttpResponseException && isAuthFailure(e)) {
                         // Consent was revoked or the grant expired; uploads stay queued
                         // until the user reconnects, so surface it rather than retry forever.
                         Log.w(TAG, "Drive authorization needs to be renewed", e)
@@ -93,8 +93,6 @@ class CloudSyncManager @Inject constructor(
                     } else {
                         Log.e(TAG, "Sync error", e)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Sync error", e)
                 }
                 delay(SYNC_INTERVAL_MS)
             }
@@ -121,10 +119,9 @@ class CloudSyncManager @Inject constructor(
                 if (cloudFileId != null) {
                     segmentManager.markAsUploaded(segment.id, cloudFileId)
                 }
-            } catch (e: HttpResponseException) {
-                if (isAuthFailure(e)) throw e // sync loop flags this for re-consent
-                Log.e(TAG, "Failed to upload segment ${segment.id}", e)
             } catch (e: Exception) {
+                // Rethrown so the sync loop can flag it for re-consent.
+                if (e is HttpResponseException && isAuthFailure(e)) throw e
                 Log.e(TAG, "Failed to upload segment ${segment.id}", e)
                 // Will retry on next cycle
             }
@@ -139,18 +136,14 @@ class CloudSyncManager @Inject constructor(
         for (file in filesToDelete) {
             try {
                 driveCloudStorage.deleteFile(file.id)
-            } catch (e: HttpResponseException) {
-                if (isAuthFailure(e)) throw e
-                Log.e(TAG, "Failed to delete cloud file ${file.id}", e)
             } catch (e: Exception) {
+                if (e is HttpResponseException && isAuthFailure(e)) throw e
                 Log.e(TAG, "Failed to delete cloud file ${file.id}", e)
             }
         }
     }
 
     private suspend fun handleStaleFiles() {
-        if (!driveCloudStorage.isInitialized) return
-
         val cloudFiles = driveCloudStorage.listStagingFiles()
         if (cloudFiles.isEmpty()) return
 

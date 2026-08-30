@@ -201,17 +201,16 @@ class DriveAuthManager @Inject constructor(
             }
 
             request.setUnsuccessfulResponseHandler { httpRequest, response, supportsRetry ->
-                if (response.statusCode == 401 && supportsRetry) {
-                    val refreshed = runBlocking { validToken(forceRefresh = true) }
-                    if (refreshed != null) {
-                        httpRequest.headers.setAuthorization("Bearer $refreshed")
-                        true
-                    } else {
-                        false
-                    }
+                val refreshed = if (response.statusCode == 401 && supportsRetry) {
+                    runBlocking { validToken(forceRefresh = true) }
                 } else {
-                    false
+                    null
                 }
+
+                if (refreshed != null) {
+                    httpRequest.headers.setAuthorization("Bearer $refreshed")
+                }
+                refreshed != null
             }
         }
 

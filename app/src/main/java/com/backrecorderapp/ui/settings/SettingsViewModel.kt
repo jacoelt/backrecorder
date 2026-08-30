@@ -89,10 +89,7 @@ class SettingsViewModel @Inject constructor(
                 return@launch
             }
 
-            if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) {
-                _showUpgradeDialog.value = true
-                return@launch
-            }
+            if (!cloudAccessAllowed()) return@launch
 
             appPreferences.setCloudUploadMode(mode)
 
@@ -106,14 +103,23 @@ class SettingsViewModel @Inject constructor(
 
     fun connectDrive() {
         viewModelScope.launch {
-            if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) {
-                _showUpgradeDialog.value = true
-                return@launch
-            }
+            if (!cloudAccessAllowed()) return@launch
             if (requestDriveAccess() && appPreferences.cloudUploadMode.first() != CloudUploadMode.OFF) {
                 cloudSyncManager.startSync()
             }
         }
+    }
+
+    /**
+     * Returns false — and raises the upgrade dialog — when the subscription does not cover
+     * cloud storage.
+     */
+    private suspend fun cloudAccessAllowed(): Boolean {
+        if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) {
+            _showUpgradeDialog.value = true
+            return false
+        }
+        return true
     }
 
     /**
