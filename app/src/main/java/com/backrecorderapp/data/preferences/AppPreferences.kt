@@ -27,6 +27,7 @@ class AppPreferences @Inject constructor(
         private val KEY_DISCLAIMER_ACCEPTED = booleanPreferencesKey("disclaimer_accepted")
         private val KEY_CLOUD_UPLOAD_MODE = stringPreferencesKey("cloud_upload_mode")
         private val KEY_WAS_RECORDING_BEFORE_SHUTDOWN = booleanPreferencesKey("was_recording")
+        private val KEY_DRIVE_DISCONNECTED = booleanPreferencesKey("drive_disconnected")
     }
 
     val disclaimerAccepted: Flow<Boolean> = context.dataStore.data
@@ -41,6 +42,14 @@ class AppPreferences @Inject constructor(
     val wasRecordingBeforeShutdown: Flow<Boolean> = context.dataStore.data
         .map { it[KEY_WAS_RECORDING_BEFORE_SHUTDOWN] ?: false }
 
+    /**
+     * Set when the user explicitly disconnects Drive. The OAuth grant outlives sign-out, so
+     * without this a silent restoreSession() would reconnect the account on the next launch or
+     * the next visit to Settings.
+     */
+    val driveDisconnected: Flow<Boolean> = context.dataStore.data
+        .map { it[KEY_DRIVE_DISCONNECTED] ?: false }
+
     suspend fun setDisclaimerAccepted(accepted: Boolean) {
         context.dataStore.edit { it[KEY_DISCLAIMER_ACCEPTED] = accepted }
     }
@@ -51,5 +60,9 @@ class AppPreferences @Inject constructor(
 
     suspend fun setWasRecordingBeforeShutdown(wasRecording: Boolean) {
         context.dataStore.edit { it[KEY_WAS_RECORDING_BEFORE_SHUTDOWN] = wasRecording }
+    }
+
+    suspend fun setDriveDisconnected(disconnected: Boolean) {
+        context.dataStore.edit { it[KEY_DRIVE_DISCONNECTED] = disconnected }
     }
 }

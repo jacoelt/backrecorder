@@ -51,7 +51,7 @@
     <string name="settings_drive_connect">Connect</string>
     <string name="settings_drive_disconnect">Disconnect</string>
     <string name="settings_drive_connect_prompt">Connect a Google Drive account to enable cloud uploads.</string>
-    <string name="drive_sign_in_failed">Could not connect to Google Drive. Please try again.</string>
+    <string name="settings_drive_sign_in_failed">Could not connect to Google Drive. Please try again.</string>
     <string name="settings_subscription">Subscription</string>
     <string name="settings_legal">Legal</string>
     <string name="settings_view_disclaimer">View legal disclaimer</string>

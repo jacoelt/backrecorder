@@ -3,6 +3,7 @@ package com.backrecorderapp.data.cloud
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
@@ -22,17 +23,17 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
  * Owns the Google OAuth grant used for Drive uploads.
  *
- * Uses the Play Services Authorization API rather than the older GoogleSignIn flow the
- * pre-rewrite app had: GoogleSignIn (and with it GoogleAccountCredential, which needed an
- * Account) was removed in play-services-auth 22. The Authorization API instead hands back a
- * bare OAuth access token, so token lifetime is managed here - cached briefly, re-fetched
- * silently on expiry, and force-refreshed when Drive answers 401.
+ * Uses the Play Services Authorization API rather than GoogleSignIn: GoogleSignIn - and with it
+ * GoogleAccountCredential, which needed an Account - was removed in play-services-auth 22. The
+ * Authorization API hands back a bare OAuth access token instead, so token lifetime is managed
+ * here: cached briefly, re-fetched silently on expiry, force-refreshed when Drive answers 401.
  *
  * Only the narrow drive.file scope is requested, which limits the app to files it created.
  */
@@ -52,14 +53,14 @@ class DriveAuthManager @Inject constructor(
     }
 
     /** Outcome of asking for authorization without showing UI ourselves. */
-    sealed interface AuthorizationOutcome {
+    sealed class AuthorizationOutcome {
         /** Consent already granted; Drive is usable now. */
-        object Authorized : AuthorizationOutcome
+        data object Authorized : AuthorizationOutcome()
 
         /** The user must approve; launch [pendingIntent] and report back the result. */
-        data class ConsentRequired(val pendingIntent: PendingIntent) : AuthorizationOutcome
+        data class ConsentRequired(val pendingIntent: PendingIntent) : AuthorizationOutcome()
 
-        object Failed : AuthorizationOutcome
+        data object Failed : AuthorizationOutcome()
     }
 
     private val driveScope = Scope(DriveScopes.DRIVE_FILE)
@@ -76,12 +77,28 @@ class DriveAuthManager @Inject constructor(
     /** Whether Drive uploads are currently authorized. */
     val isAuthorized: StateFlow<Boolean> = _isAuthorized.asStateFlow()
 
+    /**
+     * Guards the whole authorize/adopt/clear sequence, so a transient failure in one caller
+     * cannot wipe the session another caller just established. [tokenMutex] guards only the
+     * cached token and is always taken inside this one, never the other way round.
+     */
+    private val sessionMutex = Mutex()
+
     private val tokenMutex = Mutex()
     private var cachedToken: String? = null
     private var cachedTokenAt = 0L
 
     @Volatile
     private var driveService: Drive? = null
+
+    private val generation = AtomicInteger(0)
+
+    /**
+     * Changes whenever the grant does. Anything caching account-scoped Drive state - folder ids
+     * above all - must compare this before reusing it, instead of relying on callers to remember
+     * to invalidate. A reconnect may be to a different account, whose Drive cannot see the ids.
+     */
+    val grantGeneration: Int get() = generation.get()
 
     /** The authorized Drive client, or null while unauthorized. */
     val drive: Drive? get() = driveService
@@ -90,21 +107,25 @@ class DriveAuthManager @Inject constructor(
      * Asks for the Drive grant. Returns [AuthorizationOutcome.Authorized] when consent already
      * exists (no UI shown), otherwise a pending intent the caller must launch.
      */
-    suspend fun authorize(): AuthorizationOutcome {
+    suspend fun authorize(): AuthorizationOutcome = sessionMutex.withLock {
         val result = try {
             authorizationClient.authorize(authorizationRequest).await()
         } catch (e: Exception) {
             Log.e(TAG, "Drive authorization request failed", e)
-            clear()
-            return AuthorizationOutcome.Failed
+            clearLocked()
+            return@withLock AuthorizationOutcome.Failed
         }
 
         val pendingIntent = result.pendingIntent
         if (result.hasResolution() && pendingIntent != null) {
-            return AuthorizationOutcome.ConsentRequired(pendingIntent)
+            // Needing consent means the grant is gone until the user approves again. Drop the
+            // session rather than leave it reported as live - otherwise the UI keeps offering
+            // Disconnect for an account that can no longer upload anything.
+            clearLocked()
+            return@withLock AuthorizationOutcome.ConsentRequired(pendingIntent)
         }
 
-        return if (adopt(result)) AuthorizationOutcome.Authorized else AuthorizationOutcome.Failed
+        if (adoptLocked(result)) AuthorizationOutcome.Authorized else AuthorizationOutcome.Failed
     }
 
     /**
@@ -114,32 +135,33 @@ class DriveAuthManager @Inject constructor(
     suspend fun restoreSession(): Boolean = authorize() is AuthorizationOutcome.Authorized
 
     /** Completes the flow with the data returned by the launched consent intent. */
-    suspend fun handleAuthorizationResult(data: Intent?): Boolean {
+    suspend fun handleAuthorizationResult(data: Intent?): Boolean = sessionMutex.withLock {
         if (data == null) {
-            clear()
-            return false
+            clearLocked()
+            return@withLock false
         }
-        return try {
-            adopt(authorizationClient.getAuthorizationResultFromIntent(data))
+        try {
+            adoptLocked(authorizationClient.getAuthorizationResultFromIntent(data))
         } catch (e: Exception) {
             Log.e(TAG, "Drive consent result could not be read", e)
-            clear()
+            clearLocked()
             false
         }
     }
 
-    suspend fun signOut() = clear()
+    suspend fun signOut() = sessionMutex.withLock { clearLocked() }
 
-    private suspend fun adopt(result: AuthorizationResult): Boolean {
+    /** Caller must hold [sessionMutex]. */
+    private suspend fun adoptLocked(result: AuthorizationResult): Boolean {
         val token = result.accessToken
         if (token.isNullOrEmpty()) {
             Log.w(TAG, "Authorization returned no access token")
-            clear()
+            clearLocked()
             return false
         }
-        if (result.grantedScopes.none { it == driveScope.scopeUri }) {
+        if (!grantsDriveScope(result)) {
             Log.w(TAG, "Drive scope was not granted")
-            clear()
+            clearLocked()
             return false
         }
 
@@ -151,22 +173,39 @@ class DriveAuthManager @Inject constructor(
         if (driveService == null) {
             driveService = buildDriveService()
         }
+        generation.incrementAndGet()
         _isAuthorized.value = true
         return true
     }
 
-    private suspend fun clear() {
-        tokenMutex.withLock {
-            cachedToken = null
-            cachedTokenAt = 0L
-        }
+    /** Caller must hold [sessionMutex]. */
+    private suspend fun clearLocked() {
+        tokenMutex.withLock { resetTokenLocked() }
+        invalidateSession()
+    }
+
+    /** Caller must hold [tokenMutex]. */
+    private fun resetTokenLocked() {
+        cachedToken = null
+        cachedTokenAt = 0L
+    }
+
+    private fun invalidateSession() {
         driveService = null
         _isAuthorized.value = false
+        generation.incrementAndGet()
     }
+
+    private fun grantsDriveScope(result: AuthorizationResult): Boolean =
+        result.grantedScopes.any { it == driveScope.scopeUri }
 
     /**
      * Returns a usable access token, silently re-authorizing when the cached one is stale.
      * Null means the grant is gone and the user has to reconnect.
+     *
+     * Every failure path drops the session. Leaving the cache populated would mean replaying a
+     * token Drive has already rejected for the rest of the 45-minute TTL, while the UI still
+     * reported the account as connected.
      */
     private suspend fun validToken(forceRefresh: Boolean): String? = tokenMutex.withLock {
         val now = SystemClock.elapsedRealtime()
@@ -179,23 +218,43 @@ class DriveAuthManager @Inject constructor(
             authorizationClient.authorize(authorizationRequest).await()
         } catch (e: Exception) {
             Log.e(TAG, "Silent token refresh failed", e)
-            return@withLock null
+            return@withLock dropSessionLocked()
         }
 
-        // Needing a resolution here means consent was revoked; the caller surfaces it as a
-        // 401 from Drive and the UI prompts the user to reconnect.
-        if (result.hasResolution()) return@withLock null
+        // Needing a resolution here means consent was revoked.
+        if (result.hasResolution()) return@withLock dropSessionLocked()
 
-        val token = result.accessToken?.takeIf { it.isNotEmpty() } ?: return@withLock null
+        // A refresh is a fresh grant decision, so re-check the scope exactly as adoptLocked
+        // does: a grant narrowed since the last check would otherwise go unnoticed.
+        if (!grantsDriveScope(result)) {
+            Log.w(TAG, "Drive scope is no longer granted")
+            return@withLock dropSessionLocked()
+        }
+
+        val token = result.accessToken?.takeIf { it.isNotEmpty() }
+            ?: return@withLock dropSessionLocked()
+
         cachedToken = token
         cachedTokenAt = now
         token
     }
 
+    /** Clears the session and returns null. Caller must hold [tokenMutex]. */
+    private fun dropSessionLocked(): String? {
+        resetTokenLocked()
+        invalidateSession()
+        return null
+    }
+
     private fun buildDriveService(): Drive {
-        // The initializer runs on the Drive client's own blocking IO threads, so bridging out
-        // of suspend with runBlocking here never touches the main thread.
         val initializer = HttpRequestInitializer { request ->
+            // The token bridge below blocks the calling thread, so a Drive call from the main
+            // thread would ANR. Every call site goes through Dispatchers.IO; nothing enforced
+            // that, so fail loudly if a new one ever does not.
+            check(Looper.myLooper() != Looper.getMainLooper()) {
+                "Drive requests must not run on the main thread"
+            }
+
             runBlocking { validToken(forceRefresh = false) }?.let { token ->
                 request.headers.setAuthorization("Bearer $token")
             }

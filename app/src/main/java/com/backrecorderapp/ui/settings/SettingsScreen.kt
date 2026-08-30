@@ -1,5 +1,9 @@
 package com.backrecorderapp.ui.settings
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,20 +25,16 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.LaunchedEffect
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.OutlinedButton
-import android.app.Activity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -224,7 +224,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { viewModel.dismissSignInError() },
             title = { Text(stringResource(R.string.settings_drive_account)) },
-            text = { Text(stringResource(R.string.drive_sign_in_failed)) },
+            text = { Text(stringResource(R.string.settings_drive_sign_in_failed)) },
             confirmButton = {
                 Button(onClick = { viewModel.dismissSignInError() }) {
                     Text(stringResource(R.string.ok))

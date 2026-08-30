@@ -9,7 +9,6 @@ import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
-import com.backrecorderapp.data.cloud.DriveCloudStorage
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.domain.GateResult
@@ -41,8 +40,7 @@ class SettingsViewModel @Inject constructor(
     private val billingRepository: BillingRepository,
     private val subscriptionGate: SubscriptionGate,
     private val cloudSyncManager: CloudSyncManager,
-    private val driveAuthManager: DriveAuthManager,
-    private val driveCloudStorage: DriveCloudStorage
+    private val driveAuthManager: DriveAuthManager
 ) : ViewModel() {
 
     val uiState: StateFlow<SettingsUiState> = combine(
@@ -76,9 +74,15 @@ class SettingsViewModel @Inject constructor(
     val consentRequest: StateFlow<PendingIntent?> = _consentRequest.asStateFlow()
 
     init {
-        // Reflect the real grant rather than defaulting to "not connected": the grant may
-        // already exist from a previous run, and this check never shows UI.
-        viewModelScope.launch { driveAuthManager.restoreSession() }
+        viewModelScope.launch {
+            // Reflect the real grant rather than defaulting to "not connected": the grant may
+            // already exist from a previous run, and this check never shows UI. It is skipped
+            // after an explicit disconnect, which the grant itself does not record - otherwise
+            // simply reopening this screen would silently reconnect the account.
+            if (!appPreferences.driveDisconnected.first()) {
+                driveAuthManager.restoreSession()
+            }
+        }
     }
 
     fun setCloudUploadMode(mode: CloudUploadMode) {
@@ -89,7 +93,7 @@ class SettingsViewModel @Inject constructor(
                 return@launch
             }
 
-            if (!cloudAccessAllowed()) return@launch
+            if (!isCloudAccessAllowed()) return@launch
 
             appPreferences.setCloudUploadMode(mode)
 
@@ -103,7 +107,7 @@ class SettingsViewModel @Inject constructor(
 
     fun connectDrive() {
         viewModelScope.launch {
-            if (!cloudAccessAllowed()) return@launch
+            if (!isCloudAccessAllowed()) return@launch
             if (requestDriveAccess() && appPreferences.cloudUploadMode.first() != CloudUploadMode.OFF) {
                 cloudSyncManager.startSync()
             }
@@ -111,10 +115,10 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Returns false — and raises the upgrade dialog — when the subscription does not cover
+     * Returns false - and raises the upgrade dialog - when the subscription does not cover
      * cloud storage.
      */
-    private suspend fun cloudAccessAllowed(): Boolean {
+    private suspend fun isCloudAccessAllowed(): Boolean {
         if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) {
             _showUpgradeDialog.value = true
             return false
@@ -129,7 +133,7 @@ class SettingsViewModel @Inject constructor(
     private suspend fun requestDriveAccess(): Boolean {
         return when (val outcome = driveAuthManager.authorize()) {
             is DriveAuthManager.AuthorizationOutcome.Authorized -> {
-                driveCloudStorage.reset()
+                onDriveConnected()
                 true
             }
             is DriveAuthManager.AuthorizationOutcome.ConsentRequired -> {
@@ -141,6 +145,15 @@ class SettingsViewModel @Inject constructor(
                 false
             }
         }
+    }
+
+    /**
+     * The folder-id cache invalidates itself off the grant generation, so there is nothing to
+     * reset here - only the two pieces of state the grant cannot carry on its own.
+     */
+    private suspend fun onDriveConnected() {
+        appPreferences.setDriveDisconnected(false)
+        cloudSyncManager.onAuthorizationRestored()
     }
 
     fun onConsentLaunched() {
@@ -157,7 +170,7 @@ class SettingsViewModel @Inject constructor(
                 return@launch
             }
 
-            driveCloudStorage.reset()
+            onDriveConnected()
             if (appPreferences.cloudUploadMode.first() != CloudUploadMode.OFF) {
                 cloudSyncManager.startSync()
             }
@@ -168,7 +181,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             cloudSyncManager.stopSync()
             driveAuthManager.signOut()
-            driveCloudStorage.reset()
+            appPreferences.setDriveDisconnected(true)
             appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
         }
     }
