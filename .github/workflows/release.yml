@@ -39,6 +39,25 @@ jobs:
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # Mirrors the arithmetic in app/build.gradle.kts, purely so the version is visible
+      # in the run summary and can name the Play release. The build derives its own.
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          NAME=$(grep -E '^VERSION_NAME=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          BASE=$(grep -E '^VERSION_CODE_BASE=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          CODE=$(( BASE + GITHUB_RUN_NUMBER ))
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Release $NAME (versionCode $CODE)"
+            echo ""
+            echo "- Track: \`${{ github.event.inputs.track }}\`"
+            echo "- Status: \`${{ github.event.inputs.status }}\`"
+            echo "- Version code: \`$BASE\` (base) + \`$GITHUB_RUN_NUMBER\` (run) = \`$CODE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Decode keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -61,4 +80,5 @@ jobs:
           releaseFiles: app/build/outputs/bundle/release/app-release.aab
           track: ${{ github.event.inputs.track }}
           status: ${{ github.event.inputs.status }}
+          releaseName: ${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }})
           mappingFile: app/build/outputs/mapping/release/mapping.txt

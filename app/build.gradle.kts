@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +7,39 @@ plugins {
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
 }
+
+// Version lives in version.properties so a release is a reviewable one-line change,
+// and so the name and the generated code can never drift apart.
+val versionProps = Properties().apply {
+    val file = rootProject.file("version.properties")
+    require(file.exists()) { "version.properties not found at ${file.path}" }
+    file.inputStream().use { load(it) }
+}
+
+val appVersionName: String = requireNotNull(versionProps.getProperty("VERSION_NAME")?.trim()) {
+    "VERSION_NAME is missing from version.properties"
+}
+
+// MAJOR.MINOR.PATCH with optional -prerelease and +build, per semver.org.
+val semanticVersion = Regex(
+    """^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)""" +
+        """(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?""" +
+        """(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"""
+)
+require(semanticVersion.matches(appVersionName)) {
+    "VERSION_NAME '$appVersionName' is not semantic versioning. " +
+        "Expected MAJOR.MINOR.PATCH, optionally -prerelease and +build (e.g. 1.4.0, 2.0.0-rc.1)."
+}
+
+val versionCodeBase: Int = requireNotNull(
+    versionProps.getProperty("VERSION_CODE_BASE")?.trim()?.toIntOrNull()
+) { "VERSION_CODE_BASE is missing from version.properties, or is not a whole number" }
+
+// GitHub sets GITHUB_RUN_NUMBER and increments it per run of a given workflow, so every
+// CI build gets a higher code than the last without anyone editing a file. Local builds
+// see no such variable and stay pinned to the base.
+val ciRunNumber: Int = System.getenv("GITHUB_RUN_NUMBER")?.trim()?.toIntOrNull() ?: 0
+val appVersionCode: Int = versionCodeBase + ciRunNumber
 
 android {
     namespace = "com.backrecorderapp"
@@ -14,8 +49,8 @@ android {
         applicationId = "com.backrecorderapp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
