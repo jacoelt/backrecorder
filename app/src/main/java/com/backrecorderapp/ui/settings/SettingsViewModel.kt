@@ -27,6 +27,18 @@ import kotlinx.coroutines.launch
 import java.io.IOException
 import javax.inject.Inject
 
+/** A Drive problem worth interrupting the user for. */
+enum class DriveError {
+    /** Consent failed, was cancelled, or could not be read. Retryable. */
+    SIGN_IN_FAILED,
+
+    /**
+     * Google resolved an account other than the one the uploads belong to. Not retryable, and
+     * deliberately loud: continuing would put the user's recordings in a stranger's Drive.
+     */
+    ACCOUNT_MISMATCH
+}
+
 data class SettingsUiState(
     val recordingEnabled: Boolean = false,
     val cloudUploadMode: CloudUploadMode = CloudUploadMode.OFF,
@@ -78,8 +90,10 @@ class SettingsViewModel @Inject constructor(
     private val _showUpgradeDialog = MutableStateFlow(false)
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
 
-    private val _signInError = MutableStateFlow(false)
-    val signInError: StateFlow<Boolean> = _signInError.asStateFlow()
+    private val _driveError = MutableStateFlow<DriveError?>(null)
+
+    /** The Drive problem to show, or null. */
+    val driveError: StateFlow<DriveError?> = _driveError.asStateFlow()
 
     /**
      * Set when Google needs the user to approve Drive access. The screen launches it through
@@ -155,8 +169,12 @@ class SettingsViewModel @Inject constructor(
                 _consentRequest.value = outcome.pendingIntent
                 false
             }
+            is DriveAuthManager.AuthorizationOutcome.AccountMismatch -> {
+                _driveError.value = DriveError.ACCOUNT_MISMATCH
+                false
+            }
             is DriveAuthManager.AuthorizationOutcome.Failed -> {
-                _signInError.value = true
+                _driveError.value = DriveError.SIGN_IN_FAILED
                 false
             }
         }
@@ -177,10 +195,16 @@ class SettingsViewModel @Inject constructor(
 
     fun onConsentResult(data: Intent?) {
         viewModelScope.launch {
-            if (!driveAuthManager.handleAuthorizationResult(data)) {
+            val outcome = driveAuthManager.handleAuthorizationResult(data)
+            if (outcome !is DriveAuthManager.AuthorizationOutcome.Authorized) {
                 // Backing out of the consent sheet is a routine cancel, so the chosen upload mode
                 // is left alone. Without a grant the sync loop simply never becomes active.
-                _signInError.value = true
+                _driveError.value =
+                    if (outcome is DriveAuthManager.AuthorizationOutcome.AccountMismatch) {
+                        DriveError.ACCOUNT_MISMATCH
+                    } else {
+                        DriveError.SIGN_IN_FAILED
+                    }
                 cloudSyncManager.stopSync()
                 return@launch
             }
@@ -207,8 +231,8 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun dismissSignInError() {
-        _signInError.value = false
+    fun dismissDriveError() {
+        _driveError.value = null
     }
 
     fun launchPurchaseFlow(activity: Activity) {

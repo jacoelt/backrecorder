@@ -5,15 +5,20 @@ import android.content.Context
 import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Log
+import com.backrecorderapp.data.preferences.AppPreferences
 import com.google.android.gms.auth.api.identity.AuthorizationClient
+import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.tasks.Tasks
 import com.google.api.services.drive.DriveScopes
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -36,6 +41,7 @@ class DriveAuthManagerTest {
 
     private lateinit var context: Context
     private lateinit var client: AuthorizationClient
+    private lateinit var preferences: AppPreferences
 
     @Before
     fun setup() {
@@ -53,6 +59,7 @@ class DriveAuthManagerTest {
 
         context = mockk(relaxed = true)
         client = mockk(relaxed = true)
+        preferences = mockk(relaxed = true)
 
         // The client is obtained through a static factory in the constructor.
         mockkStatic(Identity::class)
@@ -91,7 +98,25 @@ class DriveAuthManagerTest {
         )
     }
 
-    private fun newManager() = DriveAuthManager(context)
+    /** A resolver that always reports [identity] - null meaning "could not be determined". */
+    private fun resolverFor(identity: DriveAccountIdentity?) =
+        object : DriveAccountIdentityResolver {
+            override suspend fun resolve(accessToken: String): DriveAccountIdentity? = identity
+        }
+
+    /**
+     * By default nothing is pinned and the account cannot be resolved, which is the shape the
+     * pre-pinning tests were written against.
+     */
+    private fun newManager(
+        resolver: DriveAccountIdentityResolver = resolverFor(null),
+        pinnedAccountId: String? = null,
+        pinnedEmail: String? = null
+    ): DriveAuthManager {
+        every { preferences.driveAccountId } returns flowOf(pinnedAccountId)
+        every { preferences.driveAccountEmail } returns flowOf(pinnedEmail)
+        return DriveAuthManager(context, preferences, resolver)
+    }
 
     @Test
     fun `a complete grant authorizes and exposes a Drive client`() = runTest {
@@ -190,7 +215,10 @@ class DriveAuthManagerTest {
         val auth = newManager()
         auth.authorize()
 
-        assertFalse(auth.handleAuthorizationResult(null))
+        assertEquals(
+            DriveAuthManager.AuthorizationOutcome.Failed,
+            auth.handleAuthorizationResult(null)
+        )
         assertFalse(auth.isAuthorized.value)
     }
 
@@ -223,5 +251,147 @@ class DriveAuthManagerTest {
 
         assertTrue(auth.grantGeneration != afterSignOut)
         assertTrue(auth.isAuthorized.value)
+    }
+
+    // --- Account pinning -------------------------------------------------------------------
+    //
+    // A silent re-authorization can resolve a different Google account on a device with several
+    // signed in. Uploading a user's recordings into somebody else's Drive is not recoverable, so
+    // the grant is pinned to one account and every adopted token is checked against it.
+
+    @Test
+    fun `a pinned account is set on the authorization request`() = runTest {
+        // This is the mechanism that actually prevents drift; the identity check afterwards only
+        // detects drift that got through. Without setAccount, Play Services is free to resolve
+        // whichever account it considers current.
+        val request = slot<AuthorizationRequest>()
+        every { client.authorize(capture(request)) } returns Tasks.forResult(grant())
+
+        val auth = newManager(
+            resolver = resolverFor(DriveAccountIdentity("acct-1", "a@x.com")),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+        auth.authorize()
+
+        // Only the presence of the account is asserted, not its address: android.accounts.Account
+        // is a stub in the unit-test android.jar, so its fields read back null however it was
+        // constructed. Presence is the part that distinguishes pinned from unpinned.
+        assertNotNull(
+            "the request must carry the pinned account",
+            request.captured.account
+        )
+    }
+
+    @Test
+    fun `no account is pinned before one is known`() = runTest {
+        // On the very first connect there is nothing to pin, and pinning a placeholder would
+        // stop the account picker from ever appearing.
+        val request = slot<AuthorizationRequest>()
+        every { client.authorize(capture(request)) } returns Tasks.forResult(grant())
+
+        newManager().authorize()
+
+        assertNull(request.captured.account)
+    }
+
+    @Test
+    fun `the first connect records the account the grant belongs to`() = runTest {
+        answersWith(grant())
+        val auth = newManager(resolver = resolverFor(DriveAccountIdentity("acct-1", "a@x.com")))
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        // Without a recorded id there is nothing for a later grant to be checked against.
+        coVerify { preferences.setDriveAccount("acct-1", "a@x.com") }
+    }
+
+    @Test
+    fun `a grant resolving to a different account is refused and drops the session`() = runTest {
+        answersWith(grant())
+        val auth = newManager(
+            resolver = resolverFor(DriveAccountIdentity("acct-2", "intruder@x.com")),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+
+        val outcome = auth.authorize()
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.AccountMismatch, outcome)
+        // The session must never be published: the sync loop watches isAuthorized, and one tick
+        // is all it takes to upload a segment to the wrong Drive.
+        assertFalse(auth.isAuthorized.value)
+        assertNull(auth.drive)
+        coVerify(exactly = 0) { preferences.setDriveAccount("acct-2", any()) }
+    }
+
+    @Test
+    fun `a grant resolving to the pinned account is accepted`() = runTest {
+        answersWith(grant())
+        val auth = newManager(
+            resolver = resolverFor(DriveAccountIdentity("acct-1", "a@x.com")),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        assertTrue(auth.isAuthorized.value)
+    }
+
+    @Test
+    fun `the same account under a new address stays connected`() = runTest {
+        // Pinning is on the Drive permissionId precisely so a renamed account keeps working.
+        answersWith(grant())
+        val auth = newManager(
+            resolver = resolverFor(DriveAccountIdentity("acct-1", "renamed@x.com")),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        coVerify { preferences.setDriveAccount("acct-1", "renamed@x.com") }
+    }
+
+    @Test
+    fun `an unresolvable account does not tear down a pinned session`() = runTest {
+        // The lookup is a network call. Treating its failure as "different account" would kill
+        // sync every time the connection blinked - the same mistake as dropping the session on a
+        // failed refresh. Drift is prevented by the pin on the request itself.
+        answersWith(grant())
+        val auth = newManager(
+            resolver = resolverFor(null),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        assertTrue(auth.isAuthorized.value)
+    }
+
+    @Test
+    fun `signing out forgets the pin so another account can be chosen`() = runTest {
+        answersWith(grant())
+        val auth = newManager(
+            resolver = resolverFor(DriveAccountIdentity("acct-1", "a@x.com")),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+        auth.authorize()
+
+        auth.signOut()
+
+        // Keeping the pin would make every future connect an AccountMismatch, permanently
+        // locking the user out of switching accounts.
+        coVerify { preferences.setDriveAccount(null, null) }
+    }
+
+    @Test
+    fun `a connect after sign-out pins whichever account is chosen`() = runTest {
+        // The pin is cleared on sign-out, so the next connect starts from nothing pinned and
+        // adopts the new account rather than refusing it.
+        answersWith(grant())
+        val auth = newManager(resolver = resolverFor(DriveAccountIdentity("acct-2", "b@x.com")))
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        coVerify { preferences.setDriveAccount("acct-2", "b@x.com") }
     }
 }

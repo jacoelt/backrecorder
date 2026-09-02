@@ -53,6 +53,7 @@
     <string name="settings_drive_connect_prompt">Connect a Google Drive account to enable cloud uploads.</string>
     <string name="settings_drive_storage_full">Google Drive is out of space. Uploads are paused until you free some.</string>
     <string name="settings_drive_sign_in_failed">Could not connect to Google Drive. Please try again.</string>
+    <string name="settings_drive_account_mismatch">Google signed in with a different account than the one your recordings are backed up to. To avoid uploading them to the wrong Drive, nothing has been uploaded. Disconnect and reconnect, choosing the original account.</string>
     <string name="settings_subscription">Subscription</string>
     <string name="settings_legal">Legal</string>
     <string name="settings_view_disclaimer">View legal disclaimer</string>

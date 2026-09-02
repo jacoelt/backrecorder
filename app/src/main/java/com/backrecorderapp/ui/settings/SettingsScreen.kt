@@ -54,7 +54,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
-    val signInError by viewModel.signInError.collectAsState()
+    val driveError by viewModel.driveError.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
 
@@ -221,13 +221,23 @@ fun SettingsScreen(
         )
     }
 
-    if (signInError) {
+    driveError?.let { error ->
         AlertDialog(
-            onDismissRequest = { viewModel.dismissSignInError() },
+            onDismissRequest = { viewModel.dismissDriveError() },
             title = { Text(stringResource(R.string.settings_drive_account)) },
-            text = { Text(stringResource(R.string.settings_drive_sign_in_failed)) },
+            text = {
+                Text(
+                    stringResource(
+                        when (error) {
+                            DriveError.SIGN_IN_FAILED -> R.string.settings_drive_sign_in_failed
+                            DriveError.ACCOUNT_MISMATCH ->
+                                R.string.settings_drive_account_mismatch
+                        }
+                    )
+                )
+            },
             confirmButton = {
-                Button(onClick = { viewModel.dismissSignInError() }) {
+                Button(onClick = { viewModel.dismissDriveError() }) {
                     Text(stringResource(R.string.ok))
                 }
             }

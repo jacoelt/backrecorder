@@ -26,6 +26,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -154,7 +155,7 @@ class SettingsViewModelTest {
         viewModel.connectDrive()
         advanceUntilIdle()
 
-        assertTrue(viewModel.signInError.value)
+        assertEquals(DriveError.SIGN_IN_FAILED, viewModel.driveError.value)
         verify(exactly = 0) { cloudSyncManager.startSync() }
     }
 
@@ -190,14 +191,15 @@ class SettingsViewModelTest {
     fun `a failed consent result stops sync but keeps the chosen upload mode`() = runTest {
         // Backing out of the consent sheet is a routine cancel; erasing the mode the user just
         // picked would be a surprising side effect of tapping Back.
-        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns false
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Failed
         cloudUploadMode.value = CloudUploadMode.WIFI_ONLY
 
         val viewModel = createViewModel()
         viewModel.onConsentResult(null)
         advanceUntilIdle()
 
-        assertTrue(viewModel.signInError.value)
+        assertEquals(DriveError.SIGN_IN_FAILED, viewModel.driveError.value)
         coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
         verify(exactly = 1) { cloudSyncManager.stopSync() }
         verify(exactly = 0) { cloudSyncManager.startSync() }
@@ -205,14 +207,15 @@ class SettingsViewModelTest {
 
     @Test
     fun `a successful consent result starts sync and clears the disconnect flag`() = runTest {
-        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns true
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
         cloudUploadMode.value = CloudUploadMode.ALWAYS_ON
 
         val viewModel = createViewModel()
         viewModel.onConsentResult(null)
         advanceUntilIdle()
 
-        assertFalse(viewModel.signInError.value)
+        assertNull(viewModel.driveError.value)
         coVerify { appPreferences.setDriveDisconnected(false) }
         verify(exactly = 1) { cloudSyncManager.startSync() }
     }

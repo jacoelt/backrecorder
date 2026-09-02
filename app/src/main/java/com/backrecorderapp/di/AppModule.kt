@@ -2,6 +2,8 @@ package com.backrecorderapp.di
 
 import android.content.Context
 import androidx.room.Room
+import com.backrecorderapp.data.cloud.DriveAboutIdentityResolver
+import com.backrecorderapp.data.cloud.DriveAccountIdentityResolver
 import com.backrecorderapp.data.db.AppDatabase
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.domain.RecordingFlusher
@@ -37,6 +39,12 @@ object AppModule {
     @Provides
     @IoDispatcher
     fun provideIoDispatcher(): CoroutineDispatcher = Dispatchers.IO
+
+    @Provides
+    @Singleton
+    fun provideDriveAccountIdentityResolver(
+        @IoDispatcher ioDispatcher: CoroutineDispatcher
+    ): DriveAccountIdentityResolver = DriveAboutIdentityResolver(ioDispatcher)
 
     @Provides
     @Singleton
