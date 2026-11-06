@@ -52,7 +52,8 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Substitutes HiltTestApplication; see HiltTestRunner.
+        testInstrumentationRunner = "com.backrecorderapp.HiltTestRunner"
     }
 
     signingConfigs {
@@ -119,6 +120,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
     debugImplementation(libs.compose.ui.tooling)
+    // Debug-only manifest activity that createComposeRule()/createEmptyComposeRule() host in.
+    debugImplementation(libs.compose.ui.test.manifest)
 
     // Lifecycle
     implementation(libs.lifecycle.runtime.ktx)
@@ -170,4 +173,10 @@ dependencies {
     androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.test.ext.junit)
     androidTestImplementation(libs.coroutines.test)
+    // Compose UI / Hilt instrumented tests. androidTestImplementation does not extend
+    // implementation, so the Compose BOM needs declaring again here.
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.compiler)
 }

@@ -2,7 +2,7 @@
 
 Android background audio recorder with Google Drive sync and in-app billing.
 
-Kotlin 17 · Jetpack Compose/M3 · Hilt (KSP) · Room · DataStore · WorkManager · Play Billing · Google Drive API · Gradle version catalog (`gradle/libs.versions.toml`) · Tests: JUnit 4, MockK, Turbine, Espresso
+Kotlin 17 · Jetpack Compose/M3 · Hilt (KSP) · Room · DataStore · WorkManager · Play Billing · Google Drive API · Gradle version catalog (`gradle/libs.versions.toml`) · Tests: JUnit 4, MockK, Turbine, Espresso, Compose UI test (instrumented)
 
 Single `:app` module. Package root: `com.backrecorderapp`.
 
@@ -18,6 +18,8 @@ Single `:app` module. Package root: `com.backrecorderapp`.
 - **Drive auth:** `DriveAuthManager` owns the OAuth grant via the Play Services Authorization API (`Identity.getAuthorizationClient`). `GoogleSignIn`/`GoogleAccountCredential` are **not** available — removed in play-services-auth 22 — so don't reach for them. It caches the access token for 45 min, re-authorizes silently, and force-refreshes on 401. `grantGeneration` changes whenever the grant does; anything caching account-scoped Drive state (folder ids) must compare it rather than rely on callers to invalidate.
 - **Drive folder layout:** `BackRecorder/staging` holds segments; `recovery_<timestamp>` folders are siblings under `BackRecorder/`, never inside `staging`. Anything inside `staging` is deleted once it ages past the 24h buffer, so a recovery folder placed there takes its contents with it.
 - **Notifications:** Three channels — recording, cloud sync, recovery.
+- **Instrumented tests:** `testInstrumentationRunner` is `com.backrecorderapp.HiltTestRunner`, which swaps in `HiltTestApplication` — the real `BackRecorderApp` connects billing and resumes cloud sync on create, which no test should do. Compose UI tests use `@HiltAndroidTest` + `HiltAndroidRule` + `createAndroidComposeRule<MainActivity>()`; `ComposeHarnessSmokeTest` is the reference. Seed preferences in a rule ordered *between* the Hilt rule and the compose rule, not in `@Before` — the compose rule launches the activity before `@Before` runs, and `NavGraph` fixes its start destination from `disclaimerAccepted` on first composition. CI runs only `:app:testDebugUnitTest`, so `androidTest` needs an emulator (`./gradlew :app:connectedDebugAndroidTest`).
+- **`BootReceiver` and Hilt:** `BootReceiver` resolves `AppPreferences` through `EntryPointAccessors`, **not** `@AndroidEntryPoint`. Under instrumentation `HiltTestApplication`'s component is built by `HiltAndroidRule`, so a manifest-registered `@AndroidEntryPoint` receiver that catches `BOOT_COMPLETED` before the first test aborts the whole run. Any new manifest-registered receiver needs the same treatment.
 
 ## Sensitive Files (do not commit)
 
