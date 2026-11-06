@@ -43,17 +43,21 @@ class BootReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun appPreferencesOrNull(context: Context): AppPreferences? = try {
-        EntryPointAccessors
-            .fromApplication(context.applicationContext, BootReceiverEntryPoint::class.java)
-            .appPreferences()
-    } catch (e: IllegalStateException) {
-        // No Hilt component yet (instrumentation before the first test). Nothing to restart.
-        Log.w(TAG, "Boot broadcast arrived with no Hilt component; skipping restart", e)
-        null
+    private fun appPreferencesOrNull(context: Context): AppPreferences? {
+        // Only the lookup is guarded: a failure to provision AppPreferences itself is a real
+        // defect and should crash rather than silently skip the restart.
+        val entryPoint = try {
+            EntryPointAccessors
+                .fromApplication(context.applicationContext, BootReceiverEntryPoint::class.java)
+        } catch (e: IllegalStateException) {
+            // No Hilt component yet (instrumentation before the first test). Nothing to restart.
+            Log.w(TAG, "Boot broadcast arrived with no Hilt component; skipping restart", e)
+            return null
+        }
+        return entryPoint.appPreferences()
     }
 
-    private companion object {
-        const val TAG = "BootReceiver"
+    companion object {
+        private const val TAG = "BootReceiver"
     }
 }

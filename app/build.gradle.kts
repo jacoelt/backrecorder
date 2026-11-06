@@ -120,7 +120,7 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
     debugImplementation(libs.compose.ui.tooling)
-    // Debug-only manifest entry Compose UI tests need to host content.
+    // Debug-only manifest activity that createComposeRule()/createEmptyComposeRule() host in.
     debugImplementation(libs.compose.ui.test.manifest)
 
     // Lifecycle
