@@ -228,7 +228,11 @@ Preconditions, all of them: `Build and test` green, review loop `CLEAN`, PR not 
 gh pr merge "$PR_NUMBER" --squash
 ```
 
-Squash, because the branch's review-round commits are noise on `main`. No approval is required or waited for: the user has standing permission for this skill to merge its own PRs, and the ruleset agrees by requiring zero reviews.
+**Always `--squash`, never a merge commit or a rebase merge.** Every PR lands on `main` as exactly **one** commit. That is a standing rule on this repo, and the reason is rollback: one commit per PR makes reverting a bad change `git revert <sha>` with nothing else to reason about — no merge parents, no partial series — and a release built from `main` maps to a single revertible unit. It also keeps the branch's review-round commits (`fix(review): address self-review round 2` …) off `main`. The ruleset permits merge, squash and rebase alike, so this discipline comes from the skill, not from GitHub: don't read that permission as a choice.
+
+Give the squash commit a real message — the PR title as the subject and a body saying what changed and why — rather than letting GitHub concatenate the branch's commit subjects.
+
+No approval is required or waited for: the user has standing permission for this skill to merge its own PRs, and the ruleset agrees by requiring zero reviews.
 
 **Never bypass the ruleset.** No `--admin`, no editing or disabling the ruleset, no pushing to `main` directly. (With no bypass actors, `--admin` doesn't work anyway — but the point is that a required check that can't go green is a signal to stop and report, not an obstacle to route around.) Do not enable auto-merge (`--auto`) either: it would leave the run "finished" with nothing merged and no one watching.
 
@@ -307,6 +311,7 @@ Then, in prose, state plainly:
 - **Never `git add -A`.** Stage named paths, always.
 - **Never force-push** from this skill. The only force-push in the whole pipeline is the `--force-with-lease` inside the `rebase` skill, on a branch this run created.
 - **Never bypass the `main` ruleset** — no `--admin` merge, no change to the ruleset itself, no direct push to `main`, no auto-merge left running after the run ends. A required check that cannot go green is a stop, not an obstacle.
+- **One commit per PR on `main`, always.** Merge with `--squash` and nothing else, so every change on `main` reverts as a single `git revert <sha>` (Step 10).
 - **Never commit a secret**, and never add one to a workflow. The sensitive-file list in `CLAUDE.md` is absolute.
 - **One issue, one branch, one PR.** If the work turns out to need a second change, finish or stop this one and say so — don't fan out.
 - **Never re-dispatch a failed release**, never dispatch from anything but `main`, never touch `VERSION_CODE_BASE` except to resolve a duplicate-code failure, and never promote beyond `internal`. Alpha, beta and production are not this skill's business.
