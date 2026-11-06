@@ -21,7 +21,7 @@ One issue in, a build on the Play **internal** track out (or a merged PR, when t
 
 Repo: `jacoelt/backrecorder`, trunk `main`, Android app `com.backrecorderapp`. `CLAUDE.md` is the architecture contract. CI is `.github/workflows/ci.yml` (unit tests + minified release build on every PR); the release is `.github/workflows/release.yml` (`workflow_dispatch`, builds a signed AAB and uploads it to Play).
 
-**Pipeline:** Step 0 guards · 1 read the issue (+ label this session) · 2 classify · 3 branch · 4 implement · 5 local gate · 6 review loop · 7 version bump · 8 PR · 9 CI · 10 merge · 11 release · 12 close out · 13 report.
+**Pipeline:** Step 0 guards · 1 read the issue (+ label this session) · 2 classify · 3 branch · 4 implement (+ e2e when a sensitive flow is touched) · 5 local gate · 6 review loop · 7 version bump · 8 PR · 9 CI · 10 merge · 11 release · 12 close out (+ move the session to Testing) · 13 report (+ manual test walkthrough).
 
 **Flags**
 
@@ -129,6 +129,29 @@ git checkout -B "<type>/issue-<N>-<slug>" origin/main
 5. **Never commit** `google-services.json`, `*.jks` / `*.keystore`, `local.properties`, or `.claude/.creds`.
 
 Don't commit yet — Step 5 gates the commit.
+
+### 4b — Sensitive flows and end-to-end coverage
+
+Some of this app's flows can't be meaningfully proven by a unit test, and are the ones where a regression costs a user their recordings, their money, or their privacy. Treat a change as touching a **sensitive flow** when it affects any of:
+
+- the **recording lifecycle** — start/stop/pause/resume, segment rotation, the flush handshake, crash-recovery restart;
+- **permissions** and the foreground service — `RECORD_AUDIO`, notifications, background survival, service type;
+- **billing and the subscription gate** — entitlement checks, any entry point that starts cloud sync;
+- **Drive auth and sync** — grant, silent re-authorization, 401 refresh, account switch and `grantGeneration`, upload, the staging/recovery layout;
+- **user data** — Room migrations, preference defaults, file retention and the 24h buffer, anything that deletes.
+
+When the change touches one of these, check whether the end-to-end test framework from **issue #31** ("Automated test environment") actually exists yet:
+
+```bash
+gh issue view 31 --json state --jq .state
+```
+
+Closed is necessary but **not** sufficient — confirm the harness is really in the repo and wired to CI (a test source set or module the framework uses, its Gradle task, and a job or step in `.github/workflows/ci.yml` that runs it). Trust the repo over the issue state.
+
+- **Framework present** → add **one** focused e2e test for the flow this change touches, as part of this issue's work, and make sure CI runs it. Follow the harness's existing patterns; if adding it means editing `ci.yml`, keep that edit minimal and expect it to be the most conflict-prone file in the PR. One good scenario beats a suite — the triage agent will treat a sprawling test addition as diff growth, and rightly.
+- **Framework absent** (#31 still open, or closed with nothing wired up) → **do not build a test harness here**; that is #31's job, not this issue's. Instead, name in the final report the exact scenario that should be covered once #31 lands, in enough detail to be written from directly.
+
+Either way, say which branch was taken in the final report — including "no sensitive flow touched", so the absence is a stated finding rather than a silence.
 
 ---
 
@@ -280,6 +303,9 @@ The build lands on the internal track as a **completed** release, which means te
 1. **Issue closed?** The `Closes #<N>` line closes it on merge — verify (`gh issue view <N> --json state`) and close it explicitly if it didn't take.
 2. **Comment on the issue** with what shipped: the PR link, the merge commit, and — when `SHIPS=true` — the version name and code now on the internal track, or the fact that the release stopped and why.
 3. **File the follow-ups** the review loop reported (`FOLLOW_UPS`), one issue each, each naming the file and what was found, labelled to match the existing scheme. Link them from the issue comment. Don't file anything vague — if a follow-up can't be stated as a concrete problem in a named file, drop it and mention it in the report instead.
+4. **Move the session to "Testing"** — the same lookup-by-name as Step 1b (`mcp__ccd_sidebar__list_groups` → group named `Testing`, creating it only if missing → `mcp__ccd_sidebar__move_sessions` with `session_ids: ["self"]`). The run is over and what's left is human: the sidebar should say that. Same rules as Step 1b — main session only, never fatal, log a line and carry on if it fails.
+
+   **Only on a completed run** — one that merged, and released when `SHIPS=true`. A run that stopped at a hard stop **stays in "Work"**: it isn't waiting on testing, it's waiting on someone to finish it, and moving it would hide that.
 
 ---
 
@@ -292,6 +318,7 @@ Outcome:   <ON INTERNAL TRACK | MERGED (no release — <reason>) | STOPPED at st
 Branch:    <branch>  →  PR #<pr> (<squash sha>)
 Review:    <rounds> round(s), <applied> fix(es) applied, <skipped> skipped by triage
 CI:        <all green | green after <n> fix(es) | not run — ci.yml not on main yet>
+E2E:       <added <test name> | owed once #31 lands — <scenario> | n/a — no sensitive flow touched>
 Version:   <old> → <new> (versionCode <code>)        # SHIPS=true only
 Release:   <run url> — <conclusion>                   # SHIPS=true only
 Follow-ups: <issues filed, or none>
@@ -300,8 +327,45 @@ Follow-ups: <issues filed, or none>
 Then, in prose, state plainly:
 
 - **What was not verified.** Always. CI proves the thing compiles, is minified cleanly, and passes unit tests; it does not prove the app records audio, that the Drive sync works against a real account, or that the UI does what the issue wanted. Nothing in this pipeline runs the app on a device. Say so — especially when a build has just gone to testers.
+- **Which branch Step 4b took** — the e2e test added, the scenario owed once #31 lands, or that no sensitive flow was touched.
 - Anything triage skipped that the user might disagree with, and anything the reviewers flagged as pre-existing.
 - Where the run stopped, if it stopped, and the single next action that would unblock it.
+
+### The manual test walkthrough
+
+Then print a **walkthrough of what to test by hand**, always, and make it detailed enough to follow without reading the diff. This is not a formality: nothing in the pipeline runs the app, so this list is the entire verification story for the change. It is what the move to "Testing" (Step 12) is announcing.
+
+Build it from what the change actually touches, not from a template:
+
+```
+Manual testing — <version name> (<versionCode>) on the internal track
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Install: <Play internal track, or `./gradlew :app:installDebug`, and whether an
+         UPGRADE over an existing install matters here — it does for anything in Step 4b's
+         data bullet, and a fresh install would hide the bug>
+
+1. <Scenario name — the user-visible behavior the issue asked for>
+   Setup:     <state the device must be in first: permission granted or denied, premium or free,
+               Drive connected or not, an existing recording present, airplane mode …>
+   Steps:     <numbered, concrete taps and waits — "record for 3 minutes" not "record a while">
+   Expect:    <what should happen, specifically enough to be wrong>
+   Watch for: <the failure this change could plausibly cause>
+
+2. <Regression scenario — the nearest thing that already worked and could have broken>
+   …
+
+3. <Edge case the reviewers or the triage agent raised but nothing can prove statically>
+   …
+```
+
+Rules for it:
+
+- **Lead with the issue's own acceptance criteria.** If the issue said "recording should be available immediately", step 1 is someone starting a recording and watching the clock.
+- **Always include at least one regression scenario** next to the new behavior — a change to segment rotation is also a test of plain start-stop recording.
+- **Cover the sensitive flows the change touched** (Step 4b's list), one scenario each, and say when a scenario needs a second device, a second Google account, a real subscription, or an upgrade over an existing install — those are the ones people skip by accident.
+- **Say what cannot be tested from the internal track at all** — anything needing a production purchase, a long elapsed time (the 24h staging buffer), or a device the user doesn't have.
+- **Three to six scenarios.** A list nobody reads verifies nothing; if the change genuinely needs more, say which two or three matter most and mark the rest optional.
+- Keep it in the terminal report. Don't write it to a file or an artifact unless the user asks.
 
 ---
 
@@ -313,6 +377,8 @@ Then, in prose, state plainly:
 - **Never bypass the `main` ruleset** — no `--admin` merge, no change to the ruleset itself, no direct push to `main`, no auto-merge left running after the run ends. A required check that cannot go green is a stop, not an obstacle.
 - **One commit per PR on `main`, always.** Merge with `--squash` and nothing else, so every change on `main` reverts as a single `git revert <sha>` (Step 10).
 - **Never commit a secret**, and never add one to a workflow. The sensitive-file list in `CLAUDE.md` is absolute.
+- **Never build the e2e harness here.** Step 4b adds at most one test to a framework that already exists; standing up the framework is issue #31's work, and doing it inside another issue's PR is scope creep of the worst kind.
+- **The manual walkthrough is mandatory on every completed run** (Step 13), because nothing in this pipeline runs the app. Never replace it with "test the change".
 - **One issue, one branch, one PR.** If the work turns out to need a second change, finish or stop this one and say so — don't fan out.
 - **Never re-dispatch a failed release**, never dispatch from anything but `main`, never touch `VERSION_CODE_BASE` except to resolve a duplicate-code failure, and never promote beyond `internal`. Alpha, beta and production are not this skill's business.
 - **Nothing in the Play Console by hand.** The release path is the workflow; if the workflow can't do it, the run stops and the user decides.
