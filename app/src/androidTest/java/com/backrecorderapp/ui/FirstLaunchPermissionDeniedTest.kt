@@ -108,20 +108,31 @@ class FirstLaunchPermissionDeniedTest {
         // Independent, per-permission evidence that each one really was put to the user: the
         // rationale flag flips only once that specific permission has been seen and declined, and
         // clearPackageData guarantees this run's decline is the first (a second would clear it).
-        requestedPermissions.forEach {
-            assertFalse("Declining must not grant $it", isGranted(it))
-            assertTrue(
-                "$it was never actually presented to the user",
-                composeRule.activity.shouldShowRequestPermissionRationale(it)
-            )
+        // Polled rather than read once — the controller writes the flag from its own process, so
+        // the dialog leaving the screen does not mean the write has landed.
+        requestedPermissions.forEach { permission ->
+            assertFalse("Declining must not grant $permission", isGranted(permission))
+            composeRule.waitUntil(timeoutMillis = FirstLaunchScreens.AWAIT_TIMEOUT_MS) {
+                composeRule.activity.shouldShowRequestPermissionRationale(permission)
+            }
         }
 
         // A declined microphone must leave a coherent screen: still on MainScreen, still idle, and
-        // the record button still there to try again — not a crash and not a dead control.
+        // the record button still working — not a crash and not a dead control.
         composeRule.waitForIdle()
         composeRule.onNodeWithText(FirstLaunchScreens.NOT_RECORDING).assertIsDisplayed()
         composeRule.onNodeWithText(startRecording).assertIsEnabled()
         assertFalse("A declined microphone must not start the service", RecordingService.isRunning.value)
+
+        // "Enabled" is not the same as "alive": press it again and the app must ask once more
+        // rather than sit there. Without this the idle assertions above would also hold for a
+        // button whose handler had stopped doing anything.
+        composeRule.onNodeWithText(startRecording).performClick()
+        assertEquals(
+            "A second attempt after declining must prompt again, not silently do nothing",
+            1,
+            SystemPermissionDialog.denyAll(device, expected = 1)
+        )
     }
 
     private fun isGranted(permission: String): Boolean =

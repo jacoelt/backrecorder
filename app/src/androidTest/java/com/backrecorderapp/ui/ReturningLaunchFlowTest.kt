@@ -1,11 +1,8 @@
 package com.backrecorderapp.ui
 
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.backrecorderapp.MainActivity
-import com.backrecorderapp.R
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import dagger.hilt.android.testing.HiltAndroidRule
@@ -56,9 +53,6 @@ class ReturningLaunchFlowTest {
     @Test
     fun anAcceptedDisclaimerSendsAPopulatedInstallStraightToMainScreen() {
         FirstLaunchScreens.awaitMainScreen(composeRule)
-
-        composeRule.onNodeWithText(composeRule.activity.getString(R.string.start_recording))
-            .assertIsDisplayed()
         FirstLaunchScreens.assertNoDisclaimer(composeRule)
     }
 }

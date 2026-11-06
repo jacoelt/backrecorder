@@ -2,6 +2,7 @@ package com.backrecorderapp.ui
 
 import android.Manifest
 import android.content.Context
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -85,14 +86,23 @@ class FirstLaunchFlowTest {
         FirstLaunchScreens.acceptDisclaimer(composeRule)
         FirstLaunchScreens.awaitIdleMainScreen(composeRule)
 
-        // `acceptDisclaimer()` navigates synchronously while the view model writes the preference
-        // on its own scope, so reaching MainScreen does not imply the write landed — poll for it.
-        composeRule.waitUntil(timeoutMillis = FirstLaunchScreens.AWAIT_TIMEOUT_MS) {
-            runBlocking { appPreferences.disclaimerAccepted.first() }
-        }
-
+        awaitAcceptancePersisted()
         recordAndStop()
-        assertDisclaimerDoesNotReturnOnRelaunch()
+        assertDisclaimerSurvivesRecreation()
+    }
+
+    /**
+     * `acceptDisclaimer()` navigates synchronously while the view model writes the preference on
+     * its own scope, so reaching `MainScreen` does not imply the write landed.
+     */
+    private fun awaitAcceptancePersisted() {
+        try {
+            composeRule.waitUntil(timeoutMillis = FirstLaunchScreens.AWAIT_TIMEOUT_MS) {
+                runBlocking { appPreferences.disclaimerAccepted.first() }
+            }
+        } catch (e: ComposeTimeoutException) {
+            throw AssertionError("disclaimerAccepted was never persisted after accepting", e)
+        }
     }
 
     /** With both grants held, the idle controls must work without any dialog intervening. */
@@ -115,11 +125,17 @@ class FirstLaunchFlowTest {
     }
 
     /**
-     * The acceptance has to survive a relaunch, not merely reach DataStore. Recreating the activity
-     * re-runs `NavGraph`'s start-destination decision against the stored value, which is the part a
-     * preference assertion on its own cannot reach.
+     * The disclaimer must not come back once accepted. Be precise about how much this proves:
+     * `recreate()` is a configuration-change style restart, so the activity is rebuilt but the
+     * `ViewModelStore` is retained and `NavHost` restores its saved back stack — it shows the
+     * screen survives recreation, not that a **cold** start re-decides correctly.
+     *
+     * The cold-start half is [ReturningLaunchFlowTest], which launches a fresh process against a
+     * store that already has the acceptance in it. Splitting it that way is forced rather than
+     * chosen: the orchestrator clears package data between tests, so no single test can both
+     * accept through the UI and then cold-start with that acceptance still on disk.
      */
-    private fun assertDisclaimerDoesNotReturnOnRelaunch() {
+    private fun assertDisclaimerSurvivesRecreation() {
         composeRule.activityRule.scenario.recreate()
 
         FirstLaunchScreens.awaitMainScreen(composeRule)
