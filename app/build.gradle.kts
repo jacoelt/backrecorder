@@ -52,7 +52,8 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Instruments the app with HiltTestApplication so @HiltAndroidTest can inject.
+        testInstrumentationRunner = "com.backrecorderapp.HiltTestRunner"
     }
 
     signingConfigs {
@@ -119,6 +120,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
     debugImplementation(libs.compose.ui.tooling)
+    // Debug-only manifest entry for the host activity Compose UI tests render content in.
+    debugImplementation(libs.compose.ui.test.manifest)
 
     // Lifecycle
     implementation(libs.lifecycle.runtime.ktx)
@@ -165,6 +168,10 @@ dependencies {
     testImplementation(libs.core.testing)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.room.testing)
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.compiler)
     androidTestImplementation(libs.runner)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.room.testing)
