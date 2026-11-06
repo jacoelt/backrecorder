@@ -58,6 +58,9 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     override suspend fun getSubscriptionStatus(): SubscriptionStatus = _subscriptionStatus.value
 
-    override fun getTrialDaysRemaining(): Int =
-        if (_subscriptionStatus.value == SubscriptionStatus.TRIAL) 30 else 0
+    /**
+     * Always 0. Deliberately not a copy of the production trial length - nothing gated depends on
+     * it, and duplicating the constant here would only let the two drift apart unnoticed.
+     */
+    override fun getTrialDaysRemaining(): Int = 0
 }

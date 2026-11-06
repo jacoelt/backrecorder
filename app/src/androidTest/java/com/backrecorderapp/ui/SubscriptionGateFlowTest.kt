@@ -1,5 +1,6 @@
 package com.backrecorderapp.ui
 
+import android.net.Uri
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -8,6 +9,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.backrecorderapp.MainActivity
@@ -16,7 +18,10 @@ import com.backrecorderapp.data.billing.FakeBillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
+import com.backrecorderapp.domain.SaveRecordingUseCase
+import com.backrecorderapp.domain.SaveResult
 import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.notification.NotificationChannels
 import dagger.hilt.android.testing.HiltAndroidRule
@@ -33,12 +38,19 @@ import org.junit.runner.RunWith
 import javax.inject.Inject
 
 /**
- * The premium boundary, end to end: Drive sync and the extended save range are refused at FREE
- * and granted at ACTIVE, through the real Hilt graph with only billing faked.
+ * The premium boundary: Drive sync and the extended save range are refused at FREE and granted at
+ * ACTIVE, through the real Hilt graph with only billing faked.
  *
  * Billing comes from [FakeBillingRepository] via `@TestInstallIn`, the same seam shape the
  * microphone uses. Nothing here simulates a purchase - the app only ever asks billing what the
  * subscription *is*, because purchases happen in the Play Store.
+ *
+ * Two of the three entry points are driven through their real caller: the cloud-upload toggle and
+ * the Connect Drive button go through the settings UI, and the extended save range goes through
+ * [SaveRecordingUseCase]. The remaining checks call [SubscriptionGate] directly, and say so.
+ *
+ * **Not covered here:** the app-launch cloud-sync resume end to end. See
+ * [theCloudGateRefusesAFreeUserWhoseStoredModeSaysSync] for what is asserted instead and why.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -47,6 +59,7 @@ class SubscriptionGateFlowTest {
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var billing: FakeBillingRepository
     @Inject lateinit var subscriptionGate: SubscriptionGate
+    @Inject lateinit var saveRecordingUseCase: SaveRecordingUseCase
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -57,6 +70,11 @@ class SubscriptionGateFlowTest {
      * before any `@Before` runs. Written through [AppPreferences] rather than by deleting the
      * backing file, because the `preferencesDataStore` delegate caches in-process and a delete is
      * a silent no-op once a sibling test has read prefs.
+     *
+     * DataStore is the one piece of state that genuinely outlives a test: the Hilt component - and
+     * with it the `@Singleton` billing fake - is rebuilt per test, but the preference file is
+     * process-wide and shared with every other instrumented class. So the upload mode is restored
+     * in `after()` rather than left wherever a test happened to leave it.
      */
     @get:Rule(order = 1)
     val seedPreferences = object : ExternalResource() {
@@ -71,9 +89,10 @@ class SubscriptionGateFlowTest {
                 appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
                 appPreferences.setDriveDisconnected(false)
             }
-            // Every test states its own entitlement; starting from "billing has not answered"
-            // keeps one test's status from leaking into the next through the @Singleton fake.
-            billing.setUnresolved()
+        }
+
+        override fun after() {
+            runBlocking { appPreferences.setCloudUploadMode(CloudUploadMode.OFF) }
         }
     }
 
@@ -94,26 +113,48 @@ class SubscriptionGateFlowTest {
         }
     }
 
+    private fun awaitUpgradeDialog() {
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText(string(R.string.upgrade_cloud_title))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText(string(R.string.upgrade_cloud_title)).assertIsDisplayed()
+    }
+
     private fun currentUploadMode(): CloudUploadMode =
         runBlocking { appPreferences.cloudUploadMode.first() }
 
-    // --- Drive sync, through the settings toggle ---------------------------------------------
+    // --- Drive sync, through the settings UI --------------------------------------------------
 
     @Test
     fun freeUserTurningOnCloudUploadIsRefusedAndOfferedAnUpgrade() {
         billing.setStatus(SubscriptionStatus.FREE)
         openSettings()
 
-        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only)).performClick()
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
 
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText(string(R.string.upgrade_cloud_title))
-                .fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText(string(R.string.upgrade_cloud_title)).assertIsDisplayed()
+        awaitUpgradeDialog()
 
         // The refusal has to reach the stored setting too: an upgrade dialog over a mode that
         // was quietly persisted would still leave the resumed sync loop eligible to run.
+        assertEquals(CloudUploadMode.OFF, currentUploadMode())
+    }
+
+    /**
+     * Connect Drive is a second premium entry point, guarded separately from the mode toggle in
+     * `SettingsViewModel.connectDrive()`. It is reachable while the mode is still OFF, so a gate
+     * that only covered the toggle would let a free user hand over an account.
+     */
+    @Test
+    fun freeUserConnectingDriveIsRefusedAndOfferedAnUpgrade() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_drive_connect))
+            .performScrollTo().performClick()
+
+        awaitUpgradeDialog()
         assertEquals(CloudUploadMode.OFF, currentUploadMode())
     }
 
@@ -122,20 +163,30 @@ class SubscriptionGateFlowTest {
         billing.setStatus(SubscriptionStatus.ACTIVE)
         openSettings()
 
-        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only)).performClick()
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
 
         composeRule.waitUntil(timeoutMillis = 10_000) {
             currentUploadMode() == CloudUploadMode.WIFI_ONLY
         }
-        assertEquals(CloudUploadMode.WIFI_ONLY, currentUploadMode())
 
         // Whether Drive authorization then succeeds is not this test's business - there is no
-        // Google account on a CI emulator - but the gate must never have interrupted.
+        // Google account on a CI emulator - but the gate must never have interrupted. Settle the
+        // UI first, so a refusal posted just after the write is not missed.
+        composeRule.waitForIdle()
         composeRule.onAllNodesWithText(string(R.string.upgrade_cloud_title)).assertCountEquals(0)
     }
 
-    // --- Extended recording (the full 24h save range) -----------------------------------------
+    // --- Extended recording, through SaveRecordingUseCase -------------------------------------
 
+    /**
+     * Driven through the real caller rather than the gate, so deleting the gate check from
+     * [SaveRecordingUseCase] fails this too.
+     *
+     * At ACTIVE the save gets past the gate and then stops on "no recorded data", because no
+     * recording exists - that [SaveResult.Error] *is* the evidence the gate let it through, and it
+     * needs no microphone.
+     */
     @Test
     fun theExtendedSaveRangeIsRefusedAtFreeAndGrantedAtActive() = runBlocking {
         // Well outside the 15-minute free window, and outside its one-minute grace.
@@ -143,23 +194,24 @@ class SubscriptionGateFlowTest {
         val startTime = now - 2 * 60 * 60 * 1000L
 
         billing.setStatus(SubscriptionStatus.FREE)
-        assertTrue(
+        assertEquals(
             "a free user must not reach the full buffer",
-            subscriptionGate.checkSaveAccess(startTime, now) is GateResult.Blocked
+            SaveResult.UpgradeRequired(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT),
+            saveRecordingUseCase.execute(startTime, now, Uri.EMPTY)
         )
 
         billing.setStatus(SubscriptionStatus.ACTIVE)
         assertTrue(
-            "a subscriber must reach the full buffer",
-            subscriptionGate.checkSaveAccess(startTime, now) is GateResult.Allowed
+            "a subscriber must get past the gate and fail only for want of a recording",
+            saveRecordingUseCase.execute(startTime, now, Uri.EMPTY) is SaveResult.Error
         )
     }
 
     // --- The app-launch resume path -----------------------------------------------------------
 
     /**
-     * `BackRecorderApp.resumeCloudSync()` restarts uploading at launch whenever the stored mode
-     * is not OFF and the Drive grant is intact - the entry point most likely to leak premium
+     * `BackRecorderApp.resumeCloudSync()` restarts uploading at launch whenever the stored mode is
+     * not OFF and the Drive grant is intact - the entry point most likely to leak premium
      * functionality, because no user action stands behind it.
      *
      * It deliberately does not consult the gate itself: at that moment billing has only just been
@@ -168,14 +220,21 @@ class SubscriptionGateFlowTest {
      * `CloudSyncManager.canSyncNow()`, which every tick of the resumed loop passes through and
      * which additionally waits on `statusResolved`.
      *
-     * This asserts that contract against the real graph, in exactly the state a launch resume
-     * leaves behind: the stored mode says sync, and the gate still refuses a FREE user - while
-     * an unanswered billing query counts as neither entitlement nor refusal.
+     * **This asserts the gate, not the loop.** Driving the resumed loop itself would need a
+     * controllable `DriveCloudStorage`: `canSyncNow()` returns false on `!isInitialized` before
+     * the gate can matter, so on an emulator with no Drive grant the loop is inert either way and
+     * any assertion on it would pass with the gate deleted. That test is owed once the Drive fake
+     * lands (issue #42). What is checked here is the state a launch resume leaves behind - stored
+     * mode says sync - and that the gate the loop consults still refuses a free user in it.
      */
     @Test
-    fun theResumedSyncLoopIsStillGatedForAFreeUser() = runBlocking {
+    fun theCloudGateRefusesAFreeUserWhoseStoredModeSaysSync() = runBlocking {
         appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
-        appPreferences.setDriveDisconnected(false)
+        assertEquals(
+            "precondition: the stored mode is the one a launch resume would act on",
+            CloudUploadMode.ALWAYS_ON,
+            currentUploadMode()
+        )
 
         billing.setUnresolved()
         assertFalse(
@@ -187,6 +246,14 @@ class SubscriptionGateFlowTest {
         assertTrue(
             "a stored upload mode must not let a free user resume cloud sync",
             subscriptionGate.checkCloudAccess() is GateResult.Blocked
+        )
+
+        // TRIAL counts as premium in SubscriptionGate.isPremium(), so it is covered explicitly -
+        // a gate narrowed to ACTIVE alone would silently cut off every trial user.
+        billing.setStatus(SubscriptionStatus.TRIAL)
+        assertTrue(
+            "a trial user's sync must resume",
+            subscriptionGate.checkCloudAccess() is GateResult.Allowed
         )
 
         billing.setStatus(SubscriptionStatus.ACTIVE)
