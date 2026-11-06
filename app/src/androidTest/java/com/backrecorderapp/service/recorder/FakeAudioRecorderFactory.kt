@@ -21,6 +21,7 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
     private val lock = Object()
     private val started = mutableListOf<FakeAudioRecorder>()
     private val finalized = mutableListOf<File>()
+    private var failure: Throwable? = null
 
     override fun create(): AudioRecorder = FakeAudioRecorder(
         onStarted = { recorder ->
@@ -32,6 +33,12 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
         onFinalized = { file ->
             synchronized(lock) {
                 finalized += file
+                lock.notifyAll()
+            }
+        },
+        onFailed = { error ->
+            synchronized(lock) {
+                if (failure == null) failure = error
                 lock.notifyAll()
             }
         }
@@ -60,15 +67,22 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
     /** Segments finalized so far. Only a snapshot — use [awaitFinalizedFiles] to wait for them. */
     fun finalizedCount(): Int = synchronized(lock) { finalized.size }
 
+    /** True once every segment the service opened has also been closed. */
+    fun isSettled(): Boolean = synchronized(lock) { started.size == finalized.size }
+
     /** Drops the recorded history, so one test's segments cannot satisfy another's await. */
     fun reset() = synchronized(lock) {
         started.clear()
         finalized.clear()
+        failure = null
     }
 
     private fun awaitLocked(timeoutMs: Long, condition: () -> Boolean) {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         while (!condition()) {
+            // The service swallows whatever a recorder throws, so surface it here instead of
+            // letting the real failure arrive as an unexplained timeout.
+            failure?.let { throw AssertionError("A segment failed to finalize", it) }
             val remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())
             check(remainingMs > 0) {
                 "Timed out after ${timeoutMs}ms waiting on the recording service " +

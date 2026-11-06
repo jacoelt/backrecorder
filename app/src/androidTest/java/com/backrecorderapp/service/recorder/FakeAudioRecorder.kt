@@ -23,7 +23,8 @@ import kotlin.math.sin
  */
 class FakeAudioRecorder(
     private val onStarted: (FakeAudioRecorder) -> Unit = {},
-    private val onFinalized: (File) -> Unit = {}
+    private val onFinalized: (File) -> Unit = {},
+    private val onFailed: (Throwable) -> Unit = {}
 ) : AudioRecorder {
 
     private val lock = Any()
@@ -57,11 +58,23 @@ class FakeAudioRecorder(
                     setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE_BYTES)
                 }
 
-            codec = MediaCodec.createEncoderByType(MIME_TYPE).apply {
+            val encoder = MediaCodec.createEncoderByType(MIME_TYPE).apply {
                 configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 start()
             }
-            muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            try {
+                muxer = MediaMuxer(
+                    outputFile.absolutePath,
+                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+                )
+            } catch (e: Throwable) {
+                // Leave nothing started behind: an encoder stranded here would never be released,
+                // and a non-null `codec` would make every later start() fail its single-use check.
+                runCatching { encoder.stop() }
+                runCatching { encoder.release() }
+                throw e
+            }
+            codec = encoder
         }
         // Announced only once the recorder can accept audio, so a test that waits for a segment to
         // open cannot win the race against the service and call feed() on an unstarted recorder.
@@ -80,6 +93,7 @@ class FakeAudioRecorder(
     }
 
     override fun stop() {
+        var failure: Throwable? = null
         val finalized: File? = synchronized(lock) {
             val encoder = codec
             if (encoder == null || stopped) {
@@ -97,24 +111,31 @@ class FakeAudioRecorder(
 
                     queueInput(encoder, ByteArray(0), endOfStream = true)
                     drain(endOfStream = true)
+                } catch (e: Throwable) {
+                    failure = e
                 } finally {
                     // Release whatever happened above: a throw mid-drain would otherwise strand a
-                    // native encoder and muxer for the rest of the test run.
+                    // native encoder and muxer for the rest of the test run. Every call is
+                    // guarded so a failing release cannot bury the original failure.
                     runCatching { encoder.stop() }
-                    encoder.release()
+                    runCatching { encoder.release() }
                     codec = null
 
                     muxer?.let {
                         if (muxerStarted) runCatching { it.stop() }
-                        it.release()
+                        runCatching { it.release() }
                     }
                     muxer = null
                 }
 
-                outputFile
+                if (failure == null) outputFile else null
             }
         }
+        // RecordingService catches and only logs whatever stop() throws, so without this the test
+        // would see a failure here as an unexplained await timeout.
+        failure?.let { onFailed(it) }
         finalized?.let(onFinalized)
+        failure?.let { throw it }
     }
 
     /** Constant and non-zero, so waveform capture records something deterministic. */
@@ -145,7 +166,13 @@ class FakeAudioRecorder(
                 drain(endOfStream = false)
                 continue
             }
-            val buffer: ByteBuffer = encoder.getInputBuffer(index) ?: continue
+            val buffer: ByteBuffer = encoder.getInputBuffer(index) ?: run {
+                // Hand the index back rather than abandoning it, or the codec runs out of input
+                // buffers and the loop starves. Counted, so this path is bounded too.
+                encoder.queueInputBuffer(index, 0, 0, 0L, 0)
+                check(++idleSpins < MAX_INPUT_SPINS) { "Encoder returned no input buffer" }
+                continue
+            }
             buffer.clear()
             val size = maxOf(minOf(buffer.capacity(), pcm.size - offset), 0)
             if (size > 0) buffer.put(pcm, offset, size)

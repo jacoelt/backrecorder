@@ -88,7 +88,13 @@ class RecordingSegmentTest {
     fun tearDown() {
         try {
             RecordingService.stop(context)
-            runBlocking { awaitRunning(expected = false) }
+            runBlocking {
+                awaitRunning(expected = false)
+                // `onDestroy` clears `isRunning` first and finalizes afterwards, so wait for the
+                // recorders to settle too — otherwise the cleanup below races a segment the
+                // service is still writing and leaves its row behind for the next test.
+                awaitSettledRecorders()
+            }
         } finally {
             scenario?.close()
             scenario = null
@@ -232,6 +238,14 @@ class RecordingSegmentTest {
     private suspend fun awaitNextWallClockSecond(marginMs: Long) {
         val second = System.currentTimeMillis() / 1000
         while (System.currentTimeMillis() < (second + 1) * 1000 + marginMs) {
+            delay(POLL_INTERVAL_MS)
+        }
+    }
+
+    private suspend fun awaitSettledRecorders() = withTimeout(
+        "Recorders never settled: the service is still finalizing a segment"
+    ) {
+        while (!recorderFactory.isSettled()) {
             delay(POLL_INTERVAL_MS)
         }
     }
