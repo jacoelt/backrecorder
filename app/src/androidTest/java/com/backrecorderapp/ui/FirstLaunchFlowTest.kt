@@ -2,15 +2,10 @@ package com.backrecorderapp.ui
 
 import android.Manifest
 import android.content.Context
-import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.test.swipeUp
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
@@ -24,8 +19,6 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -34,23 +27,21 @@ import javax.inject.Inject
 
 /**
  * The happy path of first launch on a fresh install: cold start → `DisclaimerScreen` → accept →
- * `MainScreen` idle → record.
+ * `MainScreen` idle → record, and the disclaimer does not come back on the next launch.
  *
- * Preferences are **seeded, not wiped**. `preferencesDataStore` caches per process, so deleting the
- * backing file is a silent no-op once anything has read preferences; the value written through
- * [AppPreferences] is the one `NavGraph` will see. The seed runs in a rule ordered between the Hilt
- * rule and the compose rule because the compose rule is what launches the activity, and `NavGraph`
- * fixes its start destination from `disclaimerAccepted` on first composition — seeding from
- * `@Before` is already too late, and the test would silently start on `MainScreen` and assert
- * nothing.
+ * Preferences are **seeded, not wiped**: `preferencesDataStore` is a process-wide singleton with
+ * its own cache, so writing through [AppPreferences] is the only way to be sure `NavGraph` sees
+ * the value. The seed runs in a rule ordered before the compose rule because that rule is what
+ * launches the activity, and `NavGraph` fixes its start destination on first composition — seeding
+ * from `@Before` is already too late and the test would silently start on `MainScreen`. See
+ * `ComposeHarnessSmokeTest` for the canonical rule shape.
  *
- * Permissions are granted **before** the activity launches, with [GrantPermissionRule]. That is not
- * only convenience: granting `RECORD_AUDIO` to an already-running process makes the platform
- * SIGKILL it, and under instrumentation that is the test run itself. Driving the grant dialog is
- * therefore only viable for the *denial* branch, which is
- * [FirstLaunchPermissionDeniedTest]'s job — that class is what proves both permissions are really
- * requested. The grants here are wiped between tests by the orchestrator's `clearPackageData`, so
- * they cannot leak into it.
+ * Permissions are granted **before** the activity launches, with [GrantPermissionRule]. That is
+ * not just convenience: granting `RECORD_AUDIO` to an already-running process makes the platform
+ * SIGKILL it, and under instrumentation that is the test run. Driving the real dialogs is
+ * therefore only viable when declining, which is [FirstLaunchPermissionDeniedTest]'s job — that
+ * class is what proves both permissions are actually requested. These grants cannot leak into it,
+ * because the orchestrator clears package data between tests.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -59,8 +50,6 @@ class FirstLaunchFlowTest {
     @Inject lateinit var appPreferences: AppPreferences
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
-
-    private var disclaimerWasAccepted = false
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -79,10 +68,7 @@ class FirstLaunchFlowTest {
             // created do not exist; posting the foreground notification to a missing channel kills
             // the process.
             NotificationChannels.createAll(context)
-            runBlocking {
-                disclaimerWasAccepted = appPreferences.disclaimerAccepted.first()
-                appPreferences.setDisclaimerAccepted(false)
-            }
+            runBlocking { appPreferences.setDisclaimerAccepted(false) }
         }
     }
 
@@ -92,7 +78,6 @@ class FirstLaunchFlowTest {
     @After
     fun tearDown() {
         RecordingService.stop(context)
-        runBlocking { appPreferences.setDisclaimerAccepted(disclaimerWasAccepted) }
     }
 
     @Test
@@ -100,13 +85,18 @@ class FirstLaunchFlowTest {
         FirstLaunchScreens.acceptDisclaimer(composeRule)
         FirstLaunchScreens.awaitIdleMainScreen(composeRule)
 
-        assertTrue(
-            "Accepting the disclaimer must persist, or it reappears on the next launch",
+        // `acceptDisclaimer()` navigates synchronously while the view model writes the preference
+        // on its own scope, so reaching MainScreen does not imply the write landed — poll for it.
+        composeRule.waitUntil(timeoutMillis = FirstLaunchScreens.AWAIT_TIMEOUT_MS) {
             runBlocking { appPreferences.disclaimerAccepted.first() }
-        )
+        }
 
-        // With both grants already held, MainScreen must go straight to recording rather than
-        // asking again — the idle controls it landed on have to actually work.
+        recordAndStop()
+        assertDisclaimerDoesNotReturnOnRelaunch()
+    }
+
+    /** With both grants held, the idle controls must work without any dialog intervening. */
+    private fun recordAndStop() {
         val stopRecording = composeRule.activity.getString(R.string.stop_recording)
         composeRule.onNodeWithText(composeRule.activity.getString(R.string.start_recording))
             .performClick()
@@ -114,60 +104,25 @@ class FirstLaunchFlowTest {
         composeRule.waitUntil(timeoutMillis = FirstLaunchScreens.AWAIT_TIMEOUT_MS) {
             composeRule.onAllNodesWithText(stopRecording).fetchSemanticsNodes().isNotEmpty()
         }
-        assertTrue("RecordingService should be running once recording starts", RecordingService.isRunning.value)
 
         composeRule.onNodeWithText(stopRecording).performClick()
-    }
-}
 
-/**
- * Screen steps shared by the two first-launch tests, kept out of both so neither class has to
- * inherit from the other to reuse them.
- */
-internal object FirstLaunchScreens {
-
-    const val AWAIT_TIMEOUT_MS = 30_000L
-    const val NOT_RECORDING = "Not recording"
-
-    private const val MAX_DISCLAIMER_SWIPES = 20
-
-    /** Scrolls the disclaimer to the bottom — the accept button stays disabled until then. */
-    fun acceptDisclaimer(rule: androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, MainActivity>) {
-        val title = rule.activity.getString(R.string.disclaimer_title)
-
-        // The first frame is a spinner while DataStore loads, so wait for the screen itself.
-        rule.waitUntil(timeoutMillis = AWAIT_TIMEOUT_MS) {
-            rule.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty()
+        // Waiting the service out keeps the stop half of the flow asserted, and stops the
+        // orchestrator's `pm clear` racing a service that is still shutting down.
+        composeRule.waitUntil(timeoutMillis = FirstLaunchScreens.AWAIT_TIMEOUT_MS) {
+            !RecordingService.isRunning.value
         }
-        rule.onNodeWithText(title).assertIsDisplayed()
-
-        val accept = rule.activity.getString(R.string.disclaimer_accept)
-        var swipes = 0
-        while (!isEnabled(rule, accept) && swipes < MAX_DISCLAIMER_SWIPES) {
-            rule.onNode(hasScrollAction()).performTouchInput { swipeUp() }
-            rule.waitForIdle()
-            swipes++
-        }
-
-        rule.onNodeWithText(accept).assertIsEnabled()
-        rule.onNodeWithText(accept).performClick()
     }
 
-    fun awaitIdleMainScreen(rule: androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, MainActivity>) {
-        val startRecording = rule.activity.getString(R.string.start_recording)
-        rule.waitUntil(timeoutMillis = AWAIT_TIMEOUT_MS) {
-            rule.onAllNodesWithText(startRecording).fetchSemanticsNodes().isNotEmpty()
-        }
-        rule.onNodeWithText(NOT_RECORDING).assertIsDisplayed()
-        rule.onNodeWithText(startRecording).assertIsEnabled()
-        assertFalse(
-            "MainScreen's idle state is driven by RecordingService.isRunning",
-            RecordingService.isRunning.value
-        )
-    }
+    /**
+     * The acceptance has to survive a relaunch, not merely reach DataStore. Recreating the activity
+     * re-runs `NavGraph`'s start-destination decision against the stored value, which is the part a
+     * preference assertion on its own cannot reach.
+     */
+    private fun assertDisclaimerDoesNotReturnOnRelaunch() {
+        composeRule.activityRule.scenario.recreate()
 
-    private fun isEnabled(
-        rule: androidx.compose.ui.test.junit4.AndroidComposeTestRule<*, MainActivity>,
-        text: String
-    ): Boolean = runCatching { rule.onNodeWithText(text).assertIsEnabled() }.isSuccess
+        FirstLaunchScreens.awaitMainScreen(composeRule)
+        FirstLaunchScreens.assertNoDisclaimer(composeRule)
+    }
 }
