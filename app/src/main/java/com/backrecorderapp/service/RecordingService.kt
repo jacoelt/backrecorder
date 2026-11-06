@@ -6,8 +6,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.media.MediaRecorder
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
@@ -20,6 +18,8 @@ import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
+import com.backrecorderapp.service.recorder.AudioRecorder
+import com.backrecorderapp.service.recorder.AudioRecorderFactory
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -80,10 +80,11 @@ class RecordingService : Service() {
     @Inject lateinit var segmentManager: SegmentManager
     @Inject lateinit var waveformRepository: WaveformRepository
     @Inject lateinit var appPreferences: AppPreferences
+    @Inject lateinit var audioRecorderFactory: AudioRecorderFactory
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val rotationMutex = Mutex()
-    private var mediaRecorder: MediaRecorder? = null
+    private var audioRecorder: AudioRecorder? = null
     private var currentSegment: SegmentEntity? = null
     private var currentWaveformFile: File? = null
     private var amplitudeBuffer = mutableListOf<Float>()
@@ -174,25 +175,9 @@ class RecordingService : Service() {
         currentSegment = segment
 
         try {
-            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(this)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }
-
-            recorder.apply {
-                setAudioSource(MediaRecorder.AudioSource.MIC)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioSamplingRate(16000)
-                setAudioEncodingBitRate(32000)
-                setAudioChannels(1)
-                setOutputFile(audioFile.absolutePath)
-                prepare()
-                start()
-            }
-            mediaRecorder = recorder
+            val recorder = audioRecorderFactory.create()
+            recorder.start(audioFile)
+            audioRecorder = recorder
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
         }
@@ -204,7 +189,7 @@ class RecordingService : Service() {
             while (isActive) {
                 delay(WaveformRepository.SAMPLE_INTERVAL_MS)
                 val amplitude = try {
-                    mediaRecorder?.maxAmplitude?.let {
+                    audioRecorder?.maxAmplitude()?.let {
                         // Normalize to 0.0-1.0 range (max amplitude is ~32767 for 16-bit)
                         (it / 32767f).coerceIn(0f, 1f)
                     } ?: 0f
@@ -244,14 +229,11 @@ class RecordingService : Service() {
 
     private fun stopCurrentRecording() {
         try {
-            mediaRecorder?.apply {
-                stop()
-                release()
-            }
+            audioRecorder?.stop()
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping recorder", e)
         }
-        mediaRecorder = null
+        audioRecorder = null
     }
 
     private fun createNotification(): Notification {

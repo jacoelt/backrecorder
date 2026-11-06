@@ -169,6 +169,9 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.room.testing)
     androidTestImplementation(libs.runner)
+    // GrantPermissionRule: RECORD_AUDIO gates the microphone foreground service type, which the
+    // recording service starts even when a test has swapped the recorder for a fake.
+    androidTestImplementation(libs.test.rules)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.test.ext.junit)

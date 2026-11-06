@@ -1,14 +1,13 @@
 package com.backrecorderapp
 
 import android.app.Application
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.util.Log
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.notification.NotificationChannels
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +36,7 @@ class BackRecorderApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannels()
+        NotificationChannels.createAll(this)
         billingRepository.connect()
         resumeCloudSync()
     }
@@ -70,37 +69,4 @@ class BackRecorderApp : Application() {
         }
     }
 
-    private fun createNotificationChannels() {
-        val notificationManager = getSystemService(NotificationManager::class.java)
-
-        val recordingChannel = NotificationChannel(
-            RECORDING_CHANNEL_ID,
-            "Recording",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Ongoing recording notification"
-            setShowBadge(false)
-        }
-
-        val cloudChannel = NotificationChannel(
-            CLOUD_CHANNEL_ID,
-            "Cloud Sync",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Cloud storage sync status"
-            setShowBadge(false)
-        }
-
-        val recoveryChannel = NotificationChannel(
-            RECOVERY_CHANNEL_ID,
-            "Recovery",
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "Important notifications about recovered recordings"
-        }
-
-        notificationManager.createNotificationChannels(
-            listOf(recordingChannel, cloudChannel, recoveryChannel)
-        )
-    }
 }
