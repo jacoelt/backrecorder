@@ -1,5 +1,9 @@
 package com.backrecorderapp.ui.settings
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,15 +25,16 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import android.app.Activity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -49,7 +54,22 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
+    val driveError by viewModel.driveError.collectAsState()
+    val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
+
+    val consentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onConsentResult(result.data)
+    }
+
+    LaunchedEffect(consentRequest) {
+        consentRequest?.let { pendingIntent ->
+            viewModel.onConsentLaunched()
+            consentLauncher.launch(IntentSenderRequest.Builder(pendingIntent).build())
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -122,6 +142,16 @@ fun SettingsScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
 
+            DriveAccountRow(
+                connected = state.driveConnected,
+                needsReauth = state.driveNeedsReauth,
+                storageFull = state.driveStorageFull,
+                onConnect = { viewModel.connectDrive() },
+                onDisconnect = { viewModel.disconnectDrive() }
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             CloudUploadOption(
                 title = stringResource(R.string.settings_cloud_off),
                 description = stringResource(R.string.settings_cloud_off_desc),
@@ -189,6 +219,89 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    driveError?.let { error ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDriveError() },
+            title = { Text(stringResource(R.string.settings_drive_account)) },
+            text = {
+                Text(
+                    stringResource(
+                        when (error) {
+                            DriveError.SIGN_IN_FAILED -> R.string.settings_drive_sign_in_failed
+                            DriveError.ACCOUNT_MISMATCH ->
+                                R.string.settings_drive_account_mismatch
+                        }
+                    )
+                )
+            },
+            confirmButton = {
+                Button(onClick = { viewModel.dismissDriveError() }) {
+                    Text(stringResource(R.string.ok))
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun DriveAccountRow(
+    connected: Boolean,
+    needsReauth: Boolean,
+    storageFull: Boolean,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.settings_drive_account),
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = if (connected) {
+                    stringResource(R.string.settings_drive_connected)
+                } else {
+                    stringResource(R.string.settings_drive_not_connected)
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (connected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            if (needsReauth) {
+                Text(
+                    text = stringResource(R.string.settings_drive_connect_prompt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            if (storageFull) {
+                Text(
+                    text = stringResource(R.string.settings_drive_storage_full),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
+        if (!connected || needsReauth) {
+            Button(onClick = onConnect) {
+                Text(stringResource(R.string.settings_drive_connect))
+            }
+        } else {
+            OutlinedButton(onClick = onDisconnect) {
+                Text(stringResource(R.string.settings_drive_disconnect))
+            }
+        }
     }
 }
 

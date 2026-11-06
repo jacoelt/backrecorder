@@ -18,3 +18,7 @@ google-services.json
 .kotlin
 *.stackdump
 .claude/settings.local.json
+.claude/.creds
+
+# OAuth client configs downloaded from the Cloud console
+.config/

@@ -2,6 +2,7 @@ package com.backrecorderapp.domain
 
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
+import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -39,6 +40,13 @@ class SubscriptionGate @Inject constructor(
             GateResult.Blocked(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
         }
     }
+
+    /**
+     * False until billing has actually answered. Callers that gate on a schedule rather than on a
+     * user action must wait for this: at process start the status is only its FREE default, and
+     * acting on it would block a paying subscriber.
+     */
+    val statusResolved: StateFlow<Boolean> get() = billingRepository.statusResolved
 
     suspend fun checkCloudAccess(): GateResult {
         return if (isPremium()) {

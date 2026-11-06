@@ -85,8 +85,9 @@ class SegmentManager @Inject constructor(
         return segmentDao.getAllSegments()
     }
 
-    suspend fun getSegmentsPendingUpload(): List<SegmentEntity> {
-        return segmentDao.getSegmentsPendingUpload()
+    /** Oldest first, capped: a full 24h backlog is ~1440 rows and a sync tick uploads a handful. */
+    suspend fun getSegmentsPendingUpload(limit: Int): List<SegmentEntity> {
+        return segmentDao.getSegmentsPendingUpload(limit)
     }
 
     suspend fun markAsUploaded(segmentId: String, cloudFileId: String) {
