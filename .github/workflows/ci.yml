@@ -1,10 +1,8 @@
 name: CI
 
-# Runs on every pull request (including from forks) and on every commit that
-# reaches main. Deliberately `pull_request`, never `pull_request_target`: fork
-# PRs run untrusted code, so this workflow must never see a secret. Nothing
-# here needs one — the release build is left unsigned, and the app has no
-# google-services.json dependency at build time.
+# `pull_request`, never `pull_request_target`: fork PRs run untrusted code, so
+# this workflow must never see a secret. It needs none — the release build is
+# left unsigned, and the app has no google-services.json dependency.
 on:
   push:
     branches: [main]
@@ -15,7 +13,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR pushes are worth cancelling; a push to main is not. Cancelling
+  # the latter would leave a commit on main with no completed run — the very gap
+  # this workflow exists to close.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -61,7 +62,7 @@ jobs:
           path: |
             app/build/reports/tests/testDebugUnitTest
             app/build/test-results/testDebugUnitTest
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 14
 
       # Not redundant with the unit tests: this is the only job that runs R8 over
