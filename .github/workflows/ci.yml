@@ -83,6 +83,11 @@ jobs:
     # gates nothing. Change the ruleset and this line together, or not at all.
     name: Instrumented tests
     runs-on: ubuntu-latest
+    # Every failure mode here is fast except a hang in adb or Gradle after the
+    # emulator is up, which the action does not cap. Without this the job would
+    # fall back to GitHub's 6-hour default, and a push to main is not cancelled
+    # by the concurrency group above, so nothing would reclaim the runner.
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,17 +113,18 @@ jobs:
 
       # Provisioning an AVD and booting it cold costs several minutes. Caching
       # the created AVD plus its snapshot lets later runs boot from the snapshot
-      # instead. The key pins every property that changes the image, so bumping
-      # the API level or target below invalidates the cache rather than
-      # restoring an AVD that no longer matches.
+      # instead. Both emulator steps below pass force-avd-creation: false, so a
+      # restored AVD is reused as-is — the key must therefore pin every property
+      # that defines the AVD, profile included. Change one of them above without
+      # changing the key and the job silently keeps running the stale AVD.
       - name: Cache AVD
         uses: actions/cache@v4
         id: avd-cache
         with:
           path: |
             ~/.android/avd/*
-            ~/.android/adb_keys
-          key: avd-api34-google_apis-x86_64
+            ~/.android/adb*
+          key: avd-api34-google_apis-x86_64-pixel_6
 
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -132,6 +138,13 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: echo "Generated AVD snapshot for caching."
+
+      # Build both variants before the emulator exists. connectedDebugAndroidTest
+      # would otherwise compile Kotlin + KSP (Hilt, Room) with the device already
+      # booted and idle, and a compile error would cost a full emulator boot to
+      # discover. The Gradle run inside the emulator step is then incremental.
+      - name: Build test APKs
+        run: ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
 
       - name: Instrumented tests
         id: instrumented_tests
