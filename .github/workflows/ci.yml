@@ -20,7 +20,11 @@ concurrency:
 
 jobs:
   build:
-    name: Unit tests + minified release build
+    # This name is the status-check context. The `main: PR + green CI` ruleset
+    # requires a check called exactly "Build and test", so renaming this job
+    # silently makes every PR unmergeable — the required check simply never
+    # reports. Change the ruleset and this line together, or not at all.
+    name: Build and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
