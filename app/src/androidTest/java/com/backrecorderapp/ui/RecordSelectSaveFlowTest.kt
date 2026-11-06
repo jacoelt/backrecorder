@@ -10,6 +10,7 @@ import android.media.MediaFormat
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -27,6 +28,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
+import com.backrecorderapp.data.billing.FakeBillingRepository
+import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
@@ -43,7 +46,6 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -74,24 +76,20 @@ import javax.inject.Inject
  * - **The end handle reaching the currently-recording minute.** Dragged to the right edge it
  *   clamps to `bufferEndTime`, which sits inside the live segment — past the last complete one.
  * - **The in-progress segment being flushed and saved.** `SaveRecordingUseCase` asks
- *   `RecordingFlusher` to finalize the open segment; the saved MP4 must then hold the live
- *   segment's audio and not merely the completed history. "The last minute is not saved" has
- *   shipped here before (#22), and only the audio length distinguishes the two.
+ *   `RecordingFlusher` to finalize the open segment. The saved MP4 is then checked against a
+ *   length *lower bound* that the completed history alone cannot reach — not a true range
+ *   check, but enough to tell a flushed save from one that silently dropped the live segment,
+ *   which is the shape "the last minute is not saved" took when it shipped (#22).
  *
- * ### Preset chips do **not** snap
- *
- * `CLAUDE.md` used to say preset chips snap to minute boundaries like the handles. They do not:
- * `eb92752` ("presets select exact duration", #21) made them select an exact duration from the
- * recording edge on purpose, so the "5 min" chip selects exactly five minutes. This test asserts
- * that contract rather than the stale documentation, and the documentation has been corrected.
+ * Preset chips are asserted **not** to snap: `eb92752` (#21) made them select an exact duration
+ * from the recording edge, so the "5 min" chip selects exactly five minutes.
  *
  * ### Why the buffer is seeded
  *
  * Minute snapping needs a buffer several minutes wide, and recording one in real time would make
  * this test take a quarter of an hour. The history is therefore written straight to the database
  * as completed one-minute segments backed by real (short) MP4 files, and only the final, live
- * segment comes from the service. Selection, snapping, the subscription gate, trimming,
- * concatenation and the flush handshake then all run exactly as they do in production.
+ * segment comes from the service.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -100,6 +98,7 @@ class RecordSelectSaveFlowTest {
     @Inject lateinit var recorderFactory: FakeAudioRecorderFactory
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var segmentDao: SegmentDao
+    @Inject lateinit var billingRepository: FakeBillingRepository
     @Inject lateinit var segmentManager: SegmentManager
     @Inject lateinit var waveformRepository: WaveformRepository
 
@@ -108,7 +107,15 @@ class RecordSelectSaveFlowTest {
     /** Start of the seeded buffer: a wall-clock minute boundary, so snapped times are exact. */
     private var bufferStart = 0L
 
-    private var disclaimerWasAccepted = false
+    /**
+     * When the service opened the live segment, once it has and the UI has caught up. It is then
+     * also a floor for the waveform's right edge, which tightens [bufferRangeBounds].
+     */
+    private var liveSegmentStart = 0L
+
+    /** Null until seeding has read them, so a failure before that restores nothing. */
+    private var disclaimerWasAccepted: Boolean? = null
+    private var wasRecordingBeforeShutdown: Boolean? = null
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -121,17 +128,53 @@ class RecordSelectSaveFlowTest {
     )
 
     /**
-     * Injects and seeds before the compose rule launches the activity. `NavGraph` fixes its start
-     * destination from `disclaimerAccepted` on first composition and `MainScreen` reads the
-     * segment buffer as soon as it composes, so both have to be in place by now — a `@Before`
-     * method runs too late. Preferences go through [AppPreferences] rather than the backing file,
-     * which the `preferencesDataStore` delegate caches in-process.
+     * Owns the cleanup, and sits outside the seeding rule so it runs even when seeding throws
+     * part-way. `ExternalResource` skips its own `after()` when its `before()` failed, so a rule
+     * that both seeds and cleans up would leave segment rows, cache files and a flipped
+     * `disclaimerAccepted` behind for whichever test runs next.
      */
     @get:Rule(order = 2)
-    val injectAndSeed = object : ExternalResource() {
+    val cleanUpAfterwards = object : ExternalResource() {
+        override fun before() = hiltRule.inject()
+
+        override fun after() {
+            try {
+                RecordingService.stop(context)
+                runBlocking {
+                    awaitUntil("RecordingService never stopped") {
+                        !RecordingService.isRunning.value
+                    }
+                    // `onDestroy` clears `isRunning` before it finishes finalizing, so clearing
+                    // the cache underneath a segment still being written would leave its row.
+                    awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
+                }
+            } finally {
+                recorderFactory.reset()
+                clearRecordedState()
+                runBlocking {
+                    disclaimerWasAccepted?.let { appPreferences.setDisclaimerAccepted(it) }
+                    wasRecordingBeforeShutdown?.let {
+                        appPreferences.setWasRecordingBeforeShutdown(it)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Seeds before the compose rule launches the activity. `NavGraph` fixes its start destination
+     * from `disclaimerAccepted` on first composition and `MainScreen` reads the segment buffer as
+     * soon as it composes, so both have to be in place by now — a `@Before` method runs too late.
+     * Preferences go through [AppPreferences] rather than the backing file, which the
+     * `preferencesDataStore` delegate caches in-process.
+     */
+    @get:Rule(order = 3)
+    val seedBuffer = object : ExternalResource() {
         override fun before() {
-            hiltRule.inject()
             recorderFactory.reset()
+            // The free tier's save window is what this flow runs under, so pin it rather than
+            // inherit whatever a sibling test last set on the shared fake.
+            billingRepository.setStatus(SubscriptionStatus.FREE)
             clearRecordedState()
             // HiltTestApplication stands in for BackRecorderApp, so the channels it would have
             // created do not exist, and a foreground service posting to a missing channel kills
@@ -139,41 +182,22 @@ class RecordSelectSaveFlowTest {
             NotificationChannels.createAll(context)
             runBlocking {
                 disclaimerWasAccepted = appPreferences.disclaimerAccepted.first()
+                wasRecordingBeforeShutdown = appPreferences.wasRecordingBeforeShutdown.first()
                 appPreferences.setDisclaimerAccepted(true)
             }
             bufferStart = seedHistory()
         }
     }
 
-    @get:Rule(order = 3)
+    @get:Rule(order = 4)
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     /**
      * Innermost, so Espresso is not intercepting while the compose rule launches the activity —
      * it only has to be recording by the time the test body opens the save picker.
      */
-    @get:Rule(order = 4)
+    @get:Rule(order = 5)
     val intentsRule = IntentsRule()
-
-    @After
-    fun tearDown() {
-        try {
-            RecordingService.stop(context)
-            runBlocking {
-                awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
-                // `onDestroy` clears `isRunning` before it finishes finalizing, so clearing the
-                // cache underneath a segment still being written would leave its row behind.
-                awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
-            }
-        } finally {
-            recorderFactory.reset()
-            clearRecordedState()
-            runBlocking {
-                appPreferences.setDisclaimerAccepted(disclaimerWasAccepted)
-                appPreferences.setWasRecordingBeforeShutdown(false)
-            }
-        }
-    }
 
     @Test
     fun recordThenSelectOnTheWaveformThenSaveWritesTheSelectedRangeIncludingTheLiveMinute() {
@@ -197,7 +221,13 @@ class RecordSelectSaveFlowTest {
         // The service's own record of when the live segment opened. Taken from the database
         // rather than the clock, because the test only learns that recording started some time
         // after it actually did.
-        val liveSegmentStart = runBlocking { liveSegmentRows().single().startTime }
+        liveSegmentStart = runBlocking { liveSegmentRows().single().startTime }
+        assertTrue(
+            "The live segment opened only ${liveSegmentStart - historyEnd()}ms after the seeded " +
+                "history ended, which is inside the slack the duration label's truncation costs, " +
+                "so the clamp assertion below could not discriminate",
+            liveSegmentStart - historyEnd() > LABEL_TRUNCATION_SLACK_MS
+        )
 
         // ---- a time-preset chip -----------------------------------------------------------------
         // Presets select an exact duration from the recording edge (#21) — deliberately not
@@ -217,6 +247,20 @@ class RecordSelectSaveFlowTest {
         composeRule.onNodeWithText(composeRule.activity.getString(R.string.preset_all))
             .performClick()
         composeRule.waitForIdle()
+
+        // The waveform's right edge must show the live segment, not the end of the seeded
+        // history — `MainScreen` passing a stale `bufferEndTime` would otherwise go unnoticed,
+        // since the clamp itself lives in the view model. Both preset clicks have moved the
+        // selection labels into the current minute, so the stale text can only come from the
+        // buffer-end label. It also licenses the tighter bound in `bufferRangeBounds`.
+        composeRule.waitUntil(TIMEOUT_MS) {
+            composeRule
+                .onAllNodesWithText(TimeUtils.formatTime(historyEnd() - SEGMENT_GAP_MS))
+                .fetchSemanticsNodes()
+                .isEmpty()
+        }
+
+        assertCanvasGeometry()
 
         dragHandle(
             isStart = true,
@@ -257,8 +301,9 @@ class RecordSelectSaveFlowTest {
         assertTrue(
             "End handle stopped ${liveSegmentStart - liveEnd}ms before the live segment opened, " +
                 "so it never reached the currently-recording minute",
-            // The duration label truncates to whole seconds, hence the second of slack.
-            liveEnd + 1_000 >= liveSegmentStart
+            // The duration label truncates to whole seconds, hence the slack — which the guard
+            // on the live segment's own offset above keeps smaller than the gap being proven.
+            liveEnd + LABEL_TRUNCATION_SLACK_MS >= liveSegmentStart
         )
         assertTrue(
             "Selection ran past the recording edge",
@@ -267,6 +312,11 @@ class RecordSelectSaveFlowTest {
 
         // The selection must really span the tail of the history plus the live segment, or the
         // audio-length bound below would be measuring the wrong thing.
+        // The service rotates on its own 60 s timer as well, and a run slow enough to cross one
+        // would shift every count below. Snapshot instead of assuming, so an extra rotation is
+        // reported as what it is rather than as a missing flush.
+        val liveRowsBeforeSave = runBlocking { liveSegmentRows() }
+        val finalizedBeforeSave = recorderFactory.finalizedCount()
         val covered = runBlocking {
             segmentManager.getSegmentsInRange(expectedStart, System.currentTimeMillis())
         }
@@ -274,7 +324,7 @@ class RecordSelectSaveFlowTest {
             "Unexpected segments under the selection: " + covered.joinToString { segment ->
                 "+${(segment.startTime - bufferStart) / 1000}s complete=${segment.isComplete}"
             },
-            EXPECTED_COVERED_SEGMENTS,
+            EXPECTED_COVERED_HISTORY_SEGMENTS + liveRowsBeforeSave.size,
             covered.size
         )
 
@@ -300,8 +350,8 @@ class RecordSelectSaveFlowTest {
 
         // ---- what the flush did ---------------------------------------------------------------------
         assertEquals(
-            "The save must have flushed exactly the in-progress segment",
-            1,
+            "The save must have finalized exactly one more segment — the in-progress one",
+            finalizedBeforeSave + 1,
             recorderFactory.finalizedCount()
         )
         assertTrue(
@@ -309,9 +359,16 @@ class RecordSelectSaveFlowTest {
             RecordingService.isRunning.value
         )
         val liveRows = runBlocking { liveSegmentRows() }
-        assertEquals("Expected the flushed live segment plus its replacement", 2, liveRows.size)
-        assertTrue("Flushed live segment is not marked complete", liveRows[0].isComplete)
-        assertTrue("Replacement segment should still be open", !liveRows[1].isComplete)
+        assertEquals(
+            "Expected the flush to add exactly one replacement row",
+            liveRowsBeforeSave.size + 1,
+            liveRows.size
+        )
+        assertTrue(
+            "Every segment the flush closed should be complete",
+            liveRows.dropLast(1).all { it.isComplete }
+        )
+        assertTrue("Replacement segment should still be open", !liveRows.last().isComplete)
 
         // ---- what landed on disk -----------------------------------------------------------------
         assertTrue("Nothing was written to the picked destination", savedFile.length() > 0)
@@ -344,7 +401,16 @@ class RecordSelectSaveFlowTest {
      * past the end of its (deliberately short) audio and produce an empty track.
      */
     private fun seedHistory(): Long {
-        val historyEnd = (System.currentTimeMillis() / MINUTE_MS) * MINUTE_MS
+        val now = System.currentTimeMillis()
+        // Step back a minute when the clock has only just crossed a boundary. The live segment
+        // then always opens well clear of the history's end, which is what makes the end-handle
+        // clamp assertion discriminate instead of passing on a coincidence.
+        val flooredNow = (now / MINUTE_MS) * MINUTE_MS
+        val historyEnd = if (now - flooredNow > MIN_LIVE_SEGMENT_GAP_MS) {
+            flooredNow
+        } else {
+            flooredNow - MINUTE_MS
+        }
         val start = historyEnd - HISTORY_SPAN_MS
         runBlocking {
             for (index in 0 until HISTORY_SEGMENTS) {
@@ -378,9 +444,17 @@ class RecordSelectSaveFlowTest {
     private fun writeShortSegment(file: File) {
         val recorder = FakeAudioRecorder()
         recorder.start(file)
-        recorder.feed(HISTORY_FEED_MS)
-        recorder.stop()
+        // The fake releases its encoder and muxer only in stop(), so a throw from feed() would
+        // otherwise strand native resources for the rest of the instrumentation run.
+        try {
+            recorder.feed(HISTORY_FEED_MS)
+        } finally {
+            recorder.stop()
+        }
     }
+
+    /** End of the seeded history — a wall-clock minute boundary. */
+    private fun historyEnd(): Long = bufferStart + HISTORY_SPAN_MS
 
     /** The rows the recording service wrote, in start order — everything past the seeded history. */
     private suspend fun liveSegmentRows(): List<SegmentEntity> =
@@ -401,18 +475,28 @@ class RecordSelectSaveFlowTest {
      * `MainViewModel` sets `bufferEndTime` to the wall clock of whichever segment emission it last
      * collected, so the right edge is somewhere between the end of the seeded history and now. The
      * test cannot read it, but both bounds are known, and that is enough to aim a drag.
+     *
+     * Once the buffer-end label has stopped showing the seeded history's end, the live segment
+     * must be in the collected list — it is the only row whose end is the wall clock — so the
+     * floor tightens to its start, which removes the up-to-a-minute slack of the seeding floor.
      */
-    private fun bufferRangeBounds(): Pair<Long, Long> =
-        (HISTORY_SPAN_MS - SEGMENT_GAP_MS) to (System.currentTimeMillis() - bufferStart)
+    private fun bufferRangeBounds(): Pair<Long, Long> {
+        val low = if (liveSegmentStart > 0) {
+            liveSegmentStart - bufferStart
+        } else {
+            HISTORY_SPAN_MS - SEGMENT_GAP_MS
+        }
+        return low to (System.currentTimeMillis() - bufferStart)
+    }
 
     /**
      * The fraction of the canvas width to drag a handle to so the snap lands on [targetOffsetMs]
      * past [bufferStart], whatever the right edge turns out to be.
      *
      * A floor needs the raw time anywhere in `[target, target + 1min)`, a ceil anywhere in
-     * `(target - 1min, target]`. Aiming at the middle of that window leaves the widest margin for
-     * the unknown right edge, and the bounds are then asserted rather than hoped for — a machine
-     * slow enough to invalidate them says so instead of failing on an off-by-a-minute mystery.
+     * `(target - 1min, target]`; aiming at the middle of that window leaves the widest margin for
+     * the unknown right edge. The bounds are asserted, so a machine slow enough to invalidate
+     * them says so instead of failing on an off-by-a-minute mystery.
      */
     private fun fractionLandingIn(targetOffsetMs: Long, snapsUp: Boolean): Float {
         val (rangeLow, rangeHigh) = bufferRangeBounds()
@@ -451,6 +535,20 @@ class RecordSelectSaveFlowTest {
      * the hit width the loop disambiguates them by 2D distance to the visible tab.
      */
     private fun dragHandle(isStart: Boolean, fromFraction: Float, toFraction: Float) {
+        val before = selectedDurationMs()
+        injectDrag(isStart, fromFraction, toFraction)
+        composeRule.waitForIdle()
+        // A press that lands outside both hit zones is returned unconsumed and the drag is
+        // silently a no-op, which would otherwise surface several assertions later as a bogus
+        // snapping or clamp failure.
+        assertTrue(
+            "The press at fraction $fromFraction did not grab the " +
+                "${if (isStart) "start" else "end"} handle — the selection is unchanged",
+            selectedDurationMs() != before
+        )
+    }
+
+    private fun injectDrag(isStart: Boolean, fromFraction: Float, toFraction: Float) {
         composeRule.onNodeWithTag(WAVEFORM_CANVAS_TEST_TAG).performTouchInput {
             val labelPx = LABEL_ROW_HEIGHT_DP.dp.toPx()
             val zonePx = HANDLE_ZONE_HEIGHT_DP.dp.toPx()
@@ -462,6 +560,27 @@ class RecordSelectSaveFlowTest {
             moveTo(Offset(toX, y))
             up()
         }
+    }
+
+    /**
+     * The canvas must be laid out at its full height and fully on screen before any drag.
+     * `performTouchInput` works in the node's *visible* box, so a clipped canvas would quietly
+     * put the end-handle press on the waveform body instead of the handle zone.
+     */
+    private fun assertCanvasGeometry() {
+        val canvas = composeRule.onNodeWithTag(WAVEFORM_CANVAS_TEST_TAG)
+        canvas.assertIsDisplayed()
+        val expectedHeight = with(composeRule.density) {
+            (LABEL_ROW_HEIGHT_DP + HANDLE_ZONE_HEIGHT_DP + WAVEFORM_BODY_HEIGHT_DP +
+                HANDLE_ZONE_HEIGHT_DP + LABEL_ROW_HEIGHT_DP).dp.roundToPx()
+        }
+        val actualHeight = canvas.fetchSemanticsNode().size.height
+        assertEquals(
+            "The waveform canvas is not at its full height — it is clipped, or WaveformView's " +
+                "zone geometry changed and this test's copy of it is stale",
+            expectedHeight,
+            actualHeight
+        )
     }
 
     // ---- reading the UI back --------------------------------------------------------------------------
@@ -536,7 +655,9 @@ class RecordSelectSaveFlowTest {
             val buffer = ByteBuffer.allocate(SAMPLE_BUFFER_BYTES)
             var samples = 0
             var lastSampleUs = 0L
-            while (extractor.readSampleData(buffer, 0) > 0) {
+            // MediaExtractor signals end of stream with -1; a legitimately zero-size sample
+            // would end the scan early under a `> 0` bound and under-report the clip.
+            while (extractor.readSampleData(buffer, 0) >= 0) {
                 samples++
                 lastSampleUs = extractor.sampleTime
                 extractor.advance()
@@ -570,12 +691,21 @@ class RecordSelectSaveFlowTest {
         const val SELECTION_START_OFFSET_MS = 4 * MINUTE_MS
         const val SELECTION_END_OFFSET_MS = 6 * MINUTE_MS
 
-        /** History segments 4..11 — the earlier ones end before the selection — plus the live one. */
-        const val EXPECTED_COVERED_SEGMENTS = 9
+        /** History segments 4..11; the earlier ones end before the selection starts. */
+        const val EXPECTED_COVERED_HISTORY_SEGMENTS = 8
+
+        /**
+         * How far past the seeded history the live segment must open. The duration label reads
+         * whole seconds, so the end-handle clamp is asserted with a second of slack; the gap it
+         * proves has to be wider than that slack or the assertion would hold either way.
+         */
+        const val MIN_LIVE_SEGMENT_GAP_MS = 3_000L
+        const val LABEL_TRUNCATION_SLACK_MS = 1_000L
 
         /** Mirrors `WaveformView`'s private zone geometry, so a press lands on a handle tab. */
         const val LABEL_ROW_HEIGHT_DP = 20
         const val HANDLE_ZONE_HEIGHT_DP = 32
+        const val WAVEFORM_BODY_HEIGHT_DP = 150
 
         const val HISTORY_FEED_MS = 400L
         const val LIVE_FEED_MS = 2_500L
