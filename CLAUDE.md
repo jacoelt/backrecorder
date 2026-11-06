@@ -19,6 +19,7 @@ Single `:app` module. Package root: `com.backrecorderapp`.
 - **Drive folder layout:** `BackRecorder/staging` holds segments; `recovery_<timestamp>` folders are siblings under `BackRecorder/`, never inside `staging`. Anything inside `staging` is deleted once it ages past the 24h buffer, so a recovery folder placed there takes its contents with it.
 - **Notifications:** Three channels — recording, cloud sync, recovery.
 - **Instrumented tests:** `testInstrumentationRunner` is `com.backrecorderapp.HiltTestRunner`, which swaps in `HiltTestApplication` — the real `BackRecorderApp` connects billing and resumes cloud sync on create, which no test should do. Compose UI tests use `@HiltAndroidTest` + `HiltAndroidRule` + `createAndroidComposeRule<MainActivity>()`; `ComposeHarnessSmokeTest` is the reference. CI runs only `:app:testDebugUnitTest`, so `androidTest` needs an emulator (`./gradlew :app:connectedDebugAndroidTest`).
+- **`BootReceiver` and Hilt:** `BootReceiver` resolves `AppPreferences` through `EntryPointAccessors`, **not** `@AndroidEntryPoint`. Under instrumentation `HiltTestApplication`'s component is built by `HiltAndroidRule`, so a manifest-registered `@AndroidEntryPoint` receiver that catches `BOOT_COMPLETED` before the first test aborts the whole run. Any new manifest-registered receiver needs the same treatment.
 
 ## Sensitive Files (do not commit)
 
