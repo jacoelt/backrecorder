@@ -9,9 +9,8 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 /**
- * Binds the recorder seam. Kept in its own module so instrumented tests can replace exactly this
- * binding with `@TestInstallIn(replaces = [RecorderModule::class])` and leave the rest of
- * [AppModule] — the database, dispatchers, the flusher — untouched.
+ * Binds the recorder seam. Its own module so instrumented tests can replace just this binding with
+ * `@TestInstallIn(replaces = [RecorderModule::class])`.
  */
 @Module
 @InstallIn(SingletonComponent::class)

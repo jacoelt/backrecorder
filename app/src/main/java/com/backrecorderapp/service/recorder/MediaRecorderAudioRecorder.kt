@@ -8,8 +8,8 @@ import java.io.File
 import javax.inject.Inject
 
 /**
- * The production [AudioRecorder]: the `MediaRecorder` configuration the service has always used,
- * moved behind the interface unchanged (MPEG-4 container, AAC, 16 kHz mono at 32 kbps).
+ * Production [AudioRecorder], backed by `MediaRecorder`: MPEG-4 container, AAC, 16 kHz mono at
+ * 32 kbps.
  */
 class MediaRecorderAudioRecorder(private val context: Context) : AudioRecorder {
 

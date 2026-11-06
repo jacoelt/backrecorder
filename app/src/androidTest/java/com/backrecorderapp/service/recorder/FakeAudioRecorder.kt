@@ -18,13 +18,11 @@ import kotlin.math.sin
  * placeholder bytes instead would make every flow test fail inside `MediaExtractor` rather than at
  * the behaviour under test.
  *
- * Audio is written only when a test asks for it, via [feed]: nothing is driven by wall-clock time,
- * so a test decides exactly how long each segment is. The format matches
- * [MediaRecorderAudioRecorder]'s — 16 kHz mono AAC-LC at 32 kbps.
- *
- * Instances are single-use, like the real recorder: [start] once, then [stop].
+ * Audio is written only when a test asks for it, via [feed] — nothing is driven by wall-clock time
+ * — in [MediaRecorderAudioRecorder]'s format: 16 kHz mono AAC-LC at 32 kbps.
  */
 class FakeAudioRecorder(
+    private val onStarted: (FakeAudioRecorder) -> Unit = {},
     private val onFinalized: (File) -> Unit = {}
 ) : AudioRecorder {
 
@@ -44,21 +42,30 @@ class FakeAudioRecorder(
     var outputFile: File? = null
         private set
 
-    override fun start(outputFile: File) = synchronized<Unit>(lock) {
-        check(codec == null) { "FakeAudioRecorder is single-use; start() was already called" }
-        this.outputFile = outputFile
+    override fun start(outputFile: File) {
+        synchronized(lock) {
+            check(codec == null) { "FakeAudioRecorder is single-use; start() was already called" }
+            this.outputFile = outputFile
 
-        val format = MediaFormat.createAudioFormat(MIME_TYPE, SAMPLE_RATE_HZ, CHANNEL_COUNT).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE_BYTES)
-        }
+            val format = MediaFormat.createAudioFormat(MIME_TYPE, SAMPLE_RATE_HZ, CHANNEL_COUNT)
+                .apply {
+                    setInteger(
+                        MediaFormat.KEY_AAC_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AACObjectLC
+                    )
+                    setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
+                    setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, MAX_INPUT_SIZE_BYTES)
+                }
 
-        codec = MediaCodec.createEncoderByType(MIME_TYPE).apply {
-            configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            start()
+            codec = MediaCodec.createEncoderByType(MIME_TYPE).apply {
+                configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                start()
+            }
+            muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         }
-        muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        // Announced only once the recorder can accept audio, so a test that waits for a segment to
+        // open cannot win the race against the service and call feed() on an unstarted recorder.
+        onStarted(this)
     }
 
     /**
@@ -79,27 +86,30 @@ class FakeAudioRecorder(
                 null
             } else {
                 stopped = true
+                try {
+                    // A segment the service opened and closed without the test advancing it would
+                    // otherwise hold no samples at all, which the muxer cannot finalize. Give it
+                    // the smallest real segment instead, so every file this fake leaves behind is
+                    // a readable MP4.
+                    if (framesEncoded == 0L) {
+                        encodeFrames(encoder, (SAMPLE_RATE_HZ * MIN_SEGMENT_MS / 1000L).toInt())
+                    }
 
-                // A segment the service opened and closed without the test advancing it would
-                // otherwise hold no samples at all, which the muxer cannot finalize. Give it the
-                // smallest real segment instead, so every file this fake leaves behind is a
-                // readable MP4.
-                if (framesEncoded == 0L) {
-                    encodeFrames(encoder, (SAMPLE_RATE_HZ * MIN_SEGMENT_MS / 1000L).toInt())
+                    queueInput(encoder, ByteArray(0), endOfStream = true)
+                    drain(endOfStream = true)
+                } finally {
+                    // Release whatever happened above: a throw mid-drain would otherwise strand a
+                    // native encoder and muxer for the rest of the test run.
+                    runCatching { encoder.stop() }
+                    encoder.release()
+                    codec = null
+
+                    muxer?.let {
+                        if (muxerStarted) runCatching { it.stop() }
+                        it.release()
+                    }
+                    muxer = null
                 }
-
-                queueInput(encoder, ByteArray(0), endOfStream = true)
-                drain(endOfStream = true)
-
-                runCatching { encoder.stop() }
-                encoder.release()
-                codec = null
-
-                muxer?.let {
-                    if (muxerStarted) runCatching { it.stop() }
-                    it.release()
-                }
-                muxer = null
 
                 outputFile
             }
@@ -123,9 +133,15 @@ class FakeAudioRecorder(
 
     private fun queueInput(encoder: MediaCodec, pcm: ByteArray, endOfStream: Boolean) {
         var offset = 0
-        do {
+        var queuedAny = false
+        var idleSpins = 0
+        // `offset < pcm.size` alone would never run for the empty end-of-stream buffer, so track
+        // whether anything was actually queued. Bounded, so a stalled codec fails with a message
+        // instead of wedging the service's rotation coroutine.
+        while (!queuedAny || offset < pcm.size) {
             val index = encoder.dequeueInputBuffer(TIMEOUT_US)
             if (index < 0) {
+                check(++idleSpins < MAX_INPUT_SPINS) { "Encoder stopped accepting input" }
                 drain(endOfStream = false)
                 continue
             }
@@ -143,7 +159,8 @@ class FakeAudioRecorder(
                 if (endOfStream) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
             )
             offset += size
-        } while (offset < pcm.size)
+            queuedAny = true
+        }
     }
 
     private fun drain(endOfStream: Boolean) {
@@ -210,6 +227,7 @@ class FakeAudioRecorder(
         private const val MIN_SEGMENT_MS = 100L
         private const val TONE_HZ = 440.0
         private const val MAX_DRAIN_SPINS = 500 // 500 x 10 ms
+        private const val MAX_INPUT_SPINS = 500 // 500 x 10 ms
 
     }
 }

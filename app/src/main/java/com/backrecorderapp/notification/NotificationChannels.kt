@@ -8,7 +8,7 @@ import com.backrecorderapp.BackRecorderApp
 /**
  * The app's three notification channels, created in one place.
  *
- * Extracted from [BackRecorderApp] so instrumented tests can create them too: those run under
+ * Separate from [BackRecorderApp] so instrumented tests can create them too: those run under
  * `HiltTestApplication`, whose `onCreate` is not the real application's, and a foreground service
  * posting to a channel that does not exist kills the process with
  * `CannotPostForegroundServiceNotificationException`.

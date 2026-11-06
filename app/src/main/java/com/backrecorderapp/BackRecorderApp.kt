@@ -68,5 +68,4 @@ class BackRecorderApp : Application() {
             cloudSyncManager.startSync()
         }
     }
-
 }

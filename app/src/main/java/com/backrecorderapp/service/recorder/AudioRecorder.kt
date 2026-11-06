@@ -6,13 +6,11 @@ import java.io.File
  * The recorder boundary of [com.backrecorderapp.service.RecordingService], extracted so
  * instrumented tests can drive recording without a microphone.
  *
- * Production is [MediaRecorderAudioRecorder], a thin wrapper over `MediaRecorder` that keeps the
- * same configuration and the same lifecycle the service has always used. Instrumented tests
- * replace [AudioRecorderFactory] through Hilt and supply a fake that writes real MP4 segments.
+ * Instrumented tests replace [AudioRecorderFactory] through Hilt and supply a fake that writes
+ * real MP4 segments.
  *
- * An implementation records one segment: [start] once, then [stop] once, and the instance is
- * spent. The service creates a fresh one per segment, exactly as it previously created a fresh
- * `MediaRecorder`.
+ * One instance records one segment: [start] once, then [stop] once. The service creates a fresh
+ * one per segment.
  */
 interface AudioRecorder {
 

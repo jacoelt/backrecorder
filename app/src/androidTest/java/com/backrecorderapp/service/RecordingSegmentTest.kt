@@ -1,6 +1,7 @@
 package com.backrecorderapp.service
 
 import android.Manifest
+import android.content.Context
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import androidx.test.core.app.ActivityScenario
@@ -8,11 +9,14 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import com.backrecorderapp.MainActivity
+import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.notification.NotificationChannels
 import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
@@ -31,8 +35,8 @@ import javax.inject.Inject
  * handshake finalizes the in-progress segment, and what lands on disk is an MP4 that
  * `MediaExtractor` can read — all without a microphone, which a CI emulator does not have.
  *
- * This is the piece the record → select → save and Drive sync flow tests build on, so it asserts
- * the contract those flows rely on rather than just "a file appeared".
+ * Assertions deliberately cover the service's own output (the `segments` rows it wrote) as well as
+ * the files, so a service that rotated but forgot to record the segment fails here.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -40,6 +44,9 @@ class RecordingSegmentTest {
 
     @Inject lateinit var recorderFactory: FakeAudioRecorderFactory
     @Inject lateinit var appPreferences: AppPreferences
+    @Inject lateinit var segmentDao: SegmentDao
+
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -59,12 +66,11 @@ class RecordingSegmentTest {
         override fun before() {
             hiltRule.inject()
             recorderFactory.reset()
+            clearRecordedState()
             // HiltTestApplication stands in for BackRecorderApp, so the channels it would have
             // created do not exist; posting the foreground notification to a missing channel kills
-            // the process outright.
-            NotificationChannels.createAll(
-                ApplicationProvider.getApplicationContext<android.content.Context>()
-            )
+            // the process.
+            NotificationChannels.createAll(context)
             // Keep the activity on the disclaimer screen: this test only needs the app in the
             // foreground, and the main screen's own work would be noise here.
             runBlocking { appPreferences.setDisclaimerAccepted(false) }
@@ -75,17 +81,21 @@ class RecordingSegmentTest {
 
     @After
     fun tearDown() {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-        RecordingService.stop(context)
-        runBlocking { awaitRunning(expected = false) }
-        scenario?.close()
-        scenario = null
+        try {
+            RecordingService.stop(context)
+            runBlocking { awaitRunning(expected = false) }
+        } finally {
+            scenario?.close()
+            scenario = null
+            recorderFactory.reset()
+            // Segments and rows survive the process, and later flow tests share this database and
+            // this cache directory.
+            clearRecordedState()
+        }
     }
 
     @Test
     fun flushFinalizesTheInProgressSegmentAsAReadableMp4() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
-
         // Android forbids starting a microphone foreground service from the background, so put the
         // app in the foreground the way a user would before asking for a recording.
         scenario = ActivityScenario.launch(MainActivity::class.java)
@@ -93,36 +103,49 @@ class RecordingSegmentTest {
         RecordingService.start(context)
         awaitRunning(expected = true)
 
-        // Advance the recording deterministically: two seconds of audio are encoded now, rather
-        // than waited for.
         val firstRecorder = recorderFactory.awaitRecorder(index = 0)
-        firstRecorder.feed(SEGMENT_DURATION_MS)
+        firstRecorder.feed(FED_DURATION_MS)
 
         // `SegmentManager.createSegmentFile` names files to the second, so a rotation in the same
         // wall-clock second the segment started reuses the filename and the replacement segment's
         // muxer truncates the one just finalized. Encoding is far faster than real time here, so
-        // cross the boundary deliberately rather than let the flush land inside it.
+        // cross the boundary deliberately rather than let the flush land inside it. Crossing it
+        // also guarantees the service's flush collector is subscribed before the request is sent.
         awaitNextWallClockSecond()
 
-        flushWithRetry()
+        withTimeout("flushCurrentSegment() never completed") {
+            RecordingService.flushCurrentSegment()
+        }
 
-        val finalized = recorderFactory.awaitFinalizedFiles(count = 1)
-        assertEquals(1, finalized.size)
-        assertReadableAudio(finalized.single())
+        val flushedFile = recorderFactory.awaitFinalizedFiles(count = 1).single()
+        assertReadableAudio(flushedFile)
 
-        val replacement = recorderFactory.awaitRecorder(index = 1)
-        assertTrue(
-            "Replacement segment reused the finalized segment's file",
-            replacement.outputFile?.absolutePath != finalized.single().absolutePath
-        )
+        // The service's own record of the segment, not just the fake's bookkeeping.
+        val rows = segmentDao.getAllSegments().first()
+        assertEquals("Expected the flushed segment plus its replacement", 2, rows.size)
+        val flushedRow = rows.first()
+        assertTrue("Flushed segment row is not marked complete", flushedRow.isComplete)
+        assertEquals(flushedFile.absolutePath, flushedRow.filePath)
+        assertTrue("Flushed segment has no duration", flushedRow.durationMs > 0)
+        assertTrue("Replacement segment row should still be open", !rows[1].isComplete)
 
         // Flushing rotates rather than stops: the service keeps recording into a fresh segment and
         // the UI, which observes this StateFlow directly, must still see a running recording.
         assertTrue("Service stopped running after a flush", RecordingService.isRunning.value)
+
+        val replacementFilePath = recorderFactory.awaitRecorder(index = 1).outputFile?.absolutePath
+        assertTrue("Replacement segment never opened a file", replacementFilePath != null)
         assertTrue(
-            "Flush did not open a replacement segment",
-            recorderFactory.createdCount() >= 2
+            "Replacement segment reused the finalized segment's file",
+            replacementFilePath != flushedFile.absolutePath
         )
+
+        // Stopping finalizes the replacement segment, which the test never fed. That path is what
+        // every later flow test hits on teardown, so prove it also yields a readable MP4.
+        RecordingService.stop(context)
+        awaitRunning(expected = false)
+        val replacementFile = recorderFactory.awaitFinalizedFiles(count = 2)[1]
+        assertReadableAudio(replacementFile)
     }
 
     private fun assertReadableAudio(file: File) {
@@ -140,61 +163,59 @@ class RecordingSegmentTest {
             val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
             assertTrue("Track is not audio but '$mime'", mime.startsWith("audio/"))
 
-            val durationUs = format.getLong(MediaFormat.KEY_DURATION)
-            assertTrue(
-                "Expected at least ${MIN_EXPECTED_DURATION_US}us of audio, got ${durationUs}us",
-                durationUs >= MIN_EXPECTED_DURATION_US
-            )
+            // Only a lower bound: AAC priming and padding vary by emulator codec, and a very short
+            // segment may carry no duration key at all, so the sample walk below is the real proof.
+            if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                val durationUs = format.getLong(MediaFormat.KEY_DURATION)
+                assertTrue("Segment ${file.name} holds no audio (${durationUs}us)", durationUs > 0)
+            }
 
             extractor.selectTrack(0)
             val buffer = ByteBuffer.allocate(SAMPLE_BUFFER_BYTES)
-            assertTrue("No readable sample in ${file.name}", extractor.readSampleData(buffer, 0) > 0)
+            var samples = 0
+            while (extractor.readSampleData(buffer, 0) > 0) {
+                samples++
+                extractor.advance()
+            }
+            assertTrue("No readable samples in ${file.name}", samples > 0)
         } finally {
             extractor.release()
         }
     }
 
-    /**
-     * `flushRequests` is a replayless `MutableSharedFlow`, so a request emitted in the instant
-     * between the service starting its first segment and its collector subscribing is dropped and
-     * the caller waits forever. Production reaches the flush through the UI, long after that
-     * window; a test can hit it, so retry rather than hang.
-     */
-    private suspend fun flushWithRetry() {
-        repeat(FLUSH_ATTEMPTS) { attempt ->
-            val completed = withTimeoutOrNull(FLUSH_TIMEOUT_MS) {
-                RecordingService.flushCurrentSegment()
-                true
-            }
-            if (completed == true) return
-            check(attempt < FLUSH_ATTEMPTS - 1) { "flushCurrentSegment() never completed" }
-        }
+    private fun clearRecordedState() = runBlocking {
+        segmentDao.getAllSegments().first().forEach { segmentDao.delete(it) }
+        File(context.cacheDir, "segments").deleteRecursively()
+        File(context.cacheDir, "waveforms").deleteRecursively()
     }
 
     private suspend fun awaitNextWallClockSecond() {
         val second = System.currentTimeMillis() / 1000
         while (System.currentTimeMillis() / 1000 <= second) {
-            kotlinx.coroutines.delay(POLL_INTERVAL_MS)
+            delay(POLL_INTERVAL_MS)
         }
     }
 
-    private suspend fun awaitRunning(expected: Boolean) {
-        val reached = withTimeoutOrNull(STATE_TIMEOUT_MS) {
-            while (RecordingService.isRunning.value != expected) {
-                kotlinx.coroutines.delay(POLL_INTERVAL_MS)
-            }
+    private suspend fun awaitRunning(expected: Boolean) = withTimeout(
+        "RecordingService.isRunning never became $expected"
+    ) {
+        while (RecordingService.isRunning.value != expected) {
+            delay(POLL_INTERVAL_MS)
+        }
+    }
+
+    private suspend fun withTimeout(message: String, block: suspend () -> Unit) {
+        val completed = withTimeoutOrNull(STATE_TIMEOUT_MS) {
+            block()
             true
         }
-        check(reached == true) { "RecordingService.isRunning never became $expected" }
+        check(completed == true) { message }
     }
 
     private companion object {
-        const val SEGMENT_DURATION_MS = 2_000L
-        const val MIN_EXPECTED_DURATION_US = 1_500_000L
+        const val FED_DURATION_MS = 2_000L
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
-        const val FLUSH_ATTEMPTS = 5
-        const val FLUSH_TIMEOUT_MS = 10_000L
-        const val STATE_TIMEOUT_MS = 20_000L
+        const val STATE_TIMEOUT_MS = 30_000L
         const val POLL_INTERVAL_MS = 50L
     }
 }

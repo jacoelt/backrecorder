@@ -10,8 +10,7 @@ import javax.inject.Singleton
 
 /**
  * Replaces [RecorderModule] for every instrumented test, so recording runs on
- * [FakeAudioRecorderFactory] instead of the microphone. Nothing else in the graph changes — the
- * database, the dispatchers and `RecordingFlusher` stay exactly as production wires them.
+ * [FakeAudioRecorderFactory] instead of the microphone.
  *
  * A test reaches the fake by injecting [FakeAudioRecorderFactory] directly; the same `@Singleton`
  * instance backs the [AudioRecorderFactory] the service gets.
