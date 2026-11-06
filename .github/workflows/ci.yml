@@ -1,0 +1,71 @@
+name: CI
+
+# Runs on every pull request (including from forks) and on every commit that
+# reaches main. Deliberately `pull_request`, never `pull_request_target`: fork
+# PRs run untrusted code, so this workflow must never see a secret. Nothing
+# here needs one — the release build is left unsigned, and the app has no
+# google-services.json dependency at build time.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Unit tests + minified release build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Guards the regression that made the first release run fail with exit 126:
+      # gradlew was committed as 100644 from Windows, where git records no
+      # executable bit. A Windows clone with core.fileMode unset will happily
+      # re-commit it that way, so assert the mode in the index rather than on disk.
+      - name: Assert gradlew is executable in the index
+        run: |
+          set -euo pipefail
+          MODE=$(git ls-files --stage -- gradlew | awk '{print $1}')
+          if [ "$MODE" != "100755" ]; then
+            echo "::error file=gradlew::gradlew is mode ${MODE:-missing} in the git index, expected 100755."
+            echo "Fix with: git update-index --chmod=+x gradlew && git commit -m 'fix(ci): mark gradlew executable'"
+            exit 1
+          fi
+          echo "gradlew is $MODE in the index."
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        id: unit_tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Upload unit test report
+        if: ${{ failure() && steps.unit_tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: |
+            app/build/reports/tests/testDebugUnitTest
+            app/build/test-results/testDebugUnitTest
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Not redundant with the unit tests: this is the only job that runs R8 over
+      # proguard-rules.pro. The Drive client resolves types reflectively, so a
+      # missing keep rule shows up here and nowhere else.
+      - name: Minified release build
+        run: ./gradlew :app:assembleRelease --no-daemon
