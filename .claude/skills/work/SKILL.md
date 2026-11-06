@@ -214,24 +214,29 @@ Branch on the result:
 - **All `pass` / `skipping`** → Step 10.
 - **Any `fail` / `cancel`** → read the failing log (`gh run view "$RUN_ID" --log-failed | tail -80`; `references/` in the self-review skill lists this repo's known failure signatures — lost `gradlew` exec bit, R8 missing-class, KSP/Hilt graph errors, non-semver `VERSION_NAME`). Fix the **cause**, re-run the Step 5 local gate, commit, push, and poll again. **Three** such attempts, then stop and report.
 - **Still `pending` at the cap** → stop and report; don't merge on an unfinished pipeline.
-- **Zero checks reported** → this is *not* a pass. Check whether `.github/workflows/ci.yml` exists on `main` (it was added late to this repo — `git ls-tree origin/main .github/workflows/`). If it genuinely isn't there yet, say so plainly, note that the only verification is the Step 5 local gate, and continue. If it is there and no run was created, stop — something is wrong with the pipeline and merging blind isn't the answer.
+- **Zero checks reported** → **stop.** This is not a pass, and since the `main: PR + green CI` ruleset requires a green `Build and test`, it is also an unmergeable state (Step 10). Diagnose before reporting: if `.github/workflows/ci.yml` is missing from `main` (`git ls-tree origin/main .github/workflows/`), that is the cause — a branch cut from such a `main` gets no checks at all, the required context never reports, and no PR can merge by any normal route until the workflow lands (issue #30). Say exactly that, and that the Step 5 local gate is the only verification the change received. If `ci.yml` *is* on `main` and no run was created, something is wrong with the pipeline — say so and stop.
 
 ---
 
 ## Step 10 — Merge
 
-Preconditions, all of them: CI green (or the documented no-workflow case above), review loop `CLEAN`, PR not a draft, mergeable without conflict (`gh pr view --json mergeable,mergeStateStatus`). Conflict → rebase via the `rebase` skill (`skill: "rebase"`, args `"--auto"`), push, re-run Step 9.
+`main` is protected by an active repository **ruleset** — `main: PR + green CI`, with **no bypass actors**. It requires a pull request with **0 approving reviews** (so nothing waits on a human) and a green required status check named **`Build and test`** — the job in `.github/workflows/ci.yml`. Merge, squash and rebase are all permitted.
+
+Preconditions, all of them: `Build and test` green, review loop `CLEAN`, PR not a draft, mergeable without conflict (`gh pr view --json mergeable,mergeStateStatus`). `mergeStateStatus: BLOCKED` with `mergeable: MERGEABLE` means the ruleset is unsatisfied, not that the branch conflicts — read the checks before concluding anything. Conflict → rebase via the `rebase` skill (`skill: "rebase"`, args `"--auto"`), push, re-run Step 9.
 
 ```bash
-gh pr merge "$PR_NUMBER" --squash --delete-branch
+gh pr merge "$PR_NUMBER" --squash
 ```
 
-Squash, because the branch's review-round commits are noise on `main`. No approval is required or waited for — this is a single-maintainer repo with no branch protection, and the user has standing permission for this skill to merge its own PRs. Nothing else about that permission extends anywhere else.
+Squash, because the branch's review-round commits are noise on `main`. No approval is required or waited for: the user has standing permission for this skill to merge its own PRs, and the ruleset agrees by requiring zero reviews.
 
-Then return the local checkout to a clean trunk:
+**Never bypass the ruleset.** No `--admin`, no editing or disabling the ruleset, no pushing to `main` directly. (With no bypass actors, `--admin` doesn't work anyway — but the point is that a required check that can't go green is a signal to stop and report, not an obstacle to route around.) Do not enable auto-merge (`--auto`) either: it would leave the run "finished" with nothing merged and no one watching.
+
+Delete the branch **after** the merge, as a separate step — `gh pr merge --delete-branch` switches the local checkout to `main` and tries to pull, which fails on any uncommitted work and leaves files missing from the worktree:
 
 ```bash
-git checkout main && git pull origin main && git branch -d "<branch>" 2>/dev/null || true
+git push origin --delete "<branch>"
+git checkout main && git merge --ff-only origin/main && git branch -d "<branch>" 2>/dev/null || true
 ```
 
 Confirm the squash commit is actually on `main` (`git log --oneline -1`) before anything in Step 11 runs.
@@ -298,9 +303,10 @@ Then, in prose, state plainly:
 
 ## Safety rules
 
-- **The hard stops are hard.** Ambiguous or epic issue (2a), review escalation or drift (6), unbuildable branch (5), CI red after three fixes or stuck pending (9), merge conflict that `rebase --auto` won't resolve (10), release-workflow failure (11). At every one of them the run ends and reports; it does not improvise past them.
+- **The hard stops are hard.** Ambiguous or epic issue (2a), review escalation or drift (6), unbuildable branch (5), CI red after three fixes, stuck pending, or reporting no checks at all (9), merge conflict that `rebase --auto` won't resolve (10), release-workflow failure (11). At every one of them the run ends and reports; it does not improvise past them.
 - **Never `git add -A`.** Stage named paths, always.
 - **Never force-push** from this skill. The only force-push in the whole pipeline is the `--force-with-lease` inside the `rebase` skill, on a branch this run created.
+- **Never bypass the `main` ruleset** — no `--admin` merge, no change to the ruleset itself, no direct push to `main`, no auto-merge left running after the run ends. A required check that cannot go green is a stop, not an obstacle.
 - **Never commit a secret**, and never add one to a workflow. The sensitive-file list in `CLAUDE.md` is absolute.
 - **One issue, one branch, one PR.** If the work turns out to need a second change, finish or stop this one and say so — don't fan out.
 - **Never re-dispatch a failed release**, never dispatch from anything but `main`, never touch `VERSION_CODE_BASE` except to resolve a duplicate-code failure, and never promote beyond `internal`. Alpha, beta and production are not this skill's business.
