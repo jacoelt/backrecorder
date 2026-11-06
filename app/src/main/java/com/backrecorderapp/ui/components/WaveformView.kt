@@ -21,11 +21,19 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.unit.dp
 import com.backrecorderapp.util.TimeUtils
 import kotlin.math.abs
 import kotlin.math.hypot
+
+/**
+ * Test tag on the gesture surface. [WaveformView] draws the handles on a bare [Canvas], which
+ * carries no semantics of its own, so an instrumented test has nothing to aim a drag at without
+ * it. Tagging adds no behaviour and no accessibility label — it only makes the surface findable.
+ */
+const val WAVEFORM_CANVAS_TEST_TAG = "waveform_canvas"
 
 private val HANDLE_ZONE_HEIGHT = 32.dp
 private val LABEL_ROW_HEIGHT = 20.dp
@@ -126,6 +134,7 @@ fun WaveformView(
         // label regions of the canvas.
         Canvas(
             modifier = Modifier
+                .testTag(WAVEFORM_CANVAS_TEST_TAG)
                 .fillMaxWidth()
                 .height(LABEL_ROW_HEIGHT + HANDLE_ZONE_HEIGHT + 150.dp + HANDLE_ZONE_HEIGHT + LABEL_ROW_HEIGHT)
                 .pointerInput(Unit) {
