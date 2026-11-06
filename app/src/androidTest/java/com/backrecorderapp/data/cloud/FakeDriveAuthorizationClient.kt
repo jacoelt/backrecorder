@@ -49,11 +49,12 @@ class FakeDriveAuthorizationClient @Inject constructor() : DriveAuthorizationCli
         granted = true
     }
 
-    /** Tokens handed out so far, oldest first. */
     fun issuedTokens(): List<String> = synchronized(issued) { issued.toList() }
 
     /** The token the manager is currently expected to be using. */
-    fun currentToken(): String = issuedTokens().last()
+    fun currentToken(): String = checkNotNull(issuedTokens().lastOrNull()) {
+        "No token has been issued yet — authorize() has not run since the last reset()"
+    }
 
     fun reset() {
         counter.set(0)

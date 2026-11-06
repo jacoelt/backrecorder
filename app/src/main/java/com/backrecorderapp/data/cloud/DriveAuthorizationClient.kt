@@ -1,6 +1,7 @@
 package com.backrecorderapp.data.cloud
 
 import android.content.Context
+import android.content.Intent
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
@@ -16,15 +17,12 @@ import javax.inject.Singleton
  * Services, which cannot complete a consent flow on a CI emulator. Production behaviour is
  * unchanged — [PlayServicesDriveAuthorizationClient] is the same two calls [DriveAuthManager] used
  * to make inline.
- *
- * Note this is the Authorization API, not `GoogleSignIn`: that and `GoogleAccountCredential` were
- * removed in play-services-auth 22 and are not available in this codebase.
  */
 interface DriveAuthorizationClient {
     suspend fun authorize(request: AuthorizationRequest): AuthorizationResult
 
     /** Reads the result out of the data returned by a launched consent intent. */
-    fun resultFromIntent(data: android.content.Intent): AuthorizationResult
+    fun resultFromIntent(data: Intent): AuthorizationResult
 }
 
 @Singleton
@@ -37,6 +35,6 @@ class PlayServicesDriveAuthorizationClient @Inject constructor(
     override suspend fun authorize(request: AuthorizationRequest): AuthorizationResult =
         delegate.authorize(request).await()
 
-    override fun resultFromIntent(data: android.content.Intent): AuthorizationResult =
+    override fun resultFromIntent(data: Intent): AuthorizationResult =
         delegate.getAuthorizationResultFromIntent(data)
 }

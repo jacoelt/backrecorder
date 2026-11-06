@@ -116,27 +116,47 @@ class DriveSyncE2eTest {
     private var scenario: ActivityScenario<MainActivity>? = null
     private var disclaimerWasAccepted = false
 
+    /**
+     * Everything this class touches is process-wide and outlives it: `FakeCloudModule` installs
+     * the Drive fakes for **every** instrumented test, `AppPreferences` is one DataStore, and
+     * `RecordingService`'s state is static. So teardown does not just tidy up — it has to put the
+     * fakes back to the state an unrelated later test expects, above all revoking the grant, or
+     * that test opens Settings and finds a connected Drive account it never asked for.
+     *
+     * The order matters too: the sync loop is stopped and allowed to go quiet *before* the server
+     * closes and the database is cleared, so a tick still in flight cannot write a row after the
+     * clear or hit a half-shut server.
+     */
     @After
     fun tearDown() {
-        cloudSyncManager.stopSync()
         try {
+            cloudSyncManager.stopSync()
             RecordingService.stop(context)
             runBlocking {
                 awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
                 awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
-                driveAuthManager.signOut()
+                // The loop cancels, but a Drive call already blocked in the transport is not
+                // interruptible; wait for the server to go quiet rather than race it.
+                awaitDriveQuiet()
             }
         } finally {
             scenario?.close()
             scenario = null
             recorderFactory.reset()
+            // stop() first: it waits for the handlers, so nothing can repopulate the reset map.
             server.stop()
+            server.reset()
+            authorizationClient.reset()
             billing.setUnresolved()
             clearRecordedState()
             runBlocking {
                 appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
                 appPreferences.setPendingRecoveryFolder(null)
                 appPreferences.setDisclaimerAccepted(disclaimerWasAccepted)
+                // Clears the session and the pinned account from DataStore. In the `finally` on
+                // purpose: a pin surviving this class changes `authorizationRequest()` for every
+                // later test in the process.
+                driveAuthManager.signOut()
             }
         }
     }
@@ -153,7 +173,7 @@ class DriveSyncE2eTest {
         appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
         cloudSyncManager.startSync()
 
-        awaitUntil("The segment never reached the fake Drive") {
+        awaitUntil("The segment never reached the fake Drive", LOOP_TIMEOUT_MS) {
             server.entries().any { it.name == segmentFile.name }
         }
 
@@ -177,7 +197,7 @@ class DriveSyncE2eTest {
             segmentFile.readBytes().contentEquals(uploaded.content ?: ByteArray(0))
         )
 
-        awaitUntil("The segment row was never marked uploaded") {
+        awaitUntil("The segment row was never marked uploaded", LOOP_TIMEOUT_MS) {
             segmentDao.getSegmentsPendingUpload(10).isEmpty()
         }
         val row = segmentDao.getAllSegments().first()
@@ -187,16 +207,18 @@ class DriveSyncE2eTest {
     }
 
     /**
-     * The most valuable assertion in this flow.
-     *
-     * A `recovery_<timestamp>` folder is a sibling of `staging`, never a child. Everything inside
+     * A `recovery_<timestamp>` folder is a sibling of `staging`, never a child: everything inside
      * `staging` is deleted once it ages past the 24h buffer, so a recovery folder placed there is
-     * deleted with its contents — taking exactly the recordings the user was just told had been
-     * preserved. The test ends by running the buffer-cleanup predicate for real and checking the
-     * rescued files are still there.
+     * deleted with its contents — exactly the recordings the user was just told had been preserved.
+     *
+     * What this asserts, precisely: the folder's parent is the root and not `staging`; each rescued
+     * file lives only in the recovery folder; and neither the folder nor its contents appears in
+     * the staging listing that buffer cleanup works from. The last part is then checked by running
+     * cleanup's own predicate — list staging, delete what is past the cutoff — and confirming the
+     * rescued files survive it.
      */
     @Test
-    fun aRecoveryFolderIsASiblingOfStagingAndSurvivesBufferCleanup() = runBlocking {
+    fun aRecoveryFolderIsCreatedBesideStagingAndIsOutOfCleanupsReach() = runBlocking {
         authorize()
         val folders = driveCloudStorage.ensureFolderStructure()
         assertNotNull("Could not resolve the Drive folder structure", folders)
@@ -214,8 +236,14 @@ class DriveSyncE2eTest {
         appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
         cloudSyncManager.startSync()
 
-        awaitUntil("No recovery folder was ever created") { recoveryFolder() != null }
+        awaitUntil("No recovery folder was ever created", LOOP_TIMEOUT_MS) {
+            recoveryFolder() != null
+        }
         val recovery = recoveryFolder()!!
+        assertTrue(
+            "Recovery folder '${recovery.name}' is not named recovery_<timestamp>",
+            RECOVERY_FOLDER_NAME.matches(recovery.name)
+        )
 
         assertEquals(
             "The recovery folder must be a sibling of staging, directly under $ROOT_FOLDER",
@@ -228,7 +256,7 @@ class DriveSyncE2eTest {
             stagingId in recovery.parents
         )
 
-        awaitUntil("The stale files were never moved into the recovery folder") {
+        awaitUntil("The stale files were never moved into the recovery folder", LOOP_TIMEOUT_MS) {
             stale.all { server.entry(it.id)?.parents?.contains(recovery.id) == true }
         }
         stale.forEach { file ->
@@ -293,6 +321,27 @@ class DriveSyncE2eTest {
             calls.any { it.status == 200 && it.bearerToken == refreshed }
         )
         assertTrue("The grant should still be live", driveAuthManager.isAuthorized.value)
+
+        // The issue asks for the upload to complete, not merely for the refresh to happen: an
+        // upload is a resumable two-request exchange, so a refresh that works for a plain GET
+        // does not by itself prove one works here.
+        val file = File(context.cacheDir, "refreshed-upload.m4a").apply {
+            writeBytes(ByteArray(2048) { it.toByte() })
+        }
+        try {
+            val uploadedId = driveCloudStorage.uploadSegment(file)
+            assertNotNull("The upload after the refresh did not complete", uploadedId)
+            val staging = requireFolder(parentId = null, name = ROOT_FOLDER).let { root ->
+                requireFolder(parentId = root.id, name = STAGING_FOLDER)
+            }
+            assertEquals(
+                "The refreshed upload did not land in staging",
+                listOf(staging.id),
+                server.entry(uploadedId!!)!!.parents.toList()
+            )
+        } finally {
+            file.delete()
+        }
     }
 
     /**
@@ -391,6 +440,10 @@ class DriveSyncE2eTest {
         return file
     }
 
+    /**
+     * TODO: remove once jacoelt/backrecorder#46 and #47 are fixed — it exists only to step around
+     * the filename collision and the dropped-flush-request race, not because the flow needs it.
+     */
     private suspend fun awaitNextWallClockSecond(marginMs: Long) {
         val second = System.currentTimeMillis() / 1000
         while (System.currentTimeMillis() < (second + 1) * 1000 + marginMs) {
@@ -421,6 +474,21 @@ class DriveSyncE2eTest {
         File(context.cacheDir, "waveforms").deleteRecursively()
     }
 
+    /**
+     * Waits until the fake server has been idle for a continuous window.
+     *
+     * A single idle sample proves nothing: one sync tick makes several blocking Drive calls in a
+     * row and is idle in the gaps between them, so sampling there would let teardown close the
+     * server and clear the database underneath the next call.
+     */
+    private suspend fun awaitDriveQuiet() {
+        var consecutive = 0
+        awaitUntil("A Drive request was still in flight") {
+            consecutive = if (server.isIdle()) consecutive + 1 else 0
+            consecutive >= QUIET_POLLS
+        }
+    }
+
     /** Polls [condition] until it holds, failing with [message] rather than a bare timeout. */
     private suspend fun awaitUntil(
         message: String,
@@ -440,9 +508,22 @@ class DriveSyncE2eTest {
         const val STAGING_FOLDER = "staging"
         const val RECOVERY_FOLDER_PREFIX = "recovery_"
 
+        /** `recovery_` plus the `yyyy-MM-dd_HH-mm` stamp CloudSyncManager formats. */
+        val RECOVERY_FOLDER_NAME = Regex("""recovery_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}""")
+
         const val FED_DURATION_MS = 1_000L
         const val FLUSH_READY_MARGIN_MS = 250L
         const val STATE_TIMEOUT_MS = 30_000L
+
+        /**
+         * Awaits that depend on CloudSyncManager's loop get their own, much longer budget.
+         * SYNC_INTERVAL_MS is 30s and one failed tick backs off to 60s, so a 30s deadline would
+         * fail the test on the first skipped or unlucky tick rather than on the behaviour.
+         */
+        const val LOOP_TIMEOUT_MS = 150_000L
         const val POLL_INTERVAL_MS = 100L
+
+        /** Consecutive idle polls that count as the Drive client having gone quiet. */
+        const val QUIET_POLLS = 10
     }
 }

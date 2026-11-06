@@ -53,6 +53,7 @@ class DriveAuthManager @Inject constructor(
 ) {
     companion object {
         private const val TAG = "DriveAuthManager"
+
         /** Account type every Google account on the device carries. */
         private const val GOOGLE_ACCOUNT_TYPE = "com.google"
 

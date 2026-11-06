@@ -14,7 +14,9 @@ import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPInputStream
 import javax.inject.Inject
@@ -49,16 +51,33 @@ import kotlin.concurrent.thread
 @Singleton
 class FakeDriveServer @Inject constructor() {
 
-    /** A file or folder in the fake Drive. */
+    /**
+     * A file or folder in the fake Drive.
+     *
+     * Every mutable field is safe to read from another thread: a recovery move PATCHes `parents`
+     * on a connection thread while the test polls the same entry and the sync loop lists it.
+     * `parents` is copy-on-write so an iteration cannot see it change underneath.
+     */
     class Entry(
         val id: String,
-        var name: String,
+        name: String,
         val mimeType: String,
-        val parents: MutableList<String>,
+        parents: List<String>,
         val createdTime: Long,
-        var content: ByteArray? = null,
-        var trashed: Boolean = false
-    )
+        content: ByteArray? = null,
+        trashed: Boolean = false
+    ) {
+        @Volatile
+        var name: String = name
+
+        @Volatile
+        var content: ByteArray? = content
+
+        @Volatile
+        var trashed: Boolean = trashed
+
+        val parents: MutableList<String> = CopyOnWriteArrayList(parents)
+    }
 
     /** One request as the server saw it, for assertions about retries and bearer tokens. */
     data class Call(
@@ -72,6 +91,13 @@ class FakeDriveServer @Inject constructor() {
     private var serverSocket: ServerSocket? = null
     private var workers = Executors.newCachedThreadPool()
     private val ids = AtomicInteger(0)
+
+    /**
+     * Sockets currently being served. [stop] closes them: shutting the pool down cannot interrupt
+     * a thread blocked reading one, and a handler that outlives the test would write entries into
+     * the *next* test's freshly reset map.
+     */
+    private val openSockets = Collections.synchronizedSet(mutableSetOf<Socket>())
 
     private val entries = Collections.synchronizedMap(LinkedHashMap<String, Entry>())
     private val calls = Collections.synchronizedList(mutableListOf<Call>())
@@ -103,17 +129,62 @@ class FakeDriveServer @Inject constructor() {
                 val client = try {
                     socket.accept()
                 } catch (e: Exception) {
+                    // Only a closed listener means "stop"; anything else is transient and must
+                    // not silently kill the server for the rest of the test.
+                    if (socket.isClosed) return@thread
+                    android.util.Log.w("FakeDriveServer", "accept() failed", e)
+                    continue
+                }
+                // Registered here, not inside serve(): between accept() and the pool picking the
+                // task up, a request is already in flight, and a task rejected by a concurrent
+                // shutdown would otherwise leave the socket untracked and never closed.
+                register(client)
+                try {
+                    workers.execute { serve(client) }
+                } catch (e: Throwable) {
+                    // stop() can shut the pool down between accept() and dispatch, and an
+                    // uncaught throw on this thread would kill the test process rather than fail
+                    // a test.
+                    unregister(client)
+                    runCatching { client.close() }
                     return@thread
                 }
-                workers.execute { serve(client) }
             }
         }
     }
 
+    /**
+     * Stops accepting, hangs up on anything in flight and waits for the handlers to finish.
+     *
+     * The waiting matters: this server is a process-wide `@Singleton`, so a handler still running
+     * when the next test calls [reset] would add a second `BackRecorder` folder to the fresh map
+     * and make that test fail somewhere unrelated.
+     */
     fun stop() {
         serverSocket?.close()
         serverSocket = null
         workers.shutdownNow()
+
+        // Closing is repeated rather than done once from a snapshot: a connection accepted just
+        // before the listener closed can still be registering while the first sweep runs. A
+        // closed socket makes a blocked read throw at once, so this normally drains immediately.
+        val deadline = System.currentTimeMillis() + SHUTDOWN_TIMEOUT_MS
+        var drained = false
+        while (!drained && System.currentTimeMillis() < deadline) {
+            synchronized(openSockets) { openSockets.toList() }
+                .forEach { runCatching { it.close() } }
+            drained = runCatching {
+                workers.awaitTermination(DRAIN_POLL_MS, TimeUnit.MILLISECONDS)
+            }.getOrDefault(false)
+        }
+        if (!drained) {
+            // Loud on purpose: a surviving handler writes into the *next* test's freshly reset
+            // state, which would surface as an unexplained failure somewhere else entirely.
+            android.util.Log.e(
+                "FakeDriveServer",
+                "Handlers still running after stop(); " + openSockets.size + " socket(s) open"
+            )
+        }
     }
 
     /** Forgets every file, call and revocation, keeping the current account. */
@@ -142,6 +213,15 @@ class FakeDriveServer @Inject constructor() {
     fun revokeToken(token: String) {
         revoked += token
     }
+
+    /**
+     * True when no request is being served.
+     *
+     * One sample is not proof the client has stopped: a sync tick makes several blocking calls in
+     * a row and is idle in the gaps between them. Callers waiting for the client to go quiet
+     * should require this to hold over a window — see `DriveSyncE2eTest.awaitDriveQuiet`.
+     */
+    fun isIdle(): Boolean = openSockets.isEmpty()
 
     fun recordedCalls(): List<Call> = synchronized(calls) { calls.toList() }
 
@@ -192,15 +272,24 @@ class FakeDriveServer @Inject constructor() {
         return entry
     }
 
-    // ---------------------------------------------------------------- serving
-
     /**
      * Nothing may escape here. An uncaught exception on any thread kills the whole process on
      * Android, which would turn a dropped socket into an unexplained "Process crashed" instead of
      * a test failure.
      */
+    private fun register(client: Socket) {
+        openSockets += client
+    }
+
+    private fun unregister(client: Socket) {
+        openSockets -= client
+    }
+
     private fun serve(client: Socket) {
         try {
+            // Without a read timeout a handler can sit in readLine() forever and outlive the
+            // test that started it.
+            client.soTimeout = READ_TIMEOUT_MS
             client.use { socket ->
                 val input = socket.getInputStream().buffered()
                 val request = readRequest(input) ?: return
@@ -220,6 +309,8 @@ class FakeDriveServer @Inject constructor() {
             }
         } catch (e: Throwable) {
             android.util.Log.w("FakeDriveServer", "Dropped a request", e)
+        } finally {
+            unregister(client)
         }
     }
 
@@ -274,16 +365,17 @@ class FakeDriveServer @Inject constructor() {
      * a `Location` to PUT the bytes to.
      */
     private fun startUpload(request: Request): Response {
-        val metadata = JSONObject(request.bodyText().ifBlank { "{}" })
         if (request.query["uploadType"] == "multipart") {
             // The other shape the client can take, kept so a future switch to direct upload does
-            // not silently stop exercising this server.
+            // not silently stop exercising this server. The body is multipart, not JSON, so it
+            // must not be parsed as JSON before this branch is taken.
             val parts = multipartBodies(request)
             val meta = parts.firstOrNull()?.let { JSONObject(String(it, Charsets.UTF_8)) }
-                ?: metadata
+                ?: JSONObject()
             return created(createFromMetadata(meta, parts.getOrNull(1)))
         }
 
+        val metadata = JSONObject(request.bodyText().ifBlank { "{}" })
         val uploadId = "upload-" + ids.incrementAndGet()
         uploadSessions[uploadId] = metadata
         return Response(
@@ -339,22 +431,49 @@ class FakeDriveServer @Inject constructor() {
     }
 
     private fun delete(id: String): Response {
-        val removed = entries.remove(id) ?: return Response(404, error(404, "File not found: " + id))
-        // Drive deletes a folder's contents with it. Modelling that is the whole point of this
-        // fake for the recovery flow: a recovery folder left inside `staging` really does take
-        // the recordings in it when cleanup deletes it.
-        entries().filter { removed.id in it.parents }.forEach { delete(it.id) }
+        if (entries.remove(id) == null) return Response(404, error(404, "File not found: " + id))
+        // Drive deletes a folder's contents with it, which is what makes a misplaced recovery
+        // folder destructive rather than merely untidy. Walked with a queue off one snapshot
+        // rather than recursively, so a large folder does not copy the whole map per node.
+        val doomed = ArrayDeque(listOf(id))
+        val remaining = entries().toMutableList()
+        while (doomed.isNotEmpty()) {
+            val parent = doomed.removeFirst()
+            val children = remaining.filter { parent in it.parents }
+            remaining -= children.toSet()
+            children.forEach {
+                entries.remove(it.id)
+                doomed += it.id
+            }
+        }
         return Response(200, "{}")
     }
 
+    /**
+     * Paginated like Drive's own `files.list`, so `DriveCloudStorage`'s page loop is driven
+     * rather than bypassed by a server that always answers in one page.
+     */
     private fun list(request: Request): Response {
         val matcher = QueryMatcher(request.query["q"].orEmpty())
         val matched = entries()
             .filter(matcher::matches)
             .sortedBy { it.createdTime }
+
+        // Capped far below what the client asks for (DriveCloudStorage requests 1000), so the
+        // page loop and its MAX_PAGES guard are genuinely driven rather than answered in one page
+        // every time. Drive would honour the requested size; answering with fewer is allowed, and
+        // a fake that always fits everything in one page leaves that loop untested.
+        val requested = request.query["pageSize"]?.toIntOrNull() ?: matched.size
+        val pageSize = requested.coerceIn(1, MAX_PAGE_SIZE)
+        val from = request.query["pageToken"]?.toIntOrNull() ?: 0
+        val page = matched.drop(from).take(pageSize)
+
         val files = JSONArray()
-        matched.forEach { files.put(entryJson(it)) }
-        return Response(200, JSONObject().put("files", files).toString())
+        page.forEach { files.put(entryJson(it)) }
+        val body = JSONObject().put("files", files)
+        val next = from + page.size
+        if (next < matched.size) body.put("nextPageToken", next.toString())
+        return Response(200, body.toString())
     }
 
     private fun entryJson(entry: Entry): JSONObject = JSONObject()
@@ -377,8 +496,6 @@ class FakeDriveServer @Inject constructor() {
                 )
         )
         .toString()
-
-    // ------------------------------------------------------------ Drive's `q`
 
     /**
      * The handful of `q` clauses [DriveCloudStorage] actually sends. Unknown clauses fail loudly
@@ -430,8 +547,6 @@ class FakeDriveServer @Inject constructor() {
                 value.replace("""\'""", "'").replace("""\\""", """\""")
         }
     }
-
-    // -------------------------------------------------------------- HTTP bits
 
     private class Request(
         /**
@@ -618,6 +733,17 @@ class FakeDriveServer @Inject constructor() {
         const val DEFAULT_ACCOUNT_EMAIL = "first@example.com"
 
         private const val BACKLOG = 16
+
+        /** Caps how long a handler can block reading, so none outlives the test that started it. */
+        private const val READ_TIMEOUT_MS = 10_000
+
+        /** Longer than [READ_TIMEOUT_MS], so stop() outlasts a handler blocked on a read. */
+        private const val SHUTDOWN_TIMEOUT_MS = 15_000L
+        private const val DRAIN_POLL_MS = 100L
+
+        /** Deliberately tiny: see [list]. */
+        private const val MAX_PAGE_SIZE = 2
+
         private val HEADER_END = "\r\n\r\n".toByteArray(Charsets.UTF_8)
     }
 }
