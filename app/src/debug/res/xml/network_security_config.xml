@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only. The Drive flow test runs the real Drive client against an in-process fake backend
+  on the loopback interface, and Android blocks cleartext by default. Scoped to 127.0.0.1 and
+  localhost so nothing else gains an exemption, and confined to the debug source set so the
+  shipped release build is untouched.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

@@ -1,17 +1,15 @@
 package com.backrecorderapp.data.cloud
 
 import android.app.PendingIntent
-import android.content.Context
 import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Log
 import com.backrecorderapp.data.preferences.AppPreferences
-import com.google.android.gms.auth.api.identity.AuthorizationClient
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
-import com.google.android.gms.auth.api.identity.Identity
-import com.google.android.gms.tasks.Tasks
+import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
+import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
@@ -39,8 +37,8 @@ import java.io.IOException
  */
 class DriveAuthManagerTest {
 
-    private lateinit var context: Context
-    private lateinit var client: AuthorizationClient
+    private lateinit var client: DriveAuthorizationClient
+    private lateinit var driveServiceFactory: DriveServiceFactory
     private lateinit var preferences: AppPreferences
 
     @Before
@@ -57,13 +55,12 @@ class DriveAuthManagerTest {
         mockkStatic(TextUtils::class)
         every { TextUtils.isEmpty(any()) } returns false
 
-        context = mockk(relaxed = true)
         client = mockk(relaxed = true)
         preferences = mockk(relaxed = true)
-
-        // The client is obtained through a static factory in the constructor.
-        mockkStatic(Identity::class)
-        every { Identity.getAuthorizationClient(any<Context>()) } returns client
+        // The Drive client itself is never called here: these tests cover the grant state
+        // machine, and DriveSyncE2eTest covers the real client against a fake backend.
+        driveServiceFactory = mockk(relaxed = true)
+        every { driveServiceFactory.create(any()) } returns mockk<Drive>(relaxed = true)
     }
 
     @After
@@ -89,13 +86,11 @@ class DriveAuthManagerTest {
     }
 
     private fun answersWith(result: AuthorizationResult) {
-        every { client.authorize(any()) } returns Tasks.forResult(result)
+        coEvery { client.authorize(any()) } returns result
     }
 
     private fun answersWith(error: Throwable) {
-        every { client.authorize(any()) } returns Tasks.forException(
-            error as? Exception ?: IOException(error)
-        )
+        coEvery { client.authorize(any()) } throws (error as? Exception ?: IOException(error))
     }
 
     /** A resolver that always reports [identity] - null meaning "could not be determined". */
@@ -115,7 +110,7 @@ class DriveAuthManagerTest {
     ): DriveAuthManager {
         every { preferences.driveAccountId } returns flowOf(pinnedAccountId)
         every { preferences.driveAccountEmail } returns flowOf(pinnedEmail)
-        return DriveAuthManager(context, preferences, resolver)
+        return DriveAuthManager(preferences, resolver, client, driveServiceFactory)
     }
 
     @Test
@@ -265,7 +260,7 @@ class DriveAuthManagerTest {
         // detects drift that got through. Without setAccount, Play Services is free to resolve
         // whichever account it considers current.
         val request = slot<AuthorizationRequest>()
-        every { client.authorize(capture(request)) } returns Tasks.forResult(grant())
+        coEvery { client.authorize(capture(request)) } returns grant()
 
         val auth = newManager(
             resolver = resolverFor(DriveAccountIdentity("acct-1", "a@x.com")),
@@ -288,7 +283,7 @@ class DriveAuthManagerTest {
         // On the very first connect there is nothing to pin, and pinning a placeholder would
         // stop the account picker from ever appearing.
         val request = slot<AuthorizationRequest>()
-        every { client.authorize(capture(request)) } returns Tasks.forResult(grant())
+        coEvery { client.authorize(capture(request)) } returns grant()
 
         newManager().authorize()
 

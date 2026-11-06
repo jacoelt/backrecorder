@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.backrecorderapp.data.cloud.DriveAboutIdentityResolver
 import com.backrecorderapp.data.cloud.DriveAccountIdentityResolver
+import com.backrecorderapp.data.cloud.DriveServiceFactory
 import com.backrecorderapp.data.db.AppDatabase
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.domain.RecordingFlusher
@@ -43,8 +44,9 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDriveAccountIdentityResolver(
-        @IoDispatcher ioDispatcher: CoroutineDispatcher
-    ): DriveAccountIdentityResolver = DriveAboutIdentityResolver(ioDispatcher)
+        @IoDispatcher ioDispatcher: CoroutineDispatcher,
+        driveServiceFactory: DriveServiceFactory
+    ): DriveAccountIdentityResolver = DriveAboutIdentityResolver(ioDispatcher, driveServiceFactory)
 
     @Provides
     @Singleton
