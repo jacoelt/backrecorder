@@ -72,12 +72,17 @@ class RecordingSegmentTest {
             // the process.
             NotificationChannels.createAll(context)
             // Keep the activity on the disclaimer screen: this test only needs the app in the
-            // foreground, and the main screen's own work would be noise here.
-            runBlocking { appPreferences.setDisclaimerAccepted(false) }
+            // foreground, and the main screen's own work would be noise here. DataStore outlives
+            // the test, so the previous value is put back in tearDown.
+            runBlocking {
+                disclaimerWasAccepted = appPreferences.disclaimerAccepted.first()
+                appPreferences.setDisclaimerAccepted(false)
+            }
         }
     }
 
     private var scenario: ActivityScenario<MainActivity>? = null
+    private var disclaimerWasAccepted = false
 
     @After
     fun tearDown() {
@@ -88,9 +93,10 @@ class RecordingSegmentTest {
             scenario?.close()
             scenario = null
             recorderFactory.reset()
-            // Segments and rows survive the process, and later flow tests share this database and
-            // this cache directory.
+            // Segments, rows and preferences survive the process, and later flow tests share this
+            // database, this cache directory and this DataStore.
             clearRecordedState()
+            runBlocking { appPreferences.setDisclaimerAccepted(disclaimerWasAccepted) }
         }
     }
 
@@ -108,17 +114,25 @@ class RecordingSegmentTest {
 
         // `SegmentManager.createSegmentFile` names files to the second, so a rotation in the same
         // wall-clock second the segment started reuses the filename and the replacement segment's
-        // muxer truncates the one just finalized. Encoding is far faster than real time here, so
-        // cross the boundary deliberately rather than let the flush land inside it. Crossing it
-        // also guarantees the service's flush collector is subscribed before the request is sent.
-        awaitNextWallClockSecond()
+        // muxer truncates the one just finalized (jacoelt/backrecorder#46). Encoding is far faster
+        // than real time here, so cross the boundary deliberately rather than let the flush land
+        // inside it. The margin past the boundary also gives the service's flush collector — which
+        // subscribes shortly after the first segment opens — time to be listening, since a request
+        // emitted before it subscribes is dropped (#47).
+        awaitNextWallClockSecond(marginMs = FLUSH_READY_MARGIN_MS)
 
         withTimeout("flushCurrentSegment() never completed") {
             RecordingService.flushCurrentSegment()
         }
 
         val flushedFile = recorderFactory.awaitFinalizedFiles(count = 1).single()
-        assertReadableAudio(flushedFile)
+        // The segment must hold roughly what was fed. Without this the whole test would still pass
+        // if feed() did nothing, because stop() writes a short fallback segment regardless.
+        val flushedLastSampleUs = assertReadableAudio(flushedFile)
+        assertTrue(
+            "Flushed segment holds only ${flushedLastSampleUs}us, not the ${FED_DURATION_MS}ms fed",
+            flushedLastSampleUs >= MIN_FED_SAMPLE_US
+        )
 
         // The service's own record of the segment, not just the fake's bookkeeping.
         val rows = segmentDao.getAllSegments().first()
@@ -145,10 +159,40 @@ class RecordingSegmentTest {
         RecordingService.stop(context)
         awaitRunning(expected = false)
         val replacementFile = recorderFactory.awaitFinalizedFiles(count = 2)[1]
-        assertReadableAudio(replacementFile)
+        val replacementLastSampleUs = assertReadableAudio(replacementFile)
+        assertTrue(
+            "Never-fed segment should be short, not ${replacementLastSampleUs}us",
+            replacementLastSampleUs < MIN_FED_SAMPLE_US
+        )
     }
 
-    private fun assertReadableAudio(file: File) {
+    /**
+     * A second recording session in the same process, which is the first thing every later flow
+     * test does. Covers the never-fed segment path on its own and proves the harness's static
+     * state — `isRunning`, the flush flow, the `@Singleton` factory — survives a teardown and
+     * [FakeAudioRecorderFactory.reset] intact.
+     */
+    @Test
+    fun aRecordingSessionCanStartAndStopWithoutBeingFed() = runBlocking {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+
+        RecordingService.start(context)
+        awaitRunning(expected = true)
+        recorderFactory.awaitRecorder(index = 0)
+
+        RecordingService.stop(context)
+        awaitRunning(expected = false)
+
+        val file = recorderFactory.awaitFinalizedFiles(count = 1).single()
+        assertReadableAudio(file)
+        assertEquals("Expected exactly one segment row", 1, segmentDao.getAllSegments().first().size)
+    }
+
+    /**
+     * Asserts [file] is an MP4 `MediaExtractor` can read, and returns the presentation time of its
+     * last audio sample — which is how callers tell a segment that was fed from one that was not.
+     */
+    private fun assertReadableAudio(file: File): Long {
         assertTrue("Segment file ${file.name} does not exist", file.exists())
         assertTrue("Segment file ${file.name} is empty", file.length() > 0)
 
@@ -163,21 +207,17 @@ class RecordingSegmentTest {
             val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
             assertTrue("Track is not audio but '$mime'", mime.startsWith("audio/"))
 
-            // Only a lower bound: AAC priming and padding vary by emulator codec, and a very short
-            // segment may carry no duration key at all, so the sample walk below is the real proof.
-            if (format.containsKey(MediaFormat.KEY_DURATION)) {
-                val durationUs = format.getLong(MediaFormat.KEY_DURATION)
-                assertTrue("Segment ${file.name} holds no audio (${durationUs}us)", durationUs > 0)
-            }
-
             extractor.selectTrack(0)
             val buffer = ByteBuffer.allocate(SAMPLE_BUFFER_BYTES)
             var samples = 0
+            var lastSampleUs = 0L
             while (extractor.readSampleData(buffer, 0) > 0) {
                 samples++
+                lastSampleUs = extractor.sampleTime
                 extractor.advance()
             }
             assertTrue("No readable samples in ${file.name}", samples > 0)
+            return lastSampleUs
         } finally {
             extractor.release()
         }
@@ -189,9 +229,9 @@ class RecordingSegmentTest {
         File(context.cacheDir, "waveforms").deleteRecursively()
     }
 
-    private suspend fun awaitNextWallClockSecond() {
+    private suspend fun awaitNextWallClockSecond(marginMs: Long) {
         val second = System.currentTimeMillis() / 1000
-        while (System.currentTimeMillis() / 1000 <= second) {
+        while (System.currentTimeMillis() < (second + 1) * 1000 + marginMs) {
             delay(POLL_INTERVAL_MS)
         }
     }
@@ -214,6 +254,15 @@ class RecordingSegmentTest {
 
     private companion object {
         const val FED_DURATION_MS = 2_000L
+
+        /**
+         * Comfortably below [FED_DURATION_MS] but well above the fake's never-fed fallback, so the
+         * bound distinguishes a fed segment from an unfed one without depending on how AAC priming
+         * and padding land on a given emulator codec.
+         */
+        const val MIN_FED_SAMPLE_US = 1_000_000L
+
+        const val FLUSH_READY_MARGIN_MS = 250L
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
         const val STATE_TIMEOUT_MS = 30_000L
         const val POLL_INTERVAL_MS = 50L
