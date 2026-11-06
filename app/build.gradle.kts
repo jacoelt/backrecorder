@@ -52,7 +52,7 @@ android {
         versionCode = appVersionCode
         versionName = appVersionName
 
-        // Instruments the app with HiltTestApplication so @HiltAndroidTest can inject.
+        // Substitutes HiltTestApplication; see HiltTestRunner.
         testInstrumentationRunner = "com.backrecorderapp.HiltTestRunner"
     }
 
@@ -120,7 +120,7 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
     debugImplementation(libs.compose.ui.tooling)
-    // Debug-only manifest entry for the host activity Compose UI tests render content in.
+    // Debug-only manifest entry Compose UI tests need to host content.
     debugImplementation(libs.compose.ui.test.manifest)
 
     // Lifecycle
@@ -168,13 +168,15 @@ dependencies {
     testImplementation(libs.core.testing)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.room.testing)
-    androidTestImplementation(platform(libs.compose.bom))
-    androidTestImplementation(libs.compose.ui.test.junit4)
-    androidTestImplementation(libs.hilt.android.testing)
-    kspAndroidTest(libs.hilt.compiler)
     androidTestImplementation(libs.runner)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.test.ext.junit)
     androidTestImplementation(libs.coroutines.test)
+    // Compose UI / Hilt instrumented tests. androidTestImplementation does not extend
+    // implementation, so the Compose BOM needs declaring again here.
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.compiler)
 }
