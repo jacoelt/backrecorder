@@ -1,0 +1,11 @@
+# gradlew runs on the Linux CI runner. If it is ever committed with CRLF endings the
+# shebang breaks and the runner reports "bad interpreter", which is the same class of
+# Windows-only failure as the missing executable bit that broke the first release.
+# Scoped deliberately: a repo-wide `* text=auto` would renormalise every file and bury
+# the next real diff in churn.
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+*.jar binary
+*.jks binary
+*.keystore binary
