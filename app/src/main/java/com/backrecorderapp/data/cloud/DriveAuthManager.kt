@@ -2,7 +2,6 @@ package com.backrecorderapp.data.cloud
 
 import android.accounts.Account
 import android.app.PendingIntent
-import android.content.Context
 import android.content.Intent
 import android.os.Looper
 import android.os.SystemClock
@@ -10,14 +9,10 @@ import android.util.Log
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
-import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
 import com.google.api.client.http.HttpRequestInitializer
-import com.google.api.client.http.javanet.NetHttpTransport
-import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +21,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.tasks.await
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -52,13 +46,13 @@ import javax.inject.Singleton
  */
 @Singleton
 class DriveAuthManager @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val appPreferences: AppPreferences,
-    private val identityResolver: DriveAccountIdentityResolver
+    private val identityResolver: DriveAccountIdentityResolver,
+    private val authorizationClient: DriveAuthorizationClient,
+    private val driveServiceFactory: DriveServiceFactory
 ) {
     companion object {
         private const val TAG = "DriveAuthManager"
-        private const val APPLICATION_NAME = "Back Recorder"
 
         /** Account type every Google account on the device carries. */
         private const val GOOGLE_ACCOUNT_TYPE = "com.google"
@@ -89,8 +83,6 @@ class DriveAuthManager @Inject constructor(
     }
 
     private val driveScope = Scope(DriveScopes.DRIVE_FILE)
-
-    private val authorizationClient = Identity.getAuthorizationClient(context)
 
     /**
      * Address of the pinned account, mirrored from [AppPreferences] so the hot paths - token
@@ -146,7 +138,7 @@ class DriveAuthManager @Inject constructor(
     suspend fun authorize(): AuthorizationOutcome = sessionMutex.withLock {
         loadPin()
         val result = try {
-            authorizationClient.authorize(authorizationRequest()).await()
+            authorizationClient.authorize(authorizationRequest())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -185,7 +177,7 @@ class DriveAuthManager @Inject constructor(
                 return@withLock AuthorizationOutcome.Failed
             }
             try {
-                adoptLocked(authorizationClient.getAuthorizationResultFromIntent(data))
+                adoptLocked(authorizationClient.resultFromIntent(data))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -349,7 +341,7 @@ class DriveAuthManager @Inject constructor(
             // Pinned like every other request, so a refresh cannot silently slide onto another
             // account. The identity is not re-checked here: that needs a Drive call, and this
             // runs inside the Drive request initializer.
-            authorizationClient.authorize(authorizationRequest()).await()
+            authorizationClient.authorize(authorizationRequest())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -415,8 +407,6 @@ class DriveAuthManager @Inject constructor(
             }
         }
 
-        return Drive.Builder(NetHttpTransport(), GsonFactory.getDefaultInstance(), initializer)
-            .setApplicationName(APPLICATION_NAME)
-            .build()
+        return driveServiceFactory.create(initializer)
     }
 }

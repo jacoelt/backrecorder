@@ -2,9 +2,6 @@ package com.backrecorderapp.data.cloud
 
 import android.util.Log
 import com.google.api.client.http.HttpRequestInitializer
-import com.google.api.client.http.javanet.NetHttpTransport
-import com.google.api.client.json.gson.GsonFactory
-import com.google.api.services.drive.Drive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
@@ -39,12 +36,12 @@ interface DriveAccountIdentityResolver {
  * the identity *before* adopting a token, not after publishing it to the rest of the app.
  */
 class DriveAboutIdentityResolver(
-    private val ioDispatcher: CoroutineDispatcher
+    private val ioDispatcher: CoroutineDispatcher,
+    private val driveServiceFactory: DriveServiceFactory
 ) : DriveAccountIdentityResolver {
 
     companion object {
         private const val TAG = "DriveIdentity"
-        private const val APPLICATION_NAME = "Back Recorder"
     }
 
     override suspend fun resolve(accessToken: String): DriveAccountIdentity? =
@@ -54,13 +51,7 @@ class DriveAboutIdentityResolver(
                     request.headers.setAuthorization("Bearer $accessToken")
                 }
 
-                val user = Drive.Builder(
-                    NetHttpTransport(),
-                    GsonFactory.getDefaultInstance(),
-                    initializer
-                )
-                    .setApplicationName(APPLICATION_NAME)
-                    .build()
+                val user = driveServiceFactory.create(initializer)
                     .about()
                     .get()
                     .setFields("user(emailAddress,permissionId)")
