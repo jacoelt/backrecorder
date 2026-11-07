@@ -7,13 +7,17 @@ import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
+import com.backrecorderapp.service.FlushAbandonedException
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 
@@ -257,5 +261,111 @@ class SaveRecordingUseCaseTest {
             "Failed to finalize in-progress recording: boom",
             (result as SaveResult.Error).message
         )
+    }
+
+    /**
+     * Issue #47: before the timeout, a flush request the service never answered left
+     * this coroutine suspended forever and the save UI spinning with no error. The save
+     * must now fail visibly so the user can retry.
+     */
+    @Test
+    fun `returns error when the flush never completes (issue 47)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } coAnswers { awaitCancellation() }
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        val result = saveRecordingUseCase.execute(
+            startTime = now - 20_000,
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        assertTrue(result is SaveResult.Error)
+        assertTrue(
+            "the error should name the timeout, not look like a generic failure",
+            (result as SaveResult.Error).message.contains("Timed out")
+        )
+    }
+
+    /**
+     * Issue #47: the service being torn down mid-save fails the flush with
+     * [FlushAbandonedException], which must read as an ordinary flush failure — not be
+     * confused with the timeout branch above.
+     */
+    @Test
+    fun `returns error when the service is torn down mid-flush (issue 47)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } throws FlushAbandonedException()
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        val result = saveRecordingUseCase.execute(
+            startTime = now - 20_000,
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        assertTrue(result is SaveResult.Error)
+        assertTrue(
+            (result as SaveResult.Error).message.startsWith("Failed to finalize in-progress recording")
+        )
+    }
+
+    /**
+     * Issue #47: the save screen going away cancels this coroutine. That must propagate,
+     * not be reported as a failed save — the flush block's timeout handling must not
+     * swallow a cancellation that is not its own.
+     */
+    @Test
+    fun `rethrows cancellation of the caller rather than reporting an error (issue 47)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } throws CancellationException("scope cleared")
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        var thrown: Throwable? = null
+        try {
+            saveRecordingUseCase.execute(
+                startTime = now - 20_000,
+                endTime = now,
+                outputUri = mockk()
+            )
+            fail("execute should have rethrown the cancellation")
+        } catch (e: CancellationException) {
+            thrown = e
+        }
+
+        assertEquals("scope cleared", thrown?.message)
     }
 }

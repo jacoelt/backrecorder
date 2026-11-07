@@ -9,6 +9,9 @@ import android.net.Uri
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.nio.ByteBuffer
 import javax.inject.Inject
@@ -31,6 +34,15 @@ class SaveRecordingUseCase @Inject constructor(
     private val recordingFlusher: RecordingFlusher
 ) {
 
+    companion object {
+        /**
+         * Upper bound on the flush handshake. The service normally answers in well under
+         * a second; this only bounds the cases where it never answers at all, turning a
+         * permanently hung save into a visible, retryable error (issue #47).
+         */
+        const val FLUSH_TIMEOUT_MS = 10_000L
+    }
+
     suspend fun execute(startTime: Long, endTime: Long, outputUri: Uri): SaveResult {
         // Check subscription gate
         val gateResult = subscriptionGate.checkSaveAccess(startTime, endTime)
@@ -52,7 +64,18 @@ class SaveRecordingUseCase @Inject constructor(
         if (segments.any { !it.isComplete }) {
             val flushMoment = System.currentTimeMillis()
             try {
-                recordingFlusher.flushCurrentSegment()
+                withTimeout(FLUSH_TIMEOUT_MS) {
+                    recordingFlusher.flushCurrentSegment()
+                }
+            } catch (e: TimeoutCancellationException) {
+                return SaveResult.Error(
+                    "Timed out waiting for the in-progress recording to be finalized. " +
+                        "Please try again."
+                )
+            } catch (e: CancellationException) {
+                // The caller's own cancellation — the save screen went away. Let it
+                // propagate instead of reporting an error for a save nobody is waiting on.
+                throw e
             } catch (e: Exception) {
                 return SaveResult.Error("Failed to finalize in-progress recording: ${e.message}")
             }

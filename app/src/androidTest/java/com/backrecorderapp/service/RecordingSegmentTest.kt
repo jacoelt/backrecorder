@@ -122,11 +122,9 @@ class RecordingSegmentTest {
         val firstRecorder = recorderFactory.awaitRecorder(index = 0)
         firstRecorder.feed(FED_DURATION_MS)
 
-        // No wall-clock alignment any more: segment filenames carry the segment's id, so a
-        // rotation inside the second the segment started cannot reuse its path (#46). What is
-        // left is purely the flush collector's head start — see [FLUSH_READY_MARGIN_MS].
-        delay(FLUSH_READY_MARGIN_MS)
-
+        // Nothing is waited for before the flush: filenames carry the segment's id, so a rotation
+        // inside the second it started cannot reuse its path (#46), and a request made before the
+        // flush collector is ready is queued rather than dropped (#47).
         withTimeout("flushCurrentSegment() never completed") {
             RecordingService.flushCurrentSegment()
         }
@@ -170,6 +168,37 @@ class RecordingSegmentTest {
             "Never-fed segment should be short, not ${replacementLastSampleUs}us",
             replacementLastSampleUs < MIN_FED_SAMPLE_US
         )
+    }
+
+    /**
+     * Issue #47: a flush asked for in the gap between the service reporting itself running and its
+     * flush collector being ready. Nothing is fed on purpose — the point is to hit that gap.
+     *
+     * A smoke test, not the regression guard: the gap is milliseconds wide and this cannot force
+     * the race. `FlushCoordinatorTest` on the JVM is what actually pins the behaviour.
+     */
+    @Test
+    fun flushRequestedBeforeTheCollectorIsReadyStillCompletes() = runBlocking {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+
+        RecordingService.start(appContext)
+        awaitRecordingService(running = true)
+
+        withTimeout("flushCurrentSegment() never completed — the request was dropped (#47)") {
+            RecordingService.flushCurrentSegment()
+        }
+
+        // The flush rotated rather than stopped: one finalized segment, one still open.
+        // Assert on the partition, not on row order — nothing was fed, so both rows can
+        // share a startTime and getAllSegments only orders by that.
+        recorderFactory.awaitFinalizedFiles(count = 1)
+        assertTrue("Service stopped running after a flush", RecordingService.isRunning.value)
+        val rows = segmentDao.getAllSegments().first()
+        assertEquals("Expected the flushed segment plus its replacement", 2, rows.size)
+        assertEquals("Expected exactly one finalized segment", 1, rows.count { it.isComplete })
+
+        RecordingService.stop(appContext)
+        awaitRecordingService(running = false)
     }
 
     /**
@@ -247,15 +276,6 @@ class RecordingSegmentTest {
          */
         const val MIN_FED_SAMPLE_US = 1_000_000L
 
-        /**
-         * How long to let the service's flush collector subscribe before asking for a flush. It
-         * subscribes shortly after the first segment opens, and a request emitted before then is
-         * dropped and never completes (#47). Generous on purpose: this used to ride on the wait
-         * for the next wall-clock second, which averaged far more than a token delay, and
-         * shortening it along with that wait would have traded one bug's workaround for the
-         * other's flakiness. It can go once #47 lands.
-         */
-        const val FLUSH_READY_MARGIN_MS = 1_000L
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
     }
 }

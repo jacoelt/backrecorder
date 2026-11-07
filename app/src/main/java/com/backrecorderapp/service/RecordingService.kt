@@ -21,14 +21,12 @@ import com.backrecorderapp.data.waveform.WaveformRepository
 import com.backrecorderapp.service.recorder.AudioRecorder
 import com.backrecorderapp.service.recorder.AudioRecorderFactory
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,20 +48,19 @@ class RecordingService : Service() {
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
-        private val flushRequests = MutableSharedFlow<CompletableDeferred<Unit>>(
-            extraBufferCapacity = 8
-        )
+        private val flushCoordinator = FlushCoordinator()
 
         /**
          * Force the current in-progress segment to be finalized (MOOV atom written)
          * so it can be read by MediaExtractor. Suspends until the rotation completes.
          * Returns immediately if the service is not running.
+         *
+         * Throws [FlushAbandonedException] if the service is torn down before the
+         * request can be served, so the caller gets an error rather than hanging.
          */
         suspend fun flushCurrentSegment() {
             if (!_isRunning.value) return
-            val deferred = CompletableDeferred<Unit>()
-            flushRequests.emit(deferred)
-            deferred.await()
+            flushCoordinator.requestFlush()
         }
 
         fun start(context: Context) {
@@ -116,10 +113,20 @@ class RecordingService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         )
 
+        // Accept flush requests from the moment the UI can see the service as running —
+        // the collector only comes up inside startRecordingLoop() below (issue #47).
+        flushCoordinator.reopen()
         _isRunning.value = true
 
         serviceScope.launch {
-            startRecordingLoop()
+            try {
+                startRecordingLoop()
+            } catch (e: Exception) {
+                // The collector lives at the end of startRecordingLoop(), so a failure
+                // before it means nothing will ever serve a queued request (issue #47).
+                Log.e(TAG, "Recording loop failed to start", e)
+                flushCoordinator.abandonAll(FlushAbandonedException())
+            }
         }
 
         return START_STICKY
@@ -129,6 +136,9 @@ class RecordingService : Service() {
         super.onDestroy()
         _isRunning.value = false
         stopCurrentRecording()
+        // Fail every queued or in-flight flush before the jobs that would have served
+        // them go away, so no caller is left suspended forever (issue #47).
+        flushCoordinator.abandonAll(FlushAbandonedException())
         rotationJob?.cancel()
         flushJob?.cancel()
         amplitudeJob?.cancel()
@@ -148,13 +158,12 @@ class RecordingService : Service() {
         }
 
         flushJob = serviceScope.launch {
-            flushRequests.collect { deferred ->
+            flushCoordinator.serveRequests {
                 try {
                     rotateSegment()
-                    deferred.complete(Unit)
                 } catch (e: Exception) {
                     Log.e(TAG, "Flush rotation failed", e)
-                    deferred.completeExceptionally(e)
+                    throw e
                 }
             }
         }

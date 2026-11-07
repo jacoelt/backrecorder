@@ -433,11 +433,9 @@ class DriveSyncE2eTest {
 
         recorderFactory.awaitRecorder(index = 0).feed(FED_DURATION_MS)
 
-        // Give the service's flush collector time to subscribe: it comes up shortly after the
-        // first segment opens, and a request emitted before then is dropped (#47). No wall-clock
-        // alignment is needed — segment filenames carry the segment's id, so a rotation inside
-        // the second the segment started cannot reuse and truncate its file (#46).
-        delay(FLUSH_READY_MARGIN_MS)
+        // No waiting before the flush: a request made before the service's flush collector is
+        // ready is queued rather than dropped (#47), and segment filenames carry the segment's
+        // id, so a rotation inside the second the segment started cannot truncate its file (#46).
         val flushed = withTimeoutOrNull(STATE_TIMEOUT_MS) { RecordingService.flushCurrentSegment() }
         checkNotNull(flushed) { "flushCurrentSegment() never completed" }
 
@@ -491,12 +489,6 @@ class DriveSyncE2eTest {
         val RECOVERY_FOLDER_NAME = Regex("""recovery_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}""")
 
         const val FED_DURATION_MS = 1_000L
-        /**
-         * Head start for the service's flush collector, which subscribes shortly after the first
-         * segment opens; a request emitted before then is dropped and never completes (#47).
-         * Removable once #47 lands.
-         */
-        const val FLUSH_READY_MARGIN_MS = 1_000L
 
         /**
          * Awaits that depend on CloudSyncManager's loop get their own, much longer budget.

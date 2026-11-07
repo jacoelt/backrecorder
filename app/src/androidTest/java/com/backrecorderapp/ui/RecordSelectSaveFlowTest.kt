@@ -730,13 +730,14 @@ class RecordSelectSaveFlowTest {
 
         /**
          * Matched as substrings, so a failed save reports its own snackbar rather than timing out
-         * on the success text. A flush that never completes (jacoelt/backrecorder#47) shows
-         * nothing at all and is left to time out — which is the right outcome for a hang.
+         * on the success text. Since jacoelt/backrecorder#47 a flush that never completes is
+         * bounded too: it surfaces as the timeout snackbar below rather than hanging the save.
          */
         val SAVE_OUTCOME_TEXTS = listOf(
             SAVE_SUCCESS,
             "No recorded data found",
-            "Failed to finalize in-progress recording"
+            "Failed to finalize in-progress recording",
+            "Timed out waiting for the in-progress recording"
         )
 
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
