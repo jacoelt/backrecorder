@@ -6,8 +6,9 @@ import com.backrecorderapp.data.db.SegmentEntity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
@@ -23,7 +24,14 @@ class SegmentManager @Inject constructor(
         const val BUFFER_DURATION_MS = 24 * 60 * 60 * 1000L // 24 hours
         private const val SEGMENT_DIR = "segments"
         private const val WAVEFORM_DIR = "waveforms"
-        private val DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+
+        /**
+         * Immutable, so it is safe to share: segment files are named from `Dispatchers.Default`,
+         * where the `SimpleDateFormat` this replaces was a data race.
+         */
+        private val DATE_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.US)
+                .withZone(ZoneId.systemDefault())
     }
 
     private val segmentDir: File
@@ -32,19 +40,34 @@ class SegmentManager @Inject constructor(
     private val waveformDir: File
         get() = File(context.cacheDir, WAVEFORM_DIR).also { it.mkdirs() }
 
-    fun createSegmentFile(startTime: Long): File {
-        val timestamp = DATE_FORMAT.format(Date(startTime))
-        return File(segmentDir, "segment_$timestamp.m4a")
+    /**
+     * The id a segment's row and both of its files share. Generate it before the files so their
+     * names can carry it: a timestamp alone is only second-resolution, and a flush that rotates a
+     * segment in the same second it started would otherwise hand the replacement the path of the
+     * segment just finalized, whose audio its muxer then truncates (#46).
+     */
+    fun newSegmentId(): String = UUID.randomUUID().toString()
+
+    /** Named from [segmentId], so two segments opened in the same second cannot share a path. */
+    fun createSegmentFile(startTime: Long, segmentId: String): File {
+        val timestamp = DATE_FORMAT.format(Instant.ofEpochMilli(startTime))
+        return File(segmentDir, "segment_${timestamp}_$segmentId.m4a")
     }
 
-    fun createWaveformFile(startTime: Long): File {
-        val timestamp = DATE_FORMAT.format(Date(startTime))
-        return File(waveformDir, "waveform_$timestamp.bin")
+    /** Named from [segmentId], so two segments opened in the same second cannot share a path. */
+    fun createWaveformFile(startTime: Long, segmentId: String): File {
+        val timestamp = DATE_FORMAT.format(Instant.ofEpochMilli(startTime))
+        return File(waveformDir, "waveform_${timestamp}_$segmentId.bin")
     }
 
-    suspend fun createSegmentEntry(filePath: String, waveformPath: String, startTime: Long): SegmentEntity {
+    suspend fun createSegmentEntry(
+        id: String,
+        filePath: String,
+        waveformPath: String,
+        startTime: Long
+    ): SegmentEntity {
         val segment = SegmentEntity(
-            id = UUID.randomUUID().toString(),
+            id = id,
             filePath = filePath,
             waveformPath = waveformPath,
             startTime = startTime,

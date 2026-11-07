@@ -118,14 +118,11 @@ class RecordingSegmentTest {
         val firstRecorder = recorderFactory.awaitRecorder(index = 0)
         firstRecorder.feed(FED_DURATION_MS)
 
-        // `SegmentManager.createSegmentFile` names files to the second, so a rotation in the same
-        // wall-clock second the segment started reuses the filename and the replacement segment's
-        // muxer truncates the one just finalized (jacoelt/backrecorder#46). Encoding is far faster
-        // than real time here, so cross the boundary deliberately rather than let the flush land
-        // inside it. The margin past the boundary also gives the service's flush collector — which
-        // subscribes shortly after the first segment opens — time to be listening, since a request
-        // emitted before it subscribes is dropped (#47).
-        awaitNextWallClockSecond(marginMs = FLUSH_READY_MARGIN_MS)
+        // Flush straight away: segment filenames carry the segment's id, so a rotation inside the
+        // second the segment started no longer reuses its path (#46). This margin is only for the
+        // service's flush collector, which subscribes shortly after the first segment opens — a
+        // request emitted before it subscribes is dropped (#47).
+        delay(FLUSH_READY_MARGIN_MS)
 
         withTimeout("flushCurrentSegment() never completed") {
             RecordingService.flushCurrentSegment()
@@ -233,13 +230,6 @@ class RecordingSegmentTest {
         segmentDao.getAllSegments().first().forEach { segmentDao.delete(it) }
         File(context.cacheDir, "segments").deleteRecursively()
         File(context.cacheDir, "waveforms").deleteRecursively()
-    }
-
-    private suspend fun awaitNextWallClockSecond(marginMs: Long) {
-        val second = System.currentTimeMillis() / 1000
-        while (System.currentTimeMillis() < (second + 1) * 1000 + marginMs) {
-            delay(POLL_INTERVAL_MS)
-        }
     }
 
     private suspend fun awaitSettledRecorders() = withTimeout(

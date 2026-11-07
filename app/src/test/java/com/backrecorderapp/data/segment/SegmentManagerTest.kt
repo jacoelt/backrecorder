@@ -11,6 +11,7 @@ import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -39,7 +40,7 @@ class SegmentManagerTest {
     @Test
     fun `createSegmentFile generates correct filename`() {
         val timestamp = 1712678400000L // known timestamp
-        val file = segmentManager.createSegmentFile(timestamp)
+        val file = segmentManager.createSegmentFile(timestamp, segmentManager.newSegmentId())
 
         assertTrue(file.name.startsWith("segment_"))
         assertTrue(file.name.endsWith(".m4a"))
@@ -48,10 +49,50 @@ class SegmentManagerTest {
     @Test
     fun `createWaveformFile generates correct filename`() {
         val timestamp = 1712678400000L
-        val file = segmentManager.createWaveformFile(timestamp)
+        val file = segmentManager.createWaveformFile(timestamp, segmentManager.newSegmentId())
 
         assertTrue(file.name.startsWith("waveform_"))
         assertTrue(file.name.endsWith(".bin"))
+    }
+
+    /**
+     * The regression guard for #46: a flush rotates a segment on demand, so a replacement can open
+     * in the very millisecond its predecessor started. Second-resolution timestamps gave both the
+     * same path, and the replacement's muxer truncated the audio just finalized.
+     */
+    @Test
+    fun `two segments starting in the same millisecond get distinct paths`() {
+        val startTime = 1712678400000L
+
+        val firstId = segmentManager.newSegmentId()
+        val secondId = segmentManager.newSegmentId()
+        assertNotEquals("Segment ids must be unique", firstId, secondId)
+
+        val firstAudio = segmentManager.createSegmentFile(startTime, firstId)
+        val secondAudio = segmentManager.createSegmentFile(startTime, secondId)
+        val firstWaveform = segmentManager.createWaveformFile(startTime, firstId)
+        val secondWaveform = segmentManager.createWaveformFile(startTime, secondId)
+
+        assertNotEquals(
+            "Same-millisecond segments share an audio path",
+            firstAudio.absolutePath,
+            secondAudio.absolutePath
+        )
+        assertNotEquals(
+            "Same-millisecond segments share a waveform path",
+            firstWaveform.absolutePath,
+            secondWaveform.absolutePath
+        )
+    }
+
+    /** The same id must name the row and both files, or a row points at a file nothing wrote. */
+    @Test
+    fun `segment and waveform files are named from the segment id`() {
+        val startTime = 1712678400000L
+        val id = segmentManager.newSegmentId()
+
+        assertTrue(segmentManager.createSegmentFile(startTime, id).name.contains(id))
+        assertTrue(segmentManager.createWaveformFile(startTime, id).name.contains(id))
     }
 
     @Test
@@ -60,10 +101,13 @@ class SegmentManagerTest {
         coEvery { segmentDao.insert(capture(slot)) } returns Unit
 
         val segment = segmentManager.createSegmentEntry(
+            id = "given-id",
             filePath = "/test/segment.m4a",
             waveformPath = "/test/waveform.bin",
             startTime = 1000L
         )
+
+        assertEquals("given-id", slot.captured.id)
 
         assertEquals("/test/segment.m4a", slot.captured.filePath)
         assertEquals(1000L, slot.captured.startTime)

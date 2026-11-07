@@ -439,13 +439,14 @@ class RecordSelectSaveFlowTest {
         runBlocking {
             for (index in 0 until HISTORY_SEGMENTS) {
                 val segmentStart = start + index * MINUTE_MS
-                val audioFile = segmentManager.createSegmentFile(segmentStart)
-                val waveformFile = segmentManager.createWaveformFile(segmentStart)
+                val segmentId = UUID.randomUUID().toString()
+                val audioFile = segmentManager.createSegmentFile(segmentStart, segmentId)
+                val waveformFile = segmentManager.createWaveformFile(segmentStart, segmentId)
                 writeShortSegment(audioFile)
                 waveformRepository.saveAmplitudes(waveformFile, List(WAVEFORM_SAMPLES) { 0.5f })
                 segmentDao.insert(
                     SegmentEntity(
-                        id = UUID.randomUUID().toString(),
+                        id = segmentId,
                         filePath = audioFile.absolutePath,
                         waveformPath = waveformFile.absolutePath,
                         startTime = segmentStart,
