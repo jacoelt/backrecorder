@@ -11,6 +11,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -256,6 +257,41 @@ class SaveRecordingUseCaseTest {
         assertEquals(
             "Failed to finalize in-progress recording: boom",
             (result as SaveResult.Error).message
+        )
+    }
+
+    /**
+     * Issue #47: before the timeout, a flush request the service never answered left
+     * this coroutine suspended forever and the save UI spinning with no error. The save
+     * must now fail visibly so the user can retry.
+     */
+    @Test
+    fun `returns error when the flush never completes (issue 47)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } coAnswers { awaitCancellation() }
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        val result = saveRecordingUseCase.execute(
+            startTime = now - 20_000,
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        assertTrue(result is SaveResult.Error)
+        assertTrue(
+            "the error should name the timeout, not look like a generic failure",
+            (result as SaveResult.Error).message.contains("Timed out")
         )
     }
 }
