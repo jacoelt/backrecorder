@@ -1,6 +1,7 @@
 package com.backrecorderapp.service.recorder
 
 import java.io.File
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,8 +23,65 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
     private val started = mutableListOf<FakeAudioRecorder>()
     private val finalized = mutableListOf<File>()
     private var failure: Throwable? = null
+    private var nextStartFailure: Throwable? = null
+    private var startGate: CountDownLatch? = null
+    private var held = 0
 
-    override fun create(): AudioRecorder = FakeAudioRecorder(
+    /**
+     * Makes the next [create] hand back a recorder whose `start()` throws, the way a real
+     * `MediaRecorder` does when another app holds the microphone. One-shot: the recorder after it
+     * behaves normally, so a test can prove what the service does with a single failure.
+     */
+    fun failNextStart(cause: Throwable = IllegalStateException("start failed")) =
+        synchronized(lock) { nextStartFailure = cause }
+
+    override fun create(): AudioRecorder {
+        val startFailure = synchronized(lock) { nextStartFailure.also { nextStartFailure = null } }
+        if (startFailure != null) return FailingAudioRecorder(startFailure)
+        return createWorking()
+    }
+
+    /** An [AudioRecorder] that refuses to open. It never reaches the started/finalized books. */
+    private class FailingAudioRecorder(private val cause: Throwable) : AudioRecorder {
+        override fun start(outputFile: File): Unit = throw cause
+        override fun stop() = Unit
+        override fun maxAmplitude(): Int = 0
+    }
+
+    /**
+     * Holds every later [create]d recorder inside `start()` until the returned latch is counted
+     * down, and counts [startsHeld] as they arrive.
+     *
+     * This is what makes a teardown that lands mid-rotation a *deterministic* test rather than a
+     * race a test can only hope to hit: the rotation parks in a known place while the service is
+     * destroyed. Always release the latch in a `finally`, or the service never stops.
+     */
+    fun holdStarts(): CountDownLatch = CountDownLatch(1).also {
+        synchronized(lock) { startGate = it }
+    }
+
+    /** How many recorders are parked in `start()` by [holdStarts]. */
+    fun startsHeld(): Int = synchronized(lock) { held }
+
+    private fun awaitStartGate() {
+        val gate = synchronized(lock) {
+            startGate ?: return
+        }
+        synchronized(lock) {
+            held++
+            lock.notifyAll()
+        }
+        try {
+            check(gate.await(DEFAULT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                "A held start was never released; the test must count the latch down"
+            }
+        } finally {
+            synchronized(lock) { held-- }
+        }
+    }
+
+    private fun createWorking(): AudioRecorder = FakeAudioRecorder(
+        onStarting = ::awaitStartGate,
         onStarted = { recorder ->
             synchronized(lock) {
                 started += recorder
@@ -73,6 +131,10 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
     /** Drops the recorded history, so one test's segments cannot satisfy another's await. */
     fun reset() = synchronized(lock) {
         started.clear()
+        nextStartFailure = null
+        startGate?.countDown()
+        startGate = null
+        held = 0
         finalized.clear()
         failure = null
     }
