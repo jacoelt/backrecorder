@@ -57,7 +57,11 @@ class RecordingService : Service() {
 
         /** Distinct from [NOTIFICATION_ID]: the foreground notification is removed as we stop. */
         private const val FAILURE_NOTIFICATION_ID = 2
-        private const val ACTION_STOP = "com.backrecorderapp.STOP_RECORDING"
+        /**
+         * The notification's Stop action. Internal rather than private so an instrumented test can
+         * drive the same intent the notification sends — nothing else reaches this branch.
+         */
+        internal const val ACTION_STOP = "com.backrecorderapp.STOP_RECORDING"
 
         /**
          * How long a failed start waits before stopping the service.
@@ -160,10 +164,16 @@ class RecordingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId = startId
         if (intent?.action == ACTION_STOP) {
+            // The write has to land *before* the stop, not alongside it. Launching it and calling
+            // `stopSelf()` in the same breath left `onDestroy` free to cancel `serviceScope` out
+            // from under the write, and the stake is high for a race nobody times: the user taps
+            // Stop, reboots, and `BootReceiver` reads a stale `true` and starts recording again —
+            // a recording they explicitly ended (#63). This mirrors the clear on the self-stop
+            // path, which already awaits it before stopping.
             serviceScope.launch {
-                appPreferences.setWasRecordingBeforeShutdown(false)
+                clearCrashRecoveryFlag()
+                stopSelf(startId)
             }
-            stopSelf()
             return START_NOT_STICKY
         }
 
@@ -454,13 +464,25 @@ class RecordingService : Service() {
         notifyRecordingStopped()
 
         // Crash recovery must not restart a session that just failed; it would fail the same way.
-        runCatching { appPreferences.setWasRecordingBeforeShutdown(false) }
-            .exceptionOrNull()
-            ?.let { Log.e(TAG, "Failed to clear the crash-recovery flag", it) }
+        clearCrashRecoveryFlag()
 
         delay(FOREGROUND_SETTLE_MS)
         // Bound to this start, so a recording the user began during the settle above survives.
         stopSelf(startId)
+    }
+
+    /**
+     * Clears the flag `BootReceiver` restarts a recording from, for a stop the user or the service
+     * itself decided on.
+     *
+     * Always awaited by its caller *before* the `stopSelf` that follows it: `onDestroy` cancels
+     * `serviceScope`, so a write merely launched alongside the stop can be thrown away before it
+     * commits (#63). A failure is logged rather than thrown — the stop must happen either way.
+     */
+    private suspend fun clearCrashRecoveryFlag() {
+        runCatching { appPreferences.setWasRecordingBeforeShutdown(false) }
+            .exceptionOrNull()
+            ?.let { Log.e(TAG, "Failed to clear the crash-recovery flag", it) }
     }
 
     private fun notifyRecordingStopped() {
