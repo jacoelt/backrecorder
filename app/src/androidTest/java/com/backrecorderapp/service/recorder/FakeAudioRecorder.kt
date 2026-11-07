@@ -24,7 +24,13 @@ import kotlin.math.sin
 class FakeAudioRecorder(
     private val onStarted: (FakeAudioRecorder) -> Unit = {},
     private val onFinalized: (File) -> Unit = {},
-    private val onFailed: (Throwable) -> Unit = {}
+    private val onFailed: (Throwable) -> Unit = {},
+    /**
+     * Called before anything is opened, outside [lock], so a test can hold a segment open in the
+     * middle of starting. That is the only way to put the service's rotation in a known place
+     * while something else tears the service down.
+     */
+    private val onStarting: () -> Unit = {}
 ) : AudioRecorder {
 
     private val lock = Any()
@@ -56,6 +62,7 @@ class FakeAudioRecorder(
         private set
 
     override fun start(outputFile: File) {
+        onStarting()
         synchronized(lock) {
             check(codec == null) { "FakeAudioRecorder is single-use; start() was already called" }
             this.outputFile = outputFile

@@ -93,6 +93,20 @@ class SegmentManager @Inject constructor(
         )
     }
 
+    /**
+     * Removes a segment's row and both of its files.
+     *
+     * For a segment that was reserved but never actually recorded: `pruneOldSegments` only deletes
+     * *complete* rows, so without this an abandoned segment's row and its empty `.m4a` would stay
+     * in the database for good, and `getSegmentsInRange` matches every incomplete row forever.
+     */
+    suspend fun discardSegment(segmentId: String) {
+        val segment = segmentDao.getById(segmentId) ?: return
+        File(segment.filePath).delete()
+        File(segment.waveformPath).delete()
+        segmentDao.delete(segment)
+    }
+
     suspend fun pruneOldSegments() {
         val cutoff = System.currentTimeMillis() - BUFFER_DURATION_MS
         val oldSegments = segmentDao.getSegmentsOlderThan(cutoff)

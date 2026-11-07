@@ -5,6 +5,8 @@
     <!-- Notification -->
     <string name="notification_recording_title">Back Recorder</string>
     <string name="notification_recording_text">Recording in background</string>
+    <string name="notification_recording_failed_title">Recording stopped</string>
+    <string name="notification_recording_failed_text">Back Recorder could not keep recording — the microphone may be in use by another app. Tap to start again.</string>
 
     <!-- Disclaimer -->
     <string name="disclaimer_title">Important Legal Notice</string>
