@@ -422,10 +422,11 @@ class DriveSyncE2eTest {
 
         recorderFactory.awaitRecorder(index = 0).feed(FED_DURATION_MS)
 
-        // Segment files are named to the second, so a rotation inside the second the segment
-        // started reuses the filename and truncates it (#46); the margin past the boundary also
-        // gives the service's flush collector time to subscribe (#47).
-        awaitNextWallClockSecond(FLUSH_READY_MARGIN_MS)
+        // Give the service's flush collector time to subscribe: it comes up shortly after the
+        // first segment opens, and a request emitted before then is dropped (#47). No wall-clock
+        // alignment is needed — segment filenames carry the segment's id, so a rotation inside
+        // the second the segment started cannot reuse and truncate its file (#46).
+        delay(FLUSH_READY_MARGIN_MS)
         val flushed = withTimeoutOrNull(STATE_TIMEOUT_MS) { RecordingService.flushCurrentSegment() }
         checkNotNull(flushed) { "flushCurrentSegment() never completed" }
 
@@ -438,17 +439,6 @@ class DriveSyncE2eTest {
         awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
         awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
         return file
-    }
-
-    /**
-     * TODO: remove once jacoelt/backrecorder#46 and #47 are fixed — it exists only to step around
-     * the filename collision and the dropped-flush-request race, not because the flow needs it.
-     */
-    private suspend fun awaitNextWallClockSecond(marginMs: Long) {
-        val second = System.currentTimeMillis() / 1000
-        while (System.currentTimeMillis() < (second + 1) * 1000 + marginMs) {
-            delay(POLL_INTERVAL_MS)
-        }
     }
 
     private fun recoveryFolder(): FakeDriveServer.Entry? = server.entries()
@@ -512,7 +502,12 @@ class DriveSyncE2eTest {
         val RECOVERY_FOLDER_NAME = Regex("""recovery_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}""")
 
         const val FED_DURATION_MS = 1_000L
-        const val FLUSH_READY_MARGIN_MS = 250L
+        /**
+         * Head start for the service's flush collector, which subscribes shortly after the first
+         * segment opens; a request emitted before then is dropped and never completes (#47).
+         * Removable once #47 lands.
+         */
+        const val FLUSH_READY_MARGIN_MS = 1_000L
         const val STATE_TIMEOUT_MS = 30_000L
 
         /**

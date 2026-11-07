@@ -55,7 +55,6 @@ import org.junit.rules.ExternalResource
 import org.junit.runner.RunWith
 import java.io.File
 import java.nio.ByteBuffer
-import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import javax.inject.Inject
@@ -439,14 +438,14 @@ class RecordSelectSaveFlowTest {
         runBlocking {
             for (index in 0 until HISTORY_SEGMENTS) {
                 val segmentStart = start + index * MINUTE_MS
-                val segmentId = UUID.randomUUID().toString()
-                val audioFile = segmentManager.createSegmentFile(segmentStart, segmentId)
-                val waveformFile = segmentManager.createWaveformFile(segmentStart, segmentId)
+                val prepared = segmentManager.prepareSegment(segmentStart)
+                val audioFile = prepared.audioFile
+                val waveformFile = prepared.waveformFile
                 writeShortSegment(audioFile)
                 waveformRepository.saveAmplitudes(waveformFile, List(WAVEFORM_SAMPLES) { 0.5f })
                 segmentDao.insert(
                     SegmentEntity(
-                        id = segmentId,
+                        id = prepared.id,
                         filePath = audioFile.absolutePath,
                         waveformPath = waveformFile.absolutePath,
                         startTime = segmentStart,

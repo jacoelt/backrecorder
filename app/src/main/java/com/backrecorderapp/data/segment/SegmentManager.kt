@@ -25,10 +25,7 @@ class SegmentManager @Inject constructor(
         private const val SEGMENT_DIR = "segments"
         private const val WAVEFORM_DIR = "waveforms"
 
-        /**
-         * Immutable, so it is safe to share: segment files are named from `Dispatchers.Default`,
-         * where the `SimpleDateFormat` this replaces was a data race.
-         */
+        /** Immutable and thread-safe: segment files are named from `Dispatchers.Default`. */
         private val DATE_FORMAT: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.US)
                 .withZone(ZoneId.systemDefault())
@@ -41,36 +38,42 @@ class SegmentManager @Inject constructor(
         get() = File(context.cacheDir, WAVEFORM_DIR).also { it.mkdirs() }
 
     /**
-     * The id a segment's row and both of its files share. Generate it before the files so their
-     * names can carry it: a timestamp alone is only second-resolution, and a flush that rotates a
-     * segment in the same second it started would otherwise hand the replacement the path of the
-     * segment just finalized, whose audio its muxer then truncates (#46).
+     * A segment's id, start time and both of its file paths, minted together so they cannot
+     * disagree. [createSegmentEntry] takes this whole object rather than loose strings, which is
+     * what keeps a row's `filePath` pointing at the file its own id named.
      */
-    fun newSegmentId(): String = UUID.randomUUID().toString()
+    data class NewSegment(
+        val id: String,
+        val startTime: Long,
+        val audioFile: File,
+        val waveformFile: File
+    )
 
-    /** Named from [segmentId], so two segments opened in the same second cannot share a path. */
-    fun createSegmentFile(startTime: Long, segmentId: String): File {
+    /**
+     * Reserves the id and both paths for a segment starting at [startTime].
+     *
+     * The filenames carry the id, not just the timestamp. A timestamp alone is second-resolution,
+     * and a flush rotates a segment on demand: rotating one in the second it started would hand
+     * the replacement the path of the segment just finalized, and its muxer would truncate that
+     * audio to nothing while the finalized row still pointed there (#46).
+     */
+    fun prepareSegment(startTime: Long): NewSegment {
+        val id = UUID.randomUUID().toString()
         val timestamp = DATE_FORMAT.format(Instant.ofEpochMilli(startTime))
-        return File(segmentDir, "segment_${timestamp}_$segmentId.m4a")
-    }
-
-    /** Named from [segmentId], so two segments opened in the same second cannot share a path. */
-    fun createWaveformFile(startTime: Long, segmentId: String): File {
-        val timestamp = DATE_FORMAT.format(Instant.ofEpochMilli(startTime))
-        return File(waveformDir, "waveform_${timestamp}_$segmentId.bin")
-    }
-
-    suspend fun createSegmentEntry(
-        id: String,
-        filePath: String,
-        waveformPath: String,
-        startTime: Long
-    ): SegmentEntity {
-        val segment = SegmentEntity(
+        return NewSegment(
             id = id,
-            filePath = filePath,
-            waveformPath = waveformPath,
             startTime = startTime,
+            audioFile = File(segmentDir, "segment_${timestamp}_$id.m4a"),
+            waveformFile = File(waveformDir, "waveform_${timestamp}_$id.bin")
+        )
+    }
+
+    suspend fun createSegmentEntry(newSegment: NewSegment): SegmentEntity {
+        val segment = SegmentEntity(
+            id = newSegment.id,
+            filePath = newSegment.audioFile.absolutePath,
+            waveformPath = newSegment.waveformFile.absolutePath,
+            startTime = newSegment.startTime,
             endTime = 0,
             durationMs = 0,
             isComplete = false

@@ -37,79 +37,66 @@ class SegmentManagerTest {
         segmentManager = SegmentManager(context, segmentDao)
     }
 
+    /**
+     * Pins the whole name, not just the id: the readable timestamp prefix is what keeps the cache
+     * directory browsable, and the swap from `SimpleDateFormat` to `DateTimeFormatter` would
+     * otherwise be unguarded.
+     */
     @Test
-    fun `createSegmentFile generates correct filename`() {
-        val timestamp = 1712678400000L // known timestamp
-        val file = segmentManager.createSegmentFile(timestamp, segmentManager.newSegmentId())
+    fun `prepareSegment names both files from the segment id`() {
+        val prepared = segmentManager.prepareSegment(1712678400000L)
 
-        assertTrue(file.name.startsWith("segment_"))
-        assertTrue(file.name.endsWith(".m4a"))
-    }
-
-    @Test
-    fun `createWaveformFile generates correct filename`() {
-        val timestamp = 1712678400000L
-        val file = segmentManager.createWaveformFile(timestamp, segmentManager.newSegmentId())
-
-        assertTrue(file.name.startsWith("waveform_"))
-        assertTrue(file.name.endsWith(".bin"))
+        assertTrue(
+            "Unexpected segment filename: ${prepared.audioFile.name}",
+            prepared.audioFile.name.matches(Regex("""segment_\d{8}_\d{6}_${prepared.id}\.m4a"""))
+        )
+        assertTrue(
+            "Unexpected waveform filename: ${prepared.waveformFile.name}",
+            prepared.waveformFile.name.matches(Regex("""waveform_\d{8}_\d{6}_${prepared.id}\.bin"""))
+        )
     }
 
     /**
-     * The regression guard for #46: a flush rotates a segment on demand, so a replacement can open
-     * in the very millisecond its predecessor started. Second-resolution timestamps gave both the
-     * same path, and the replacement's muxer truncated the audio just finalized.
+     * Regression guard for #46: a flush rotates a segment on demand, so a replacement can open in
+     * the very millisecond its predecessor started. Second-resolution names gave both the same
+     * path, and the replacement's muxer truncated the audio just finalized.
      */
     @Test
-    fun `two segments starting in the same millisecond get distinct paths`() {
+    fun `two segments prepared in the same millisecond get distinct paths`() {
         val startTime = 1712678400000L
 
-        val firstId = segmentManager.newSegmentId()
-        val secondId = segmentManager.newSegmentId()
-        assertNotEquals("Segment ids must be unique", firstId, secondId)
+        val first = segmentManager.prepareSegment(startTime)
+        val second = segmentManager.prepareSegment(startTime)
 
-        val firstAudio = segmentManager.createSegmentFile(startTime, firstId)
-        val secondAudio = segmentManager.createSegmentFile(startTime, secondId)
-        val firstWaveform = segmentManager.createWaveformFile(startTime, firstId)
-        val secondWaveform = segmentManager.createWaveformFile(startTime, secondId)
-
+        assertNotEquals("Segment ids must be unique", first.id, second.id)
         assertNotEquals(
             "Same-millisecond segments share an audio path",
-            firstAudio.absolutePath,
-            secondAudio.absolutePath
+            first.audioFile.absolutePath,
+            second.audioFile.absolutePath
         )
         assertNotEquals(
             "Same-millisecond segments share a waveform path",
-            firstWaveform.absolutePath,
-            secondWaveform.absolutePath
+            first.waveformFile.absolutePath,
+            second.waveformFile.absolutePath
         )
     }
 
-    /** The same id must name the row and both files, or a row points at a file nothing wrote. */
+    /**
+     * The row must carry the id and the paths it was prepared with, or a row ends up pointing at
+     * a file nothing wrote.
+     */
     @Test
-    fun `segment and waveform files are named from the segment id`() {
-        val startTime = 1712678400000L
-        val id = segmentManager.newSegmentId()
-
-        assertTrue(segmentManager.createSegmentFile(startTime, id).name.contains(id))
-        assertTrue(segmentManager.createWaveformFile(startTime, id).name.contains(id))
-    }
-
-    @Test
-    fun `createSegmentEntry inserts into database`() = runTest {
+    fun `createSegmentEntry inserts the prepared segment`() = runTest {
         val slot = slot<SegmentEntity>()
         coEvery { segmentDao.insert(capture(slot)) } returns Unit
+        val prepared = segmentManager.prepareSegment(1000L)
 
-        val segment = segmentManager.createSegmentEntry(
-            id = "given-id",
-            filePath = "/test/segment.m4a",
-            waveformPath = "/test/waveform.bin",
-            startTime = 1000L
-        )
+        val segment = segmentManager.createSegmentEntry(prepared)
 
-        assertEquals("given-id", slot.captured.id)
-
-        assertEquals("/test/segment.m4a", slot.captured.filePath)
+        assertEquals("The returned entity must be the one inserted", slot.captured, segment)
+        assertEquals(prepared.id, slot.captured.id)
+        assertEquals(prepared.audioFile.absolutePath, slot.captured.filePath)
+        assertEquals(prepared.waveformFile.absolutePath, slot.captured.waveformPath)
         assertEquals(1000L, slot.captured.startTime)
         assertFalse(slot.captured.isComplete)
         assertEquals(0L, slot.captured.endTime)
