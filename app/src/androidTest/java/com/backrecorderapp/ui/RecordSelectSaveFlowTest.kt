@@ -256,10 +256,13 @@ class RecordSelectSaveFlowTest {
         // since the clamp itself lives in the view model. Both preset clicks have moved the
         // selection labels into the current minute, so the stale text can only come from the
         // buffer-end label. It also licenses the tighter bound in `bufferRangeBounds`.
-        // Four HH:mm labels are on screen, so require one of them to read the live edge as well:
-        // "the stale text is gone" alone would also be satisfied by labels that never composed.
+        // Checked first, because "the stale text is gone" would also hold for labels that never
+        // composed at all.
         assertTextExists("The waveform never drew its labels", TimeUtils.formatTime(bufferStart))
-        composeRule.waitUntil(TIMEOUT_MS) {
+        composeRule.waitUntil(
+            "the waveform's right edge to leave the seeded history behind",
+            TIMEOUT_MS
+        ) {
             composeRule
                 .onAllNodesWithText(TimeUtils.formatTime(historyEnd() - SEGMENT_GAP_MS))
                 .fetchSemanticsNodes()
@@ -346,7 +349,7 @@ class RecordSelectSaveFlowTest {
 
         // The picker's requested filename is built from selectionStartTime at second resolution,
         // which is the only exact read of the snapped start that the UI offers.
-        composeRule.waitUntil(TIMEOUT_MS) {
+        composeRule.waitUntil("the save picker to be opened", TIMEOUT_MS) {
             // The gate blocks a selection older than its free-tier window. That only happens here
             // if the run outran the seeded history, and without this it would arrive as a bare
             // timeout on a picker that was never opened.
@@ -635,7 +638,7 @@ class RecordSelectSaveFlowTest {
      */
     private fun awaitSaveOutcome(): String {
         var outcome: String? = null
-        composeRule.waitUntil(SAVE_TIMEOUT_MS) {
+        composeRule.waitUntil("the save to report an outcome", SAVE_TIMEOUT_MS) {
             outcome = SAVE_OUTCOME_TEXTS.firstNotNullOfOrNull { candidate ->
                 composeRule
                     .onAllNodesWithText(candidate, substring = true)
@@ -651,7 +654,7 @@ class RecordSelectSaveFlowTest {
     }
 
     private fun awaitText(text: String, timeoutMs: Long = TIMEOUT_MS) {
-        composeRule.waitUntil(timeoutMs) {
+        composeRule.waitUntil("'$text' to appear", timeoutMs) {
             composeRule.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
         }
     }
