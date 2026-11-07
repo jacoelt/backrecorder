@@ -1,25 +1,28 @@
 package com.backrecorderapp.ui
 
 import android.Manifest
-import android.content.Context
 import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
+import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.data.preferences.AppPreferences
-import com.backrecorderapp.notification.NotificationChannels
 import com.backrecorderapp.service.RecordingService
+import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.clearRecordedState
+import com.backrecorderapp.testing.createNotificationChannels
+import com.backrecorderapp.testing.stopRecordingAndSettle
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -49,8 +52,10 @@ import javax.inject.Inject
 class FirstLaunchFlowTest {
 
     @Inject lateinit var appPreferences: AppPreferences
+    @Inject lateinit var segmentDao: SegmentDao
+    @Inject lateinit var recorderFactory: FakeAudioRecorderFactory
 
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private val preferences = PreferenceSnapshot()
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -61,25 +66,40 @@ class FirstLaunchFlowTest {
         Manifest.permission.POST_NOTIFICATIONS
     )
 
+    /**
+     * Injects, and cleans up. See [cleanUpRule] for why it sits outside the seeding rule.
+     *
+     * This test records for real through the UI, so it leaves segment rows and cache files behind
+     * like any other recording test — the recorders are waited out before the cache is cleared, or
+     * the clear races a segment the service is still finalizing.
+     */
     @get:Rule(order = 2)
-    val firstLaunchState = object : ExternalResource() {
-        override fun before() {
-            hiltRule.inject()
-            // HiltTestApplication stands in for BackRecorderApp, so the channels it would have
-            // created do not exist; posting the foreground notification to a missing channel kills
-            // the process.
-            NotificationChannels.createAll(context)
-            runBlocking { appPreferences.setDisclaimerAccepted(false) }
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
+        try {
+            runBlocking { stopRecordingAndSettle(recorderFactory) }
+        } finally {
+            recorderFactory.reset()
+            clearRecordedState(segmentDao)
+            runBlocking { preferences.restoreAll() }
         }
     }
 
     @get:Rule(order = 3)
-    val composeRule = createAndroidComposeRule<MainActivity>()
-
-    @After
-    fun tearDown() {
-        RecordingService.stop(context)
+    val firstLaunchState = object : ExternalResource() {
+        override fun before() {
+            createNotificationChannels()
+            runBlocking {
+                preferences.capture(
+                    appPreferences.disclaimerAccepted,
+                    appPreferences::setDisclaimerAccepted
+                )
+                appPreferences.setDisclaimerAccepted(false)
+            }
+        }
     }
+
+    @get:Rule(order = 4)
+    val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
     fun firstLaunchGoesDisclaimerThenMainScreenAndRecordsOncePermissionsAreHeld() {

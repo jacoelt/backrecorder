@@ -1,9 +1,7 @@
 package com.backrecorderapp.data.cloud
 
 import android.Manifest
-import android.content.Context
 import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import com.backrecorderapp.MainActivity
@@ -13,16 +11,23 @@ import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.segment.SegmentManager
-import com.backrecorderapp.notification.NotificationChannels
 import com.backrecorderapp.service.RecordingService
 import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.STATE_TIMEOUT_MS
+import com.backrecorderapp.testing.appContext
+import com.backrecorderapp.testing.awaitRecordingService
+import com.backrecorderapp.testing.awaitUntil
+import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.clearRecordedState
+import com.backrecorderapp.testing.createNotificationChannels
+import com.backrecorderapp.testing.stopRecordingAndSettle
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -70,7 +75,8 @@ class DriveSyncE2eTest {
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var segmentDao: SegmentDao
 
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private var scenario: ActivityScenario<MainActivity>? = null
+    private val preferences = PreferenceSnapshot()
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -83,40 +89,6 @@ class DriveSyncE2eTest {
     )
 
     /**
-     * Seeding happens here rather than in `@Before`: the activity is launched by the tests
-     * themselves, but DataStore, the Hilt singletons and the fake server all have to be in a known
-     * state before anything touches them, and `NavGraph` reads `disclaimerAccepted` on its first
-     * composition.
-     */
-    @get:Rule(order = 2)
-    val injectAndSeed = object : ExternalResource() {
-        override fun before() {
-            hiltRule.inject()
-            server.reset()
-            server.start()
-            authorizationClient.reset()
-            billing.setStatus(SubscriptionStatus.ACTIVE)
-            recorderFactory.reset()
-            // HiltTestApplication stands in for BackRecorderApp, so the channels it would have
-            // created do not exist; the recovery notification would kill the process without them.
-            NotificationChannels.createAll(context)
-            runBlocking {
-                disclaimerWasAccepted = appPreferences.disclaimerAccepted.first()
-                appPreferences.setDisclaimerAccepted(false)
-                appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
-                appPreferences.setPendingRecoveryFolder(null)
-                // Clears the session *and* the pinned account, so each test starts able to
-                // connect whichever account it wants. These are @Singleton and outlive a test.
-                driveAuthManager.signOut()
-            }
-            clearRecordedState()
-        }
-    }
-
-    private var scenario: ActivityScenario<MainActivity>? = null
-    private var disclaimerWasAccepted = false
-
-    /**
      * Everything this class touches is process-wide and outlives it: `FakeCloudModule` installs
      * the Drive fakes for **every** instrumented test, `AppPreferences` is one DataStore, and
      * `RecordingService`'s state is static. So teardown does not just tidy up — it has to put the
@@ -126,15 +98,17 @@ class DriveSyncE2eTest {
      * The order matters too: the sync loop is stopped and allowed to go quiet *before* the server
      * closes and the database is cleared, so a tick still in flight cannot write a row after the
      * clear or hit a half-shut server.
+     *
+     * See [cleanUpRule] for why this is a rule outside the seeding rule and not an `@After`.
+     * Seeding here starts a server and grants tokens, so a half-finished seed is exactly the case
+     * that most needs tearing down.
      */
-    @After
-    fun tearDown() {
+    @get:Rule(order = 2)
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
         try {
             cloudSyncManager.stopSync()
-            RecordingService.stop(context)
             runBlocking {
-                awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
-                awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
+                stopRecordingAndSettle(recorderFactory)
                 // The loop cancels, but a Drive call already blocked in the transport is not
                 // interruptible; wait for the server to go quiet rather than race it.
                 awaitDriveQuiet()
@@ -148,16 +122,53 @@ class DriveSyncE2eTest {
             server.reset()
             authorizationClient.reset()
             billing.setUnresolved()
-            clearRecordedState()
+            clearRecordedState(segmentDao)
             runBlocking {
-                appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
-                appPreferences.setPendingRecoveryFolder(null)
-                appPreferences.setDisclaimerAccepted(disclaimerWasAccepted)
+                preferences.restoreAll()
                 // Clears the session and the pinned account from DataStore. In the `finally` on
                 // purpose: a pin surviving this class changes `authorizationRequest()` for every
                 // later test in the process.
                 driveAuthManager.signOut()
             }
+        }
+    }
+
+    /**
+     * Seeding happens here rather than in `@Before`: the activity is launched by the tests
+     * themselves, but DataStore, the Hilt singletons and the fake server all have to be in a known
+     * state before anything touches them, and `NavGraph` reads `disclaimerAccepted` on its first
+     * composition.
+     */
+    @get:Rule(order = 3)
+    val injectAndSeed = object : ExternalResource() {
+        override fun before() {
+            server.reset()
+            server.start()
+            authorizationClient.reset()
+            billing.setStatus(SubscriptionStatus.ACTIVE)
+            recorderFactory.reset()
+            createNotificationChannels()
+            runBlocking {
+                preferences.capture(
+                    appPreferences.disclaimerAccepted,
+                    appPreferences::setDisclaimerAccepted
+                )
+                preferences.capture(
+                    appPreferences.cloudUploadMode,
+                    appPreferences::setCloudUploadMode
+                )
+                preferences.capture(
+                    appPreferences.pendingRecoveryFolder,
+                    appPreferences::setPendingRecoveryFolder
+                )
+                appPreferences.setDisclaimerAccepted(false)
+                appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
+                appPreferences.setPendingRecoveryFolder(null)
+                // Clears the session *and* the pinned account, so each test starts able to
+                // connect whichever account it wants. These are @Singleton and outlive a test.
+                driveAuthManager.signOut()
+            }
+            clearRecordedState(segmentDao)
         }
     }
 
@@ -325,7 +336,7 @@ class DriveSyncE2eTest {
         // The issue asks for the upload to complete, not merely for the refresh to happen: an
         // upload is a resumable two-request exchange, so a refresh that works for a plain GET
         // does not by itself prove one works here.
-        val file = File(context.cacheDir, "refreshed-upload.m4a").apply {
+        val file = File(appContext.cacheDir, "refreshed-upload.m4a").apply {
             writeBytes(ByteArray(2048) { it.toByte() })
         }
         try {
@@ -417,8 +428,8 @@ class DriveSyncE2eTest {
      */
     private suspend fun recordOneSegment(): File {
         scenario = ActivityScenario.launch(MainActivity::class.java)
-        RecordingService.start(context)
-        awaitUntil("RecordingService never started") { RecordingService.isRunning.value }
+        RecordingService.start(appContext)
+        awaitRecordingService(running = true)
 
         recorderFactory.awaitRecorder(index = 0).feed(FED_DURATION_MS)
 
@@ -435,9 +446,7 @@ class DriveSyncE2eTest {
             segmentDao.getSegmentsPendingUpload(10).any { it.filePath == file.absolutePath }
         }
 
-        RecordingService.stop(context)
-        awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
-        awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
+        stopRecordingAndSettle(recorderFactory)
         return file
     }
 
@@ -458,12 +467,6 @@ class DriveSyncE2eTest {
 
     private fun hours(count: Long): Long = count * 60 * 60 * 1000L
 
-    private fun clearRecordedState() = runBlocking {
-        segmentDao.getAllSegments().first().forEach { segmentDao.delete(it) }
-        File(context.cacheDir, "segments").deleteRecursively()
-        File(context.cacheDir, "waveforms").deleteRecursively()
-    }
-
     /**
      * Waits until the fake server has been idle for a continuous window.
      *
@@ -477,20 +480,6 @@ class DriveSyncE2eTest {
             consecutive = if (server.isIdle()) consecutive + 1 else 0
             consecutive >= QUIET_POLLS
         }
-    }
-
-    /** Polls [condition] until it holds, failing with [message] rather than a bare timeout. */
-    private suspend fun awaitUntil(
-        message: String,
-        timeoutMs: Long = STATE_TIMEOUT_MS,
-        condition: suspend () -> Boolean
-    ) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return
-            delay(POLL_INTERVAL_MS)
-        }
-        throw AssertionError(message)
     }
 
     private companion object {
@@ -508,7 +497,6 @@ class DriveSyncE2eTest {
          * Removable once #47 lands.
          */
         const val FLUSH_READY_MARGIN_MS = 1_000L
-        const val STATE_TIMEOUT_MS = 30_000L
 
         /**
          * Awaits that depend on CloudSyncManager's loop get their own, much longer budget.
@@ -516,9 +504,8 @@ class DriveSyncE2eTest {
          * fail the test on the first skipped or unlucky tick rather than on the behaviour.
          */
         const val LOOP_TIMEOUT_MS = 150_000L
-        const val POLL_INTERVAL_MS = 100L
 
-        /** Consecutive idle polls that count as the Drive client having gone quiet. */
-        const val QUIET_POLLS = 10
+        /** Consecutive idle polls — about a second at the shared poll interval — that count as quiet. */
+        const val QUIET_POLLS = 20
     }
 }

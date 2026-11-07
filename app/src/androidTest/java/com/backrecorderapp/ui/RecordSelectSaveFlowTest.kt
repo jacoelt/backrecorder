@@ -3,7 +3,6 @@ package com.backrecorderapp.ui
 import android.Manifest
 import android.app.Activity
 import android.app.Instrumentation
-import android.content.Context
 import android.content.Intent
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -21,7 +20,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.espresso.intent.Intents
 import androidx.test.espresso.intent.matcher.IntentMatchers.hasAction
 import androidx.test.espresso.intent.rule.IntentsRule
@@ -36,15 +34,20 @@ import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
-import com.backrecorderapp.notification.NotificationChannels
 import com.backrecorderapp.service.RecordingService
 import com.backrecorderapp.service.recorder.FakeAudioRecorder
 import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.appContext
+import com.backrecorderapp.testing.awaitRecordingService
+import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.clearRecordedState
+import com.backrecorderapp.testing.createNotificationChannels
+import com.backrecorderapp.testing.stopRecordingAndSettle
 import com.backrecorderapp.ui.components.WAVEFORM_CANVAS_TEST_TAG
 import com.backrecorderapp.util.TimeUtils
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -104,7 +107,7 @@ class RecordSelectSaveFlowTest {
     @Inject lateinit var segmentManager: SegmentManager
     @Inject lateinit var waveformRepository: WaveformRepository
 
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private val preferences = PreferenceSnapshot()
 
     /** Start of the seeded buffer: a wall-clock minute boundary, so snapped times are exact. */
     private var bufferStart = 0L
@@ -114,10 +117,6 @@ class RecordSelectSaveFlowTest {
      * also a floor for the waveform's right edge, which tightens [bufferRangeBounds].
      */
     private var liveSegmentStart = 0L
-
-    /** Null until seeding has read them, so a failure before that restores nothing. */
-    private var disclaimerWasAccepted: Boolean? = null
-    private var wasRecordingBeforeShutdown: Boolean? = null
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -136,30 +135,15 @@ class RecordSelectSaveFlowTest {
      * `disclaimerAccepted` behind for whichever test runs next.
      */
     @get:Rule(order = 2)
-    val cleanUpAfterwards = object : ExternalResource() {
-        override fun before() = hiltRule.inject()
-
-        override fun after() {
-            try {
-                RecordingService.stop(context)
-                runBlocking {
-                    awaitUntil("RecordingService never stopped") {
-                        !RecordingService.isRunning.value
-                    }
-                    // `onDestroy` clears `isRunning` before it finishes finalizing, so clearing
-                    // the cache underneath a segment still being written would leave its row.
-                    awaitUntil("Recorders never settled") { recorderFactory.isSettled() }
-                }
-            } finally {
-                recorderFactory.reset()
-                clearRecordedState()
-                runBlocking {
-                    disclaimerWasAccepted?.let { appPreferences.setDisclaimerAccepted(it) }
-                    wasRecordingBeforeShutdown?.let {
-                        appPreferences.setWasRecordingBeforeShutdown(it)
-                    }
-                }
-            }
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
+        try {
+            // `onDestroy` clears `isRunning` before it finishes finalizing, so clearing the cache
+            // underneath a segment still being written would leave its row.
+            runBlocking { stopRecordingAndSettle(recorderFactory) }
+        } finally {
+            recorderFactory.reset()
+            clearRecordedState(segmentDao, SAVED_CLIP_NAME)
+            runBlocking { preferences.restoreAll() }
         }
     }
 
@@ -177,14 +161,17 @@ class RecordSelectSaveFlowTest {
             // The free tier's save window is what this flow runs under, so pin it rather than
             // inherit whatever a sibling test last set on the shared fake.
             billingRepository.setStatus(SubscriptionStatus.FREE)
-            clearRecordedState()
-            // HiltTestApplication stands in for BackRecorderApp, so the channels it would have
-            // created do not exist, and a foreground service posting to a missing channel kills
-            // the process rather than failing the test.
-            NotificationChannels.createAll(context)
+            clearRecordedState(segmentDao, SAVED_CLIP_NAME)
+            createNotificationChannels()
             runBlocking {
-                disclaimerWasAccepted = appPreferences.disclaimerAccepted.first()
-                wasRecordingBeforeShutdown = appPreferences.wasRecordingBeforeShutdown.first()
+                preferences.capture(
+                    appPreferences.disclaimerAccepted,
+                    appPreferences::setDisclaimerAccepted
+                )
+                preferences.capture(
+                    appPreferences.wasRecordingBeforeShutdown,
+                    appPreferences::setWasRecordingBeforeShutdown
+                )
                 appPreferences.setDisclaimerAccepted(true)
             }
             bufferStart = seedHistory()
@@ -203,7 +190,7 @@ class RecordSelectSaveFlowTest {
 
     @Test
     fun recordThenSelectOnTheWaveformThenSaveWritesTheSelectedRangeIncludingTheLiveMinute() {
-        val savedFile = File(context.cacheDir, SAVED_CLIP_NAME).also { it.delete() }
+        val savedFile = File(appContext.cacheDir, SAVED_CLIP_NAME).also { it.delete() }
         val expectedStart = bufferStart + SELECTION_START_OFFSET_MS
         val expectedEnd = bufferStart + SELECTION_END_OFFSET_MS
 
@@ -215,7 +202,7 @@ class RecordSelectSaveFlowTest {
             .performClick()
         awaitText(RECORDING)
         runBlocking {
-            awaitUntil("RecordingService never started") { RecordingService.isRunning.value }
+            awaitRecordingService(running = true)
         }
         // Real AAC in the live segment, long enough that its presence in the saved clip is a
         // measurement rather than a judgement call against the history segments.
@@ -407,7 +394,7 @@ class RecordSelectSaveFlowTest {
             .performClick()
         awaitText(NOT_RECORDING)
         runBlocking {
-            awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
+            awaitRecordingService(running = false)
         }
     }
 
@@ -483,13 +470,6 @@ class RecordSelectSaveFlowTest {
     /** The rows the recording service wrote, in start order — everything past the seeded history. */
     private suspend fun liveSegmentRows(): List<SegmentEntity> =
         segmentDao.getAllSegments().first().filter { it.startTime > bufferStart + HISTORY_SPAN_MS }
-
-    private fun clearRecordedState() = runBlocking {
-        segmentDao.getAllSegments().first().forEach { segmentDao.delete(it) }
-        File(context.cacheDir, "segments").deleteRecursively()
-        File(context.cacheDir, "waveforms").deleteRecursively()
-        File(context.cacheDir, SAVED_CLIP_NAME).delete()
-    }
 
     // ---- aiming at the waveform ---------------------------------------------------------------------
 
@@ -697,14 +677,6 @@ class RecordSelectSaveFlowTest {
         }
     }
 
-    private suspend fun awaitUntil(message: String, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + TIMEOUT_MS
-        while (!condition()) {
-            check(System.currentTimeMillis() < deadline) { message }
-            delay(POLL_INTERVAL_MS)
-        }
-    }
-
     private companion object {
         const val MINUTE_MS = 60_000L
 
@@ -770,6 +742,5 @@ class RecordSelectSaveFlowTest {
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
         const val TIMEOUT_MS = 30_000L
         const val SAVE_TIMEOUT_MS = 60_000L
-        const val POLL_INTERVAL_MS = 50L
     }
 }

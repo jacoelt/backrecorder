@@ -5,6 +5,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.cleanUpRule
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.runBlocking
@@ -28,26 +30,35 @@ class ReturningLaunchFlowTest {
 
     @Inject lateinit var appPreferences: AppPreferences
 
+    private val preferences = PreferenceSnapshot()
+
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
 
-    /**
-     * Ordered between the Hilt rule and the compose rule: the compose rule launches the activity,
-     * and `NavGraph` fixes its start destination on first composition, so a seed from `@Before`
-     * would arrive after the decision was already made.
-     */
+    /** Injects, and puts both seeded preferences back for the next test in this process. */
     @get:Rule(order = 1)
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
+        runBlocking { preferences.restoreAll() }
+    }
+
+    /** Ordered ahead of the compose rule, which launches the activity. See [cleanUpRule]. */
+    @get:Rule(order = 2)
     val returningUserState = object : ExternalResource() {
-        override fun before() {
-            hiltRule.inject()
-            runBlocking {
-                appPreferences.setDisclaimerAccepted(true)
-                appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
-            }
+        override fun before() = runBlocking {
+            preferences.capture(
+                appPreferences.disclaimerAccepted,
+                appPreferences::setDisclaimerAccepted
+            )
+            preferences.capture(
+                appPreferences.cloudUploadMode,
+                appPreferences::setCloudUploadMode
+            )
+            appPreferences.setDisclaimerAccepted(true)
+            appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
         }
     }
 
-    @get:Rule(order = 2)
+    @get:Rule(order = 3)
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
