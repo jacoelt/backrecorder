@@ -169,4 +169,56 @@ class SegmentManagerTest {
     fun `buffer duration constant is 24 hours`() {
         assertEquals(24 * 60 * 60 * 1000L, SegmentManager.BUFFER_DURATION_MS)
     }
+
+    /**
+     * `discardSegment` reclaims a segment that was reserved but never recorded (#48).
+     * `pruneOldSegments` only deletes *complete* rows, so without this the row and its empty file
+     * would outlive the install — and an incomplete row matches every later range query.
+     */
+    @Test
+    fun `discardSegment deletes the row and both files`() = runTest {
+        val audio = tempFolder.newFile("segment.m4a")
+        val waveform = tempFolder.newFile("waveform.bin")
+        val segment = segmentEntity(audio.absolutePath, waveform.absolutePath)
+        coEvery { segmentDao.getById(segment.id) } returns segment
+
+        segmentManager.discardSegment(segment.id)
+
+        coVerify { segmentDao.delete(segment) }
+        assertFalse("The audio file was left behind", audio.exists())
+        assertFalse("The waveform file was left behind", waveform.exists())
+    }
+
+    @Test
+    fun `discardSegment does nothing when the row is gone`() = runTest {
+        coEvery { segmentDao.getById("missing") } returns null
+
+        segmentManager.discardSegment("missing")
+
+        coVerify(exactly = 0) { segmentDao.delete(any()) }
+    }
+
+    /** A segment that failed before its file existed must still have its row reclaimed. */
+    @Test
+    fun `discardSegment deletes the row even when the files never existed`() = runTest {
+        val segment = segmentEntity(
+            audioPath = tempFolder.root.resolve("never-written.m4a").absolutePath,
+            waveformPath = tempFolder.root.resolve("never-written.bin").absolutePath
+        )
+        coEvery { segmentDao.getById(segment.id) } returns segment
+
+        segmentManager.discardSegment(segment.id)
+
+        coVerify { segmentDao.delete(segment) }
+    }
+
+    private fun segmentEntity(audioPath: String, waveformPath: String) = SegmentEntity(
+        id = "segment-id",
+        filePath = audioPath,
+        waveformPath = waveformPath,
+        startTime = 1_000L,
+        endTime = 0L,
+        durationMs = 0L,
+        isComplete = false
+    )
 }

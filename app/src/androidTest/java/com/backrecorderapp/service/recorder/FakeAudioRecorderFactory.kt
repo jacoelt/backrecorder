@@ -76,7 +76,7 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
                 "A held start was never released; the test must count the latch down"
             }
         } finally {
-            synchronized(lock) { held-- }
+            synchronized(lock) { held = (held - 1).coerceAtLeast(0) }
         }
     }
 
@@ -134,7 +134,7 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
         nextStartFailure = null
         startGate?.countDown()
         startGate = null
-        held = 0
+
         finalized.clear()
         failure = null
     }

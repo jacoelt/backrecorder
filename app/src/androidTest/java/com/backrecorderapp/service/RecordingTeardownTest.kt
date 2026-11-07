@@ -20,6 +20,7 @@ import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -160,10 +161,13 @@ class RecordingTeardownTest {
         recorderFactory.awaitRecorder(index = 0).feed(FED_DURATION_MS)
 
         val heldStart = recorderFactory.holdStarts()
+        // Scoped to the test: an assertion that fails before the stop below would otherwise leave
+        // this coroutine running against the next test in the process.
+        val flushScope = CoroutineScope(Dispatchers.Default)
         try {
             // A flush is a rotation on demand. Do not wait for it — it is expected to be abandoned
             // by the teardown below (#47), which is exactly the situation under test.
-            val flush = CoroutineScope(Dispatchers.Default).launch {
+            val flush = flushScope.launch {
                 runCatching { RecordingService.flushCurrentSegment() }
             }
 
@@ -178,6 +182,7 @@ class RecordingTeardownTest {
             flush.join()
         } finally {
             heldStart.countDown()
+            flushScope.cancel()
         }
 
         // The released start has to actually open the replacement segment, or there is no orphan
@@ -194,10 +199,17 @@ class RecordingTeardownTest {
     }
 
     /**
-     * Defect 2, as far as it can be reached in a short test: a rotation that throws must leave the
-     * service recording and able to rotate again, rather than wedged on a segment that is never
-     * finalized. The waveform directory is replaced by a plain file, so `saveAmplitudes` fails
-     * inside `rotateSegment` — no seam, just an unwritable path.
+     * A rotation that throws must leave the service recording and able to rotate again, rather
+     * than wedged on a segment that is never finalized. The waveform directory is replaced by a
+     * plain file, so `saveAmplitudes` fails inside `rotateSegment` — no seam, just an unwritable
+     * path.
+     *
+     * **This is not the regression guard for defect 2, and would pass without that fix.** Defect 2
+     * is the bare `while (isActive)` rotation *loop* being cancelled by one throw; this drives the
+     * flush path, which already caught and rethrew before the fix. The loop ticks once a minute,
+     * so covering it properly needs a multi-minute test or a new seam into `WaveformRepository` —
+     * neither of which belongs in a suite that gates every PR in the repository. What this does
+     * cover is the shared half: `rotateSegment` is re-enterable after throwing.
      */
     @Test
     fun aRotationThatThrowsLeavesTheServiceRecordingAndAbleToRotateAgain() = runBlocking {
@@ -220,18 +232,18 @@ class RecordingTeardownTest {
             waveformDir.mkdirs()
         }
 
-        assertTrue(
-            "A failed rotation stopped the service (#48, defect 2)",
-            RecordingService.isRunning.value
-        )
+        assertTrue("A failed rotation stopped the service", RecordingService.isRunning.value)
 
-        // The real assertion: it can still rotate. Before the fix the service could be left with
-        // a segment it would never finalize.
+        // The real assertion: it can still rotate, and the rotation really happened — a new
+        // recorder was opened and a segment finalized, not just a flush that returned.
         RecordingService.flushCurrentSegment()
         assertTrue(
             "The service could not rotate again after a failed rotation",
             segmentDao.getAllSegments().first().any { it.isComplete }
         )
+        awaitUntil("No replacement recorder was opened after the failed rotation") {
+            recorderFactory.startedCount() >= 2
+        }
         assertTrue("The service stopped recording", RecordingService.isRunning.value)
     }
 
