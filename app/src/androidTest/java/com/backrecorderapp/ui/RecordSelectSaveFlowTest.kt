@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
@@ -55,6 +56,8 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.UUID
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import javax.inject.Inject
 
 /**
@@ -253,6 +256,9 @@ class RecordSelectSaveFlowTest {
         // since the clamp itself lives in the view model. Both preset clicks have moved the
         // selection labels into the current minute, so the stale text can only come from the
         // buffer-end label. It also licenses the tighter bound in `bufferRangeBounds`.
+        // Four HH:mm labels are on screen, so require one of them to read the live edge as well:
+        // "the stale text is gone" alone would also be satisfied by labels that never composed.
+        assertTextExists("The waveform never drew its labels", TimeUtils.formatTime(bufferStart))
         composeRule.waitUntil(TIMEOUT_MS) {
             composeRule
                 .onAllNodesWithText(TimeUtils.formatTime(historyEnd() - SEGMENT_GAP_MS))
@@ -316,6 +322,7 @@ class RecordSelectSaveFlowTest {
         // would shift every count below. Snapshot instead of assuming, so an extra rotation is
         // reported as what it is rather than as a missing flush.
         val liveRowsBeforeSave = runBlocking { liveSegmentRows() }
+        val openRowBeforeSave = liveRowsBeforeSave.last()
         val finalizedBeforeSave = recorderFactory.finalizedCount()
         val covered = runBlocking {
             segmentManager.getSegmentsInRange(expectedStart, System.currentTimeMillis())
@@ -339,7 +346,21 @@ class RecordSelectSaveFlowTest {
 
         // The picker's requested filename is built from selectionStartTime at second resolution,
         // which is the only exact read of the snapped start that the UI offers.
-        composeRule.waitUntil(TIMEOUT_MS) { createDocumentTitles().isNotEmpty() }
+        composeRule.waitUntil(TIMEOUT_MS) {
+            // The gate blocks a selection older than its free-tier window. That only happens here
+            // if the run outran the seeded history, and without this it would arrive as a bare
+            // timeout on a picker that was never opened.
+            check(
+                composeRule
+                    .onAllNodesWithText(composeRule.activity.getString(R.string.upgrade_save_title))
+                    .fetchSemanticsNodes()
+                    .isEmpty()
+            ) {
+                "The save was gated as exceeding the free-tier window — the run took so long " +
+                    "that the seeded selection aged out of it"
+            }
+            createDocumentTitles().isNotEmpty()
+        }
         assertEquals(
             "Save filename must carry the floored start of the selection",
             "recording_${TimeUtils.formatForFilename(expectedStart)}.m4a",
@@ -349,26 +370,26 @@ class RecordSelectSaveFlowTest {
         assertEquals("The save reported a failure", SAVE_SUCCESS, awaitSaveOutcome())
 
         // ---- what the flush did ---------------------------------------------------------------------
-        assertEquals(
-            "The save must have finalized exactly one more segment — the in-progress one",
-            finalizedBeforeSave + 1,
-            recorderFactory.finalizedCount()
+        // Identify the flushed segment by id rather than by counting. The service's 60s timer can
+        // also fire inside the save window, and an exact count would read that as a flush defect.
+        assertTrue(
+            "The save finalized no segment at all",
+            recorderFactory.finalizedCount() > finalizedBeforeSave
         )
         assertTrue(
             "Flushing rotates rather than stops — the service must still be recording",
             RecordingService.isRunning.value
         )
         val liveRows = runBlocking { liveSegmentRows() }
-        assertEquals(
-            "Expected the flush to add exactly one replacement row",
-            liveRowsBeforeSave.size + 1,
-            liveRows.size
+        val flushedRow = liveRows.single { it.id == openRowBeforeSave.id }
+        assertTrue(
+            "The segment that was open when the save started was never finalized",
+            flushedRow.isComplete
         )
         assertTrue(
-            "Every segment the flush closed should be complete",
-            liveRows.dropLast(1).all { it.isComplete }
+            "The flush left no open segment behind, so recording did not continue",
+            !liveRows.last().isComplete && liveRows.last().id != flushedRow.id
         )
-        assertTrue("Replacement segment should still be open", !liveRows.last().isComplete)
 
         // ---- what landed on disk -----------------------------------------------------------------
         assertTrue("Nothing was written to the picked destination", savedFile.length() > 0)
@@ -569,17 +590,21 @@ class RecordSelectSaveFlowTest {
      */
     private fun assertCanvasGeometry() {
         val canvas = composeRule.onNodeWithTag(WAVEFORM_CANVAS_TEST_TAG)
+        canvas.performScrollTo()
         canvas.assertIsDisplayed()
         val expectedHeight = with(composeRule.density) {
             (LABEL_ROW_HEIGHT_DP + HANDLE_ZONE_HEIGHT_DP + WAVEFORM_BODY_HEIGHT_DP +
                 HANDLE_ZONE_HEIGHT_DP + LABEL_ROW_HEIGHT_DP).dp.roundToPx()
         }
-        val actualHeight = canvas.fetchSemanticsNode().size.height
-        assertEquals(
-            "The waveform canvas is not at its full height — it is clipped, or WaveformView's " +
-                "zone geometry changed and this test's copy of it is stale",
-            expectedHeight,
-            actualHeight
+        // `boundsInRoot`, not `size`: the latter is the unclipped layout height, so a canvas the
+        // scrolling Column has cut off would pass while `performTouchInput` — which works in the
+        // visible box — put the end-handle press on the waveform body instead of its zone.
+        val visibleHeight = canvas.fetchSemanticsNode().boundsInRoot.height.roundToInt()
+        assertTrue(
+            "The waveform canvas is ${visibleHeight}px tall on screen, not ${expectedHeight}px — " +
+                "it is clipped, or WaveformView's zone geometry changed and this test's copy of " +
+                "it is stale",
+            abs(visibleHeight - expectedHeight) <= 1
         )
     }
 
