@@ -10,12 +10,15 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
+import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.service.RecordingService
+import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
 import com.backrecorderapp.testing.PreferenceSnapshot
-import com.backrecorderapp.testing.appContext
 import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.clearRecordedState
 import com.backrecorderapp.testing.createNotificationChannels
+import com.backrecorderapp.testing.stopRecordingAndSettle
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
@@ -49,6 +52,8 @@ import javax.inject.Inject
 class FirstLaunchFlowTest {
 
     @Inject lateinit var appPreferences: AppPreferences
+    @Inject lateinit var segmentDao: SegmentDao
+    @Inject lateinit var recorderFactory: FakeAudioRecorderFactory
 
     private val preferences = PreferenceSnapshot()
 
@@ -61,11 +66,22 @@ class FirstLaunchFlowTest {
         Manifest.permission.POST_NOTIFICATIONS
     )
 
-    /** Injects, and puts `disclaimerAccepted` back. See [cleanUpRule] for why it sits here. */
+    /**
+     * Injects, and cleans up. See [cleanUpRule] for why it sits outside the seeding rule.
+     *
+     * This test records for real through the UI, so it leaves segment rows and cache files behind
+     * like any other recording test — the recorders are waited out before the cache is cleared, or
+     * the clear races a segment the service is still finalizing.
+     */
     @get:Rule(order = 2)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
-        RecordingService.stop(appContext)
-        runBlocking { preferences.restoreAll() }
+        try {
+            runBlocking { stopRecordingAndSettle(recorderFactory) }
+        } finally {
+            recorderFactory.reset()
+            clearRecordedState(segmentDao)
+            runBlocking { preferences.restoreAll() }
+        }
     }
 
     @get:Rule(order = 3)

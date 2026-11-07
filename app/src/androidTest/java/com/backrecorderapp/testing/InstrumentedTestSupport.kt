@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.rules.ExternalResource
 import java.io.File
 
@@ -37,20 +38,22 @@ internal const val STATE_TIMEOUT_MS = 30_000L
 /**
  * Polls [condition] until it holds, failing with [message] rather than with a bare timeout.
  *
- * [condition] is always evaluated at least once, and the deadline is only consulted after a
- * failing evaluation, so a condition that is already true cannot lose a race with a slow poll.
+ * The deadline wraps the whole loop rather than only being consulted between polls, so a
+ * [condition] that suspends and never returns — a DataStore or Room read against state the service
+ * is still holding — fails the test at [timeoutMs] instead of hanging the instrumentation run.
  */
 internal suspend fun awaitUntil(
     message: String,
     timeoutMs: Long = STATE_TIMEOUT_MS,
     condition: suspend () -> Boolean
 ) {
-    val deadline = System.currentTimeMillis() + timeoutMs
-    while (true) {
-        if (condition()) return
-        if (System.currentTimeMillis() >= deadline) throw AssertionError(message)
-        delay(POLL_INTERVAL_MS)
+    val satisfied = withTimeoutOrNull(timeoutMs) {
+        while (!condition()) {
+            delay(POLL_INTERVAL_MS)
+        }
+        true
     }
+    if (satisfied == null) throw AssertionError(message)
 }
 
 /** Waits for `RecordingService.isRunning` to reach [running]. */
