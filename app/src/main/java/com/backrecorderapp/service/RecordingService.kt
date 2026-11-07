@@ -38,6 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 
 /**
@@ -112,13 +113,13 @@ class RecordingService : Service() {
     private val rotationMutex = Mutex()
 
     /**
-     * Written by the rotation coroutine and read by the amplitude coroutine, both on
-     * `Dispatchers.Default` but not necessarily the same thread, and read again by `onDestroy` on
-     * the main thread. `@Volatile` is what gives those reads a happens-before edge against the
-     * write (#48).
+     * Written by the rotation coroutine, read by the amplitude coroutine on another
+     * `Dispatchers.Default` thread, and claimed by `onDestroy` on the main thread (#48).
+     *
+     * An `AtomicReference` rather than a `@Volatile` field: visibility alone is not enough,
+     * because [stopCurrentRecording] has to read and clear as one step. See its KDoc.
      */
-    @Volatile
-    private var audioRecorder: AudioRecorder? = null
+    private val audioRecorder = AtomicReference<AudioRecorder?>(null)
 
     private var currentSegment: SegmentEntity? = null
     private var currentWaveformFile: File? = null
@@ -221,8 +222,9 @@ class RecordingService : Service() {
         // main thread, a cancelled rotation cannot abandon a native muxer call part-way, and a
         // blocking join measured in seconds is what the framework's foreground-service timeout
         // and the ANR watchdog both count against. So the two sides shake hands instead. Both
-        // `destroyed` and `audioRecorder` are `@Volatile`, and each side writes its own before
-        // reading the other's: this side sets `destroyed` above and reads `audioRecorder` here,
+        // `destroyed` is `@Volatile` and `audioRecorder` is an `AtomicReference` that each side
+        // *claims* rather than clears, and each side writes its own before reading the other's:
+        // this side sets `destroyed` above and claims `audioRecorder` here,
         // while `startNewSegment` publishes the recorder and then re-reads `destroyed`. At least
         // one of the two must observe the other, so a recorder started during teardown is always
         // stopped by somebody — and since `AudioRecorder.stop()` is idempotent, both doing it is
@@ -309,7 +311,7 @@ class RecordingService : Service() {
 
             val recorder = audioRecorderFactory.create()
             recorder.start(newSegment.audioFile)
-            audioRecorder = recorder
+            audioRecorder.set(recorder)
 
             // The other half of the teardown handshake described in `onDestroy`: publish the
             // recorder first, then re-read `destroyed`. If teardown began while this segment was
@@ -357,7 +359,7 @@ class RecordingService : Service() {
             while (isActive) {
                 delay(WaveformRepository.SAMPLE_INTERVAL_MS)
                 val amplitude = try {
-                    audioRecorder?.maxAmplitude()?.let {
+                    audioRecorder.get()?.maxAmplitude()?.let {
                         // Normalize to 0.0-1.0 range (max amplitude is ~32767 for 16-bit)
                         (it / 32767f).coerceIn(0f, 1f)
                     } ?: 0f
@@ -408,9 +410,16 @@ class RecordingService : Service() {
             e
         }
 
-        // Always reopen, on every path out of the housekeeping above.
-        startNewSegment()
-        startAmplitudeCapture()
+        // Always reopen, on every path out of the housekeeping above. If the reopen itself fails
+        // its exception wins — the service is stopping either way — but the housekeeping failure
+        // rides along, or the real cause (a full disk, a locked database) would vanish.
+        try {
+            startNewSegment()
+            startAmplitudeCapture()
+        } catch (e: Throwable) {
+            housekeepingFailure?.let(e::addSuppressed)
+            throw e
+        }
 
         // Only now report the failure. Held back so the reopen above cannot be skipped, but not
         // swallowed: a flush that could not finalize its segment must fail its caller rather than
@@ -432,7 +441,12 @@ class RecordingService : Service() {
 
         // Fail any save waiting on a flush now, rather than leaving it to time out against a
         // service that has already decided it cannot record (#47's handshake, #48's stop path).
-        flushCoordinator.abandonAll(FlushAbandonedException())
+        // Guarded on still owning the start: the coordinator is process-global, so abandoning it
+        // after a fresh `onStartCommand` has called `reopen()` would leave that live session
+        // refusing every flush until the next start.
+        if (latestStartId == startId) {
+            flushCoordinator.abandonAll(FlushAbandonedException())
+        }
 
         // Tell the user. A service that goes away silently leaves someone who started a background
         // recording hours ago to discover the gap when their save comes back empty, and #48's
@@ -450,6 +464,14 @@ class RecordingService : Service() {
     }
 
     private fun notifyRecordingStopped() {
+        val notifications = NotificationManagerCompat.from(this)
+        if (!notifications.areNotificationsEnabled()) {
+            // Not a crash, but not delivered either: say so, or the only record of a recording
+            // that stopped itself is that it stopped.
+            Log.w(TAG, "Recording stopped but notifications are disabled; the user was not told")
+            return
+        }
+
         val notification = NotificationCompat.Builder(this, BackRecorderApp.RECOVERY_CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_recording_failed_title))
             .setContentText(getString(R.string.notification_recording_failed_text))
@@ -465,17 +487,26 @@ class RecordingService : Service() {
             .setAutoCancel(true)
             .build()
         runCatching {
-            NotificationManagerCompat.from(this).notify(FAILURE_NOTIFICATION_ID, notification)
+            notifications.notify(FAILURE_NOTIFICATION_ID, notification)
         }.exceptionOrNull()?.let { Log.e(TAG, "Could not post the recording-failed notification", it) }
     }
 
+    /**
+     * Claims the current recorder and stops it, or returns if someone else already claimed it.
+     *
+     * The claim has to be atomic. A read-then-clear let `onDestroy`'s write of null land between
+     * [startNewSegment]'s publish and its own `destroyed` check, wiping the reference without
+     * stopping the recorder — the orphaned microphone the teardown handshake exists to prevent.
+     * Claiming also means exactly one side ever calls `stop()` on a given recorder, so the main
+     * thread never waits on a rotation that is already inside one.
+     */
     private fun stopCurrentRecording() {
+        val recorder = audioRecorder.getAndSet(null) ?: return
         try {
-            audioRecorder?.stop()
+            recorder.stop()
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping recorder", e)
         }
-        audioRecorder = null
     }
 
     private fun createNotification(): Notification {
