@@ -173,6 +173,9 @@ class RecordingSegmentTest {
     /**
      * Issue #47: a flush asked for in the gap between the service reporting itself running and its
      * flush collector being ready. Nothing is fed on purpose — the point is to hit that gap.
+     *
+     * A smoke test, not the regression guard: the gap is milliseconds wide and this cannot force
+     * the race. `FlushCoordinatorTest` on the JVM is what actually pins the behaviour.
      */
     @Test
     fun flushRequestedBeforeTheCollectorIsReadyStillCompletes() = runBlocking {

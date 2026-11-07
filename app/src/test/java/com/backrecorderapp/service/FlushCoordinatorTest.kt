@@ -150,21 +150,46 @@ class FlushCoordinatorTest {
     }
 
     @Test
-    fun `the coordinator still works after a teardown and restart`() = runTest {
+    fun `a restarted service serves a request made before its collector starts`() = runTest {
         val coordinator = FlushCoordinator()
         var flushes = 0
 
         coordinator.abandonAll(FlushAbandonedException())
 
-        // A second recording session in the same process gets a fresh collector but the same
-        // coordinator, and must behave exactly like the first.
+        // A second recording session in the same process reuses this coordinator, and must
+        // behave exactly like the first — including in the window #47 is about to close.
+        // `reopen` happens at service start, so a request made before the new collector is
+        // up must queue, not fail.
+        coordinator.reopen()
+        val requester = launch { coordinator.requestFlush() }
+        advanceUntilIdle()
+        assertEquals("request should be queued, not rejected", 1, coordinator.outstandingCount)
+
         val server = launch { coordinator.serveRequests { flushes++ } }
         advanceUntilIdle()
-        coordinator.requestFlush()
 
+        assertTrue("the restarted service should have served the request", requester.isCompleted)
         assertEquals(1, flushes)
         assertEquals(0, coordinator.outstandingCount)
         server.cancel()
+    }
+
+    @Test
+    fun `cancelling the collector mid-flush fails the request it was serving`() = runTest {
+        val coordinator = FlushCoordinator()
+        var thrown: Throwable? = null
+
+        // The service scope dying under a flush that is already running, with no abandonAll
+        // to catch it — the requester must still be told, not left suspended.
+        val server = launch { coordinator.serveRequests { awaitCancellation() } }
+        val requester = launch { thrown = runCatching { coordinator.requestFlush() }.exceptionOrNull() }
+        advanceUntilIdle()
+
+        server.cancel()
+        advanceUntilIdle()
+
+        assertTrue("requester must not stay suspended", requester.isCompleted)
+        assertTrue("expected FlushAbandonedException, got $thrown", thrown is FlushAbandonedException)
     }
 
     @Test

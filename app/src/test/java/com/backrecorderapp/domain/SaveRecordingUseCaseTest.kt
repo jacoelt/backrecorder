@@ -12,10 +12,12 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 
@@ -328,5 +330,42 @@ class SaveRecordingUseCaseTest {
         assertTrue(
             (result as SaveResult.Error).message.startsWith("Failed to finalize in-progress recording")
         )
+    }
+
+    /**
+     * Issue #47: the save screen going away cancels this coroutine. That must propagate,
+     * not be reported as a failed save — the flush block's timeout handling must not
+     * swallow a cancellation that is not its own.
+     */
+    @Test
+    fun `rethrows cancellation of the caller rather than reporting an error (issue 47)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } throws CancellationException("scope cleared")
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        var thrown: Throwable? = null
+        try {
+            saveRecordingUseCase.execute(
+                startTime = now - 20_000,
+                endTime = now,
+                outputUri = mockk()
+            )
+            fail("execute should have rethrown the cancellation")
+        } catch (e: CancellationException) {
+            thrown = e
+        }
+
+        assertEquals("scope cleared", thrown?.message)
     }
 }

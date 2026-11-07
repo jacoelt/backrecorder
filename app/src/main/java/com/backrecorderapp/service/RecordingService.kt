@@ -113,10 +113,20 @@ class RecordingService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         )
 
+        // Accept flush requests from the moment the UI can see the service as running —
+        // the collector only comes up inside startRecordingLoop() below (issue #47).
+        flushCoordinator.reopen()
         _isRunning.value = true
 
         serviceScope.launch {
-            startRecordingLoop()
+            try {
+                startRecordingLoop()
+            } catch (e: Exception) {
+                // The collector lives at the end of startRecordingLoop(), so a failure
+                // before it means nothing will ever serve a queued request (issue #47).
+                Log.e(TAG, "Recording loop failed to start", e)
+                flushCoordinator.abandonAll(FlushAbandonedException())
+            }
         }
 
         return START_STICKY
