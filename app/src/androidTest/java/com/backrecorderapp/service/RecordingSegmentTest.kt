@@ -1,25 +1,29 @@
 package com.backrecorderapp.service
 
 import android.Manifest
-import android.content.Context
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import androidx.test.core.app.ActivityScenario
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.data.preferences.AppPreferences
-import com.backrecorderapp.notification.NotificationChannels
 import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.STATE_TIMEOUT_MS
+import com.backrecorderapp.testing.appContext
+import com.backrecorderapp.testing.awaitRecordersSettled
+import com.backrecorderapp.testing.awaitRecordingService
+import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.clearRecordedState
+import com.backrecorderapp.testing.createNotificationChannels
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -46,7 +50,8 @@ class RecordingSegmentTest {
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var segmentDao: SegmentDao
 
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    private var scenario: ActivityScenario<MainActivity>? = null
+    private val preferences = PreferenceSnapshot()
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
@@ -61,48 +66,47 @@ class RecordingSegmentTest {
         Manifest.permission.POST_NOTIFICATIONS
     )
 
+    /**
+     * Injects, and cleans up from outside the seeding rule so a seeding failure still tidies up.
+     * Segments, rows and preferences survive the process, and later flow tests share this
+     * database, this cache directory and this DataStore.
+     */
     @get:Rule(order = 2)
-    val injectAndSeed = object : ExternalResource() {
-        override fun before() {
-            hiltRule.inject()
-            recorderFactory.reset()
-            clearRecordedState()
-            // HiltTestApplication stands in for BackRecorderApp, so the channels it would have
-            // created do not exist; posting the foreground notification to a missing channel kills
-            // the process.
-            NotificationChannels.createAll(context)
-            // Keep the activity on the disclaimer screen: this test only needs the app in the
-            // foreground, and the main screen's own work would be noise here. DataStore outlives
-            // the test, so the previous value is put back in tearDown.
-            runBlocking {
-                disclaimerWasAccepted = appPreferences.disclaimerAccepted.first()
-                appPreferences.setDisclaimerAccepted(false)
-            }
-        }
-    }
-
-    private var scenario: ActivityScenario<MainActivity>? = null
-    private var disclaimerWasAccepted = false
-
-    @After
-    fun tearDown() {
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
         try {
-            RecordingService.stop(context)
             runBlocking {
-                awaitRunning(expected = false)
+                RecordingService.stop(appContext)
+                awaitRecordingService(running = false)
                 // `onDestroy` clears `isRunning` first and finalizes afterwards, so wait for the
                 // recorders to settle too — otherwise the cleanup below races a segment the
                 // service is still writing and leaves its row behind for the next test.
-                awaitSettledRecorders()
+                awaitRecordersSettled(recorderFactory)
             }
         } finally {
             scenario?.close()
             scenario = null
             recorderFactory.reset()
-            // Segments, rows and preferences survive the process, and later flow tests share this
-            // database, this cache directory and this DataStore.
-            clearRecordedState()
-            runBlocking { appPreferences.setDisclaimerAccepted(disclaimerWasAccepted) }
+            clearRecordedState(segmentDao)
+            runBlocking { preferences.restoreAll() }
+        }
+    }
+
+    @get:Rule(order = 3)
+    val injectAndSeed = object : ExternalResource() {
+        override fun before() {
+            recorderFactory.reset()
+            clearRecordedState(segmentDao)
+            createNotificationChannels()
+            // Keep the activity on the disclaimer screen: this test only needs the app in the
+            // foreground, and the main screen's own work would be noise here. DataStore outlives
+            // the test, so the previous value is captured for the cleanup rule to put back.
+            runBlocking {
+                preferences.capture(
+                    appPreferences.disclaimerAccepted,
+                    appPreferences::setDisclaimerAccepted
+                )
+                appPreferences.setDisclaimerAccepted(false)
+            }
         }
     }
 
@@ -112,8 +116,8 @@ class RecordingSegmentTest {
         // app in the foreground the way a user would before asking for a recording.
         scenario = ActivityScenario.launch(MainActivity::class.java)
 
-        RecordingService.start(context)
-        awaitRunning(expected = true)
+        RecordingService.start(appContext)
+        awaitRecordingService(running = true)
 
         val firstRecorder = recorderFactory.awaitRecorder(index = 0)
         firstRecorder.feed(FED_DURATION_MS)
@@ -158,8 +162,8 @@ class RecordingSegmentTest {
 
         // Stopping finalizes the replacement segment, which the test never fed. That path is what
         // every later flow test hits on teardown, so prove it also yields a readable MP4.
-        RecordingService.stop(context)
-        awaitRunning(expected = false)
+        RecordingService.stop(appContext)
+        awaitRecordingService(running = false)
         val replacementFile = recorderFactory.awaitFinalizedFiles(count = 2)[1]
         val replacementLastSampleUs = assertReadableAudio(replacementFile)
         assertTrue(
@@ -178,12 +182,12 @@ class RecordingSegmentTest {
     fun aRecordingSessionCanStartAndStopWithoutBeingFed() = runBlocking {
         scenario = ActivityScenario.launch(MainActivity::class.java)
 
-        RecordingService.start(context)
-        awaitRunning(expected = true)
+        RecordingService.start(appContext)
+        awaitRecordingService(running = true)
         recorderFactory.awaitRecorder(index = 0)
 
-        RecordingService.stop(context)
-        awaitRunning(expected = false)
+        RecordingService.stop(appContext)
+        awaitRecordingService(running = false)
 
         val file = recorderFactory.awaitFinalizedFiles(count = 1).single()
         assertReadableAudio(file)
@@ -225,28 +229,6 @@ class RecordingSegmentTest {
         }
     }
 
-    private fun clearRecordedState() = runBlocking {
-        segmentDao.getAllSegments().first().forEach { segmentDao.delete(it) }
-        File(context.cacheDir, "segments").deleteRecursively()
-        File(context.cacheDir, "waveforms").deleteRecursively()
-    }
-
-    private suspend fun awaitSettledRecorders() = withTimeout(
-        "Recorders never settled: the service is still finalizing a segment"
-    ) {
-        while (!recorderFactory.isSettled()) {
-            delay(POLL_INTERVAL_MS)
-        }
-    }
-
-    private suspend fun awaitRunning(expected: Boolean) = withTimeout(
-        "RecordingService.isRunning never became $expected"
-    ) {
-        while (RecordingService.isRunning.value != expected) {
-            delay(POLL_INTERVAL_MS)
-        }
-    }
-
     private suspend fun withTimeout(message: String, block: suspend () -> Unit) {
         val completed = withTimeoutOrNull(STATE_TIMEOUT_MS) {
             block()
@@ -275,7 +257,5 @@ class RecordingSegmentTest {
          */
         const val FLUSH_READY_MARGIN_MS = 1_000L
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
-        const val STATE_TIMEOUT_MS = 30_000L
-        const val POLL_INTERVAL_MS = 50L
     }
 }

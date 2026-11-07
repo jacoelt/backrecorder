@@ -1,7 +1,6 @@
 package com.backrecorderapp.ui
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.compose.ui.test.assertIsDisplayed
@@ -10,19 +9,20 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.core.content.ContextCompat
-import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.data.preferences.AppPreferences
-import com.backrecorderapp.notification.NotificationChannels
 import com.backrecorderapp.service.RecordingService
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.appContext
+import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.createNotificationChannels
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.runBlocking
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -53,31 +53,39 @@ class FirstLaunchPermissionDeniedTest {
 
     @Inject lateinit var appPreferences: AppPreferences
 
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
 
     private val device: UiDevice
         get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
 
+    private val preferences = PreferenceSnapshot()
+
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
 
-    /** Ordered ahead of the compose rule, which launches the activity. See [FirstLaunchFlowTest]. */
+    /** Injects, and cleans up from outside the seeding rule. See [FirstLaunchFlowTest]. */
     @get:Rule(order = 1)
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
+        RecordingService.stop(appContext)
+        runBlocking { preferences.restoreAll() }
+    }
+
+    /** Ordered ahead of the compose rule, which launches the activity. See [FirstLaunchFlowTest]. */
+    @get:Rule(order = 2)
     val firstLaunchState = object : ExternalResource() {
         override fun before() {
-            hiltRule.inject()
-            NotificationChannels.createAll(context)
-            runBlocking { appPreferences.setDisclaimerAccepted(false) }
+            createNotificationChannels()
+            runBlocking {
+                preferences.capture(
+                    appPreferences.disclaimerAccepted,
+                    appPreferences::setDisclaimerAccepted
+                )
+                appPreferences.setDisclaimerAccepted(false)
+            }
         }
     }
 
-    @get:Rule(order = 2)
+    @get:Rule(order = 3)
     val composeRule = createAndroidComposeRule<MainActivity>()
-
-    @After
-    fun tearDown() {
-        RecordingService.stop(context)
-    }
 
     @Test
     fun decliningTheMicrophoneLeavesMainScreenUsableRatherThanDeadOrCrashed() {
@@ -132,7 +140,7 @@ class FirstLaunchPermissionDeniedTest {
     }
 
     private fun isGranted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
 
     /**
      * Mirrors what `MainScreen` asks for. Notifications are only a runtime permission from API 33,

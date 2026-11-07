@@ -11,7 +11,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.test.platform.app.InstrumentationRegistry
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.FakeBillingRepository
@@ -23,7 +22,9 @@ import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SaveResult
 import com.backrecorderapp.domain.SubscriptionGate
-import com.backrecorderapp.notification.NotificationChannels
+import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.cleanUpRule
+import com.backrecorderapp.testing.createNotificationChannels
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
@@ -61,42 +62,57 @@ class SubscriptionGateFlowTest {
     @Inject lateinit var subscriptionGate: SubscriptionGate
     @Inject lateinit var saveRecordingUseCase: SaveRecordingUseCase
 
+    private val preferences = PreferenceSnapshot()
+
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
 
     /**
-     * Seeds between the Hilt rule and the compose rule: `NavGraph` fixes its start destination
+     * Injects, and restores the preferences this class seeds.
+     *
+     * DataStore is the one piece of state that genuinely outlives a test: the Hilt component - and
+     * with it the `@Singleton` billing fake - is rebuilt per test, but the preference file is
+     * process-wide and shared with every other instrumented class. So the upload mode is put back
+     * rather than left wherever a test happened to leave it. Ordered outside the seeding rule, so
+     * it still runs when seeding throws part-way.
+     */
+    @get:Rule(order = 1)
+    val cleanUpAfterwards = cleanUpRule(hiltRule) {
+        runBlocking { preferences.restoreAll() }
+    }
+
+    /**
+     * Seeds between the cleanup rule and the compose rule: `NavGraph` fixes its start destination
      * from `disclaimerAccepted` on first composition, and the compose rule launches the activity
      * before any `@Before` runs. Written through [AppPreferences] rather than by deleting the
      * backing file, because the `preferencesDataStore` delegate caches in-process and a delete is
      * a silent no-op once a sibling test has read prefs.
-     *
-     * DataStore is the one piece of state that genuinely outlives a test: the Hilt component - and
-     * with it the `@Singleton` billing fake - is rebuilt per test, but the preference file is
-     * process-wide and shared with every other instrumented class. So the upload mode is restored
-     * in `after()` rather than left wherever a test happened to leave it.
      */
-    @get:Rule(order = 1)
+    @get:Rule(order = 2)
     val seedPreferences = object : ExternalResource() {
         override fun before() {
-            hiltRule.inject()
-            // HiltTestApplication replaces BackRecorderApp, so nothing has created the channels.
-            NotificationChannels.createAll(
-                InstrumentationRegistry.getInstrumentation().targetContext
-            )
+            createNotificationChannels()
             runBlocking {
+                preferences.capture(
+                    appPreferences.disclaimerAccepted,
+                    appPreferences::setDisclaimerAccepted
+                )
+                preferences.capture(
+                    appPreferences.cloudUploadMode,
+                    appPreferences::setCloudUploadMode
+                )
+                preferences.capture(
+                    appPreferences.driveDisconnected,
+                    appPreferences::setDriveDisconnected
+                )
                 appPreferences.setDisclaimerAccepted(true)
                 appPreferences.setCloudUploadMode(CloudUploadMode.OFF)
                 appPreferences.setDriveDisconnected(false)
             }
         }
-
-        override fun after() {
-            runBlocking { appPreferences.setCloudUploadMode(CloudUploadMode.OFF) }
-        }
     }
 
-    @get:Rule(order = 2)
+    @get:Rule(order = 3)
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     private fun string(id: Int) = composeRule.activity.getString(id)
