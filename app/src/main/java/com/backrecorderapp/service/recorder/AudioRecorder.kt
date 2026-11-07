@@ -21,7 +21,12 @@ interface AudioRecorder {
      */
     fun start(outputFile: File)
 
-    /** Finalizes the output file and releases the underlying resources. */
+    /**
+     * Finalizes the output file. Releases the underlying resources either way, including when it
+     * throws — which it does when the segment captured no data, as `MediaRecorder.stop()` does on
+     * a segment flushed right after it opened. From the moment [stop] begins, [maxAmplitude] reads
+     * 0 (#48). Calling it a second time does nothing.
+     */
     fun stop()
 
     /**

@@ -36,6 +36,18 @@ class FakeAudioRecorder(
     private var framesEncoded = 0L
     private var stopped = false
 
+    /**
+     * Whether a segment is open, mirrored out of [codec]/[stopped] so [maxAmplitude] can answer
+     * without [lock].
+     *
+     * The service polls the amplitude every 200 ms from a `Dispatchers.Default` coroutine, and
+     * `synchronized` blocks the thread uninterruptibly — so reading the real state under [lock]
+     * would park that coroutine for the length of a `feed()` encode, starving a pool that is two
+     * threads wide on a CI emulator and delaying the rotation and flush coroutines behind it.
+     */
+    @Volatile
+    private var capturing = false
+
     private val bufferInfo = MediaCodec.BufferInfo()
 
     /** The file this recorder was started on, available once [start] has run. */
@@ -75,6 +87,7 @@ class FakeAudioRecorder(
                 throw e
             }
             codec = encoder
+            capturing = true
         }
         // Announced only once the recorder can accept audio, so a test that waits for a segment to
         // open cannot win the race against the service and call feed() on an unstarted recorder.
@@ -100,6 +113,7 @@ class FakeAudioRecorder(
                 null
             } else {
                 stopped = true
+                capturing = false
                 try {
                     // A segment the service opened and closed without the test advancing it would
                     // otherwise hold no samples at all, which the muxer cannot finalize. Give it
@@ -138,8 +152,13 @@ class FakeAudioRecorder(
         failure?.let { throw it }
     }
 
-    /** Constant and non-zero, so waveform capture records something deterministic. */
-    override fun maxAmplitude(): Int = FAKE_AMPLITUDE
+    /**
+     * Constant and non-zero while recording, so waveform capture records something deterministic —
+     * and 0 before [start] and from the moment [stop] begins, which is what the real recorder does
+     * (#48). A fake that reported audio after teardown would hide the zero samples production
+     * writes around a rotation boundary.
+     */
+    override fun maxAmplitude(): Int = if (capturing) FAKE_AMPLITUDE else 0
 
     private fun encodeFrames(encoder: MediaCodec, frameCount: Int) {
         var remaining = frameCount
