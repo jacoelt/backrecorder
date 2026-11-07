@@ -54,6 +54,11 @@ android {
 
         // Substitutes HiltTestApplication; see HiltTestRunner.
         testInstrumentationRunner = "com.backrecorderapp.HiltTestRunner"
+
+        // Runs `pm clear` on the app and test packages around every instrumented test, which
+        // resets DataStore, the Room database, the cache directory *and* the runtime permission
+        // grants. Only meaningful together with the orchestrator in `testOptions` below.
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
     }
 
     signingConfigs {
@@ -93,6 +98,17 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    // Each instrumented test gets its own instrumentation process and, with `clearPackageData`,
+    // its own clean app state. That isolation is a hard requirement, not a nicety: runtime
+    // permission grants are package-wide and permanent for the life of an instrumentation run, so
+    // `GrantPermissionRule` in one class (RecordingSegmentTest grants RECORD_AUDIO) leaks into
+    // every later class, and a test of the *denied* branch would silently stop seeing a dialog and
+    // pass vacuously. Revoking in-process is not an alternative — the platform kills the app's
+    // processes on revoke, and under instrumentation that is the test run itself.
+    testOptions {
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
     }
 
     packaging {
@@ -181,5 +197,9 @@ dependencies {
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.hilt.android.testing)
+    // Runtime permission dialogs are system UI, outside the Compose hierarchy.
+    androidTestImplementation(libs.uiautomator)
+    // Runs each instrumented test in its own process; see the testOptions comment above.
+    androidTestUtil(libs.test.orchestrator)
     kspAndroidTest(libs.hilt.compiler)
 }
