@@ -154,6 +154,19 @@ class RecordingService : Service() {
     @Volatile
     private var latestStartId = 0
 
+    /**
+     * Whether this instance has already brought a recording up, so a second start is a no-op
+     * rather than a second recorder and a second rotation loop (#61).
+     *
+     * Set and read on the main thread in [onStartCommand], but cleared from a coroutine by
+     * [stopBecauseRecordingFailed] — hence `@Volatile`. Clearing it there is what lets a start
+     * that arrives during that path's settle delay bring the recording back up: `stopSelf` is a
+     * no-op once a newer start has landed, so a service left with the guard still set would
+     * survive and never record again, with nothing the user could do about it from the UI.
+     */
+    @Volatile
+    private var recordingStarted = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -177,12 +190,30 @@ class RecordingService : Service() {
             return START_NOT_STICKY
         }
 
+        // Unconditional, and before the duplicate-start guard below. `startForegroundService`
+        // obliges *every* start — a redelivered `START_STICKY` intent included — to reach the
+        // foreground, and a start that returns without doing so is killed by the framework with
+        // `ForegroundServiceDidNotStartInTimeException`. Calling it again while already in the
+        // foreground only refreshes the notification.
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,
             createNotification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         )
+
+        // A second start must not bring up a second recording. `startRecordingLoop()` used to run
+        // unconditionally, so a double tap — `MainViewModel.toggleRecording` reads `isRecording`,
+        // which lags `RecordingService.isRunning` — or `BootReceiver` racing an app-initiated
+        // start opened another recorder over the top of the live one, leaving the first holding
+        // the microphone for the life of the process and its row `isComplete = 0` for good, and
+        // overwrote `rotationJob` and `flushJob` without cancelling them, leaving two rotation
+        // loops racing for the rest of the session (#61).
+        if (recordingStarted) {
+            Log.i(TAG, "Already recording; ignoring a duplicate start")
+            return START_STICKY
+        }
+        recordingStarted = true
 
         // Accept flush requests from the moment the UI can see the service as running —
         // the collector only comes up inside startRecordingLoop() below (issue #47).
@@ -448,6 +479,11 @@ class RecordingService : Service() {
     private suspend fun stopBecauseRecordingFailed() {
         val startId = latestStartId
         _isRunning.value = false
+        // Reopen the door for a start arriving during the settle below (#61). The jobs this one
+        // leaves behind are already finishing — the rotation loop returns right after this call
+        // and the flush collector throws out of `serveRequests` — so a start that gets in here
+        // replaces them rather than racing them.
+        recordingStarted = false
 
         // Fail any save waiting on a flush now, rather than leaving it to time out against a
         // service that has already decided it cannot record (#47's handshake, #48's stop path).
