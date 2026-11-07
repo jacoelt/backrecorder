@@ -15,7 +15,9 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import javax.inject.Singleton
 
 @Module
@@ -47,6 +49,18 @@ object AppModule {
         @IoDispatcher ioDispatcher: CoroutineDispatcher,
         driveServiceFactory: DriveServiceFactory
     ): DriveAccountIdentityResolver = DriveAboutIdentityResolver(ioDispatcher, driveServiceFactory)
+
+    /**
+     * Never cancelled: it exists precisely for work that has to outlive its caller. Nothing
+     * long-running belongs on it — a coroutine launched here runs until it finishes or the process
+     * dies.
+     */
+    @Provides
+    @Singleton
+    @ApplicationScope
+    fun provideApplicationScope(
+        @IoDispatcher ioDispatcher: CoroutineDispatcher
+    ): CoroutineScope = CoroutineScope(SupervisorJob() + ioDispatcher)
 
     @Provides
     @Singleton
