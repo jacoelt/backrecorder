@@ -122,9 +122,9 @@ class RecordingSegmentTest {
         val firstRecorder = recorderFactory.awaitRecorder(index = 0)
         firstRecorder.feed(FED_DURATION_MS)
 
-        // No waiting before the flush any more: segment filenames carry the segment's id, so a
-        // rotation inside the second the segment started cannot reuse its path (#46), and a
-        // request made before the service's flush collector is ready is queued, not dropped (#47).
+        // Nothing is waited for before the flush: filenames carry the segment's id, so a rotation
+        // inside the second it started cannot reuse its path (#46), and a request made before the
+        // flush collector is ready is queued rather than dropped (#47).
         withTimeout("flushCurrentSegment() never completed") {
             RecordingService.flushCurrentSegment()
         }
@@ -171,11 +171,8 @@ class RecordingSegmentTest {
     }
 
     /**
-     * Issue #47, window 1: a flush asked for in the gap between the service reporting itself
-     * running and its flush collector actually being ready. The request used to be emitted into a
-     * flow with no subscriber and dropped, leaving `flushCurrentSegment()` — and therefore the
-     * save UI that awaits it — suspended forever. Nothing is fed and nothing is waited for here;
-     * the point is to hit that gap, not to produce audio.
+     * Issue #47: a flush asked for in the gap between the service reporting itself running and its
+     * flush collector being ready. Nothing is fed on purpose — the point is to hit that gap.
      */
     @Test
     fun flushRequestedBeforeTheCollectorIsReadyStillCompletes() = runBlocking {
@@ -189,11 +186,13 @@ class RecordingSegmentTest {
         }
 
         // The flush rotated rather than stopped: one finalized segment, one still open.
+        // Assert on the partition, not on row order — nothing was fed, so both rows can
+        // share a startTime and getAllSegments only orders by that.
         recorderFactory.awaitFinalizedFiles(count = 1)
         assertTrue("Service stopped running after a flush", RecordingService.isRunning.value)
         val rows = segmentDao.getAllSegments().first()
         assertEquals("Expected the flushed segment plus its replacement", 2, rows.size)
-        assertTrue("Flushed segment row is not marked complete", rows.first().isComplete)
+        assertEquals("Expected exactly one finalized segment", 1, rows.count { it.isComplete })
 
         RecordingService.stop(context)
         awaitRunning(expected = false)

@@ -7,6 +7,7 @@ import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
+import com.backrecorderapp.service.FlushAbandonedException
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -292,6 +293,40 @@ class SaveRecordingUseCaseTest {
         assertTrue(
             "the error should name the timeout, not look like a generic failure",
             (result as SaveResult.Error).message.contains("Timed out")
+        )
+    }
+
+    /**
+     * Issue #47: the service being torn down mid-save fails the flush with
+     * [FlushAbandonedException], which must read as an ordinary flush failure — not be
+     * confused with the timeout branch above.
+     */
+    @Test
+    fun `returns error when the service is torn down mid-flush (issue 47)`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        coEvery { recordingFlusher.flushCurrentSegment() } throws FlushAbandonedException()
+
+        val now = System.currentTimeMillis()
+        val incomplete = SegmentEntity(
+            id = "in-progress",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - 30_000,
+            endTime = 0,
+            durationMs = 0,
+            isComplete = false
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(incomplete)
+
+        val result = saveRecordingUseCase.execute(
+            startTime = now - 20_000,
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        assertTrue(result is SaveResult.Error)
+        assertTrue(
+            (result as SaveResult.Error).message.startsWith("Failed to finalize in-progress recording")
         )
     }
 }

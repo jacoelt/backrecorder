@@ -9,6 +9,7 @@ import android.net.Uri
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -71,6 +72,10 @@ class SaveRecordingUseCase @Inject constructor(
                     "Timed out waiting for the in-progress recording to be finalized. " +
                         "Please try again."
                 )
+            } catch (e: CancellationException) {
+                // The caller's own cancellation — the save screen went away. Let it
+                // propagate instead of reporting an error for a save nobody is waiting on.
+                throw e
             } catch (e: Exception) {
                 return SaveResult.Error("Failed to finalize in-progress recording: ${e.message}")
             }
