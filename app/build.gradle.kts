@@ -189,6 +189,9 @@ dependencies {
     // recording service starts even when a test has swapped the recorder for a fake.
     androidTestImplementation(libs.test.rules)
     androidTestImplementation(libs.espresso.core)
+    // espresso-intents stubs the SAF CreateDocument picker in the record -> select -> save flow
+    // test: nothing can drive the system file picker, so its result is answered in-process.
+    androidTestImplementation(libs.espresso.intents)
     androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.test.ext.junit)
     androidTestImplementation(libs.coroutines.test)
