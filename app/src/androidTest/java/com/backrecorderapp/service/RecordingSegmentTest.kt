@@ -181,8 +181,8 @@ class RecordingSegmentTest {
     fun flushRequestedBeforeTheCollectorIsReadyStillCompletes() = runBlocking {
         scenario = ActivityScenario.launch(MainActivity::class.java)
 
-        RecordingService.start(context)
-        awaitRunning(expected = true)
+        RecordingService.start(appContext)
+        awaitRecordingService(running = true)
 
         withTimeout("flushCurrentSegment() never completed — the request was dropped (#47)") {
             RecordingService.flushCurrentSegment()
@@ -197,8 +197,8 @@ class RecordingSegmentTest {
         assertEquals("Expected the flushed segment plus its replacement", 2, rows.size)
         assertEquals("Expected exactly one finalized segment", 1, rows.count { it.isComplete })
 
-        RecordingService.stop(context)
-        awaitRunning(expected = false)
+        RecordingService.stop(appContext)
+        awaitRecordingService(running = false)
     }
 
     /**
