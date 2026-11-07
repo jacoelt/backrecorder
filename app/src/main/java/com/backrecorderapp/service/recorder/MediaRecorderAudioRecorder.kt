@@ -5,7 +5,6 @@ import android.media.MediaRecorder
 import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
-import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 
 /**
@@ -38,18 +37,28 @@ class MediaRecorderAudioRecorder internal constructor(
     constructor(context: Context) : this({ MediaRecorderPlatformRecorder(context) })
 
     /**
-     * Written by the service's rotation coroutine and read by its amplitude coroutine on another
-     * `Dispatchers.Default` thread, so [maxAmplitude] would otherwise have no happens-before edge
-     * against the write and could reach a released recorder (#48).
+     * Guards [recorder] for every read and write.
      *
-     * An `AtomicReference` rather than a `@Volatile` field: visibility is not enough, because
-     * [stop] has to read and clear as one step. Two threads can reach [stop] at once — `onDestroy`
-     * on the main thread and a rotation on `Dispatchers.Default` — and a plain read-then-clear
-     * lets both see the same recorder and release it twice, which aborts natively.
+     * A `@Volatile` field is not enough, and neither is an `AtomicReference`. Three threads reach
+     * this object: the rotation coroutine starts and stops segments, `onDestroy` stops on the main
+     * thread, and the amplitude coroutine reads every 200 ms, both coroutines on
+     * `Dispatchers.Default`. Atomically *claiming* the recorder in [stop] would still leave
+     * [maxAmplitude] reading the reference and then calling through it in two steps, with the
+     * release free to land in between — a native use-after-release no `catch` can contain. One
+     * monitor over the reference *and* its use is what actually closes that.
      */
-    private val recorder = AtomicReference<PlatformRecorder?>(null)
+    private val lock = Any()
 
-    override fun start(outputFile: File) {
+    private var recorder: PlatformRecorder? = null
+
+    override fun start(outputFile: File) = synchronized(lock) {
+        // Refuse before constructing anything: one instance records one segment (see
+        // [AudioRecorder]), and a second start would otherwise open the microphone, truncate the
+        // output file and only then be rejected — having stolen the mic from the live recorder.
+        check(recorder == null) {
+            "MediaRecorderAudioRecorder is single-use; start() was already called"
+        }
+
         val platform = newPlatformRecorder()
         try {
             platform.prepareAndStart(outputFile)
@@ -62,20 +71,14 @@ class MediaRecorderAudioRecorder internal constructor(
             runCatching { platform.release() }.exceptionOrNull()?.let(e::addSuppressed)
             throw e
         }
-        if (!recorder.compareAndSet(null, platform)) {
-            // One instance records one segment (see [AudioRecorder]). Overwriting the field would
-            // strand the previous recorder with no path to a release, so refuse instead — and
-            // release the one just started, since the caller will not get a reference to it.
-            runCatching { platform.release() }
-            throw IllegalStateException("MediaRecorderAudioRecorder is single-use; start() was already called")
-        }
+        recorder = platform
     }
 
-    override fun stop() {
-        // Claim the recorder: whichever caller wins owns the teardown, and any other gets null and
-        // returns. This is also what makes a concurrent `maxAmplitude()` read 0 rather than reach
-        // a recorder that is about to be released.
-        val platform = recorder.getAndSet(null) ?: return
+    override fun stop() = synchronized(lock) {
+        // Claim the recorder first: whichever caller wins owns the teardown and any other returns,
+        // so `onDestroy` and a rotation cannot both release the same native recorder.
+        val platform = recorder ?: return
+        recorder = null
         try {
             platform.stop()
         } catch (e: Throwable) {
@@ -89,7 +92,7 @@ class MediaRecorderAudioRecorder internal constructor(
         platform.release()
     }
 
-    override fun maxAmplitude(): Int = recorder.get()?.maxAmplitude() ?: 0
+    override fun maxAmplitude(): Int = synchronized(lock) { recorder?.maxAmplitude() ?: 0 }
 
     companion object {
         const val SAMPLE_RATE_HZ = 16_000

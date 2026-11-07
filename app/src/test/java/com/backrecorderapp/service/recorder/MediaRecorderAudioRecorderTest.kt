@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -154,32 +155,47 @@ class MediaRecorderAudioRecorderTest {
     }
 
     /**
-     * The guard the sequential test above cannot give: `onDestroy` stops the recorder on the main
-     * thread while a rotation may be inside its own stop on `Dispatchers.Default`. A read-then-
-     * clear lets both see the same recorder and release it twice, which aborts natively — so the
-     * claim has to be one atomic step.
+     * The guard the sequential tests above cannot give. Three threads reach a live recorder:
+     * `onDestroy` stops it on the main thread, a rotation may be inside its own stop on
+     * `Dispatchers.Default`, and the amplitude coroutine reads every 200 ms. Two hazards fall out
+     * of that, and this covers both — the recorder must be released exactly once however the two
+     * stops interleave, and a read must never reach a recorder that has already been released.
      *
+     * The fake fails the read itself rather than reporting it, so the failure names the hazard.
      * Repeated, because one interleaving proves nothing: a racing pair that happened to serialize
      * would pass against the broken version too.
      */
     @Test
-    fun `concurrent stops release the recorder exactly once`() {
-        repeat(CONCURRENT_ATTEMPTS) {
+    fun `concurrent stops release once and never while a read is in flight`() {
+        repeat(CONCURRENT_ATTEMPTS) { attempt ->
             val releases = AtomicInteger()
-            val platform = FakePlatformRecorder(onRelease = { releases.incrementAndGet() })
+            val platform = FakePlatformRecorder(
+                onRelease = { releases.incrementAndGet() },
+                failReadAfterRelease = true
+            )
             val recorder = MediaRecorderAudioRecorder { platform }
             recorder.start(outputFile)
 
-            val startLine = CyclicBarrier(2)
-            val stoppers = List(2) {
+            // Captured rather than left to die with the thread: a barrier timeout on a loaded CI
+            // runner would otherwise surface as "released 0 times", pointing at the wrong thing on
+            // a check that is required on `main`.
+            val failures = ConcurrentLinkedQueue<Throwable>()
+            val startLine = CyclicBarrier(3)
+            val racers = List(3) { index ->
                 Thread {
-                    startLine.await(AWAIT_TIMEOUT_S, TimeUnit.SECONDS)
-                    recorder.stop()
+                    runCatching {
+                        startLine.await(AWAIT_TIMEOUT_S, TimeUnit.SECONDS)
+                        if (index < 2) recorder.stop() else recorder.maxAmplitude()
+                    }.exceptionOrNull()?.let(failures::add)
                 }.apply { start() }
             }
-            stoppers.forEach { it.join(TimeUnit.SECONDS.toMillis(AWAIT_TIMEOUT_S)) }
+            racers.forEach { racer ->
+                racer.join(TimeUnit.SECONDS.toMillis(AWAIT_TIMEOUT_S))
+                assertTrue("Attempt $attempt: a racer never finished", !racer.isAlive)
+            }
+            failures.peek()?.let { throw AssertionError("Attempt $attempt: a racer failed", it) }
 
-            assertEquals("Attempt $it released more than once", 1, releases.get())
+            assertEquals("Attempt $attempt released more than once", 1, releases.get())
         }
     }
 
@@ -202,11 +218,12 @@ class MediaRecorderAudioRecorderTest {
 
     /**
      * One instance records one segment ([AudioRecorder]). Overwriting the field would strand the
-     * first recorder with nothing left to release it, so a second start is refused and the
-     * recorder it had just constructed is released on the way out.
+     * first recorder with nothing left to release it, so a second start is refused — and refused
+     * *before* constructing anything, since a recorder that got as far as `prepare()` would have
+     * taken the microphone from the live one and truncated its output file first.
      */
     @Test
-    fun `a second start is refused and releases what it constructed`() {
+    fun `a second start is refused before it constructs anything`() {
         val first = FakePlatformRecorder()
         val second = FakePlatformRecorder()
         val platforms = ArrayDeque(listOf<PlatformRecorder>(first, second))
@@ -215,7 +232,7 @@ class MediaRecorderAudioRecorderTest {
 
         assertThrows(IllegalStateException::class.java) { recorder.start(outputFile) }
 
-        assertTrue("The refused recorder was left unreleased", second.released)
+        assertEquals("The refused start still touched the platform", emptyList<String>(), second.calls)
         assertTrue("The live recorder was released by the refusal", !first.released)
         assertEquals(FakePlatformRecorder.AMPLITUDE, recorder.maxAmplitude())
     }
@@ -235,7 +252,9 @@ class MediaRecorderAudioRecorderTest {
         private val stopFailure: Throwable? = null,
         private val releaseFailure: Throwable? = null,
         private val onStop: () -> Unit = {},
-        private val onRelease: () -> Unit = {}
+        private val onRelease: () -> Unit = {},
+        /** Stands in for the native use-after-release that a real `MediaRecorder` would suffer. */
+        private val failReadAfterRelease: Boolean = false
     ) : PlatformRecorder {
 
         /** Synchronized because the concurrent-stop test drives one instance from two threads. */
@@ -265,7 +284,12 @@ class MediaRecorderAudioRecorderTest {
             releaseFailure?.let { throw it }
         }
 
-        override fun maxAmplitude(): Int = AMPLITUDE
+        override fun maxAmplitude(): Int {
+            check(!(failReadAfterRelease && released)) {
+                "maxAmplitude() reached a released recorder"
+            }
+            return AMPLITUDE
+        }
 
         private fun record(call: String) = synchronized(recorded) { recorded += call }
 
@@ -275,8 +299,8 @@ class MediaRecorderAudioRecorderTest {
     }
 
     private companion object {
-        /** Enough interleavings that a read-then-clear loses the race at least once. */
-        const val CONCURRENT_ATTEMPTS = 2_000
+        /** Enough interleavings to lose the race against an unguarded teardown, and still sub-second. */
+        const val CONCURRENT_ATTEMPTS = 500
         const val AWAIT_TIMEOUT_S = 10L
     }
 }
