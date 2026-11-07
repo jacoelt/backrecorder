@@ -13,18 +13,22 @@ import com.backrecorderapp.testing.PreferenceSnapshot
 import com.backrecorderapp.testing.appContext
 import com.backrecorderapp.testing.awaitRecordersSettled
 import com.backrecorderapp.testing.awaitRecordingService
+import com.backrecorderapp.testing.awaitUntil
 import com.backrecorderapp.testing.cleanUpRule
 import com.backrecorderapp.testing.clearRecordedState
 import com.backrecorderapp.testing.createNotificationChannels
+import com.backrecorderapp.testing.stopRecordingAndSettle
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
 import org.junit.runner.RunWith
+import java.io.File
 import javax.inject.Inject
 
 /**
@@ -134,7 +138,61 @@ class RecordingStopTest {
         )
     }
 
+    /**
+     * The segment that is still recording when the service stops has to be closed by somebody.
+     * No stop path used to do it, so its row stayed `isComplete = 0` with `endTime` and
+     * `durationMs` zero — a row `pruneOldSegments` can never reclaim, because it only deletes
+     * complete rows, and one that `getSegmentsInRange` matches on every later save (#62).
+     *
+     * Fails without the fix: the row is still incomplete once the service has gone.
+     */
+    @Test
+    fun stoppingFinalizesTheSegmentThatWasStillRecording() = runBlocking {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+
+        RecordingService.start(appContext)
+        awaitRecordingService(running = true)
+        recorderFactory.awaitRecorder(index = 0).feed(FED_DURATION_MS)
+
+        stopRecordingAndSettle(recorderFactory)
+
+        // The close runs on a scope that outlives the service, so it lands shortly *after* the
+        // stop is observable rather than before it — polled, not read once.
+        awaitUntil("The segment open at the stop was never closed (#62)") {
+            segmentDao.getAllSegments().first().singleOrNull()?.isComplete == true
+        }
+
+        val row = segmentDao.getAllSegments().first().single()
+        assertTrue("The finalized segment has no duration", row.durationMs > 0)
+        assertTrue("The segment's waveform was never written", File(row.waveformPath).exists())
+        assertTrue("The segment's audio was discarded", File(row.filePath).length() > 0)
+    }
+
+    /**
+     * The defect's actual shape: *one* orphan row and its two files per recording session, for the
+     * life of the install. Two sessions back to back must leave two complete rows and nothing else.
+     *
+     * Fails without the fix — two incomplete rows instead.
+     */
+    @Test
+    fun backToBackSessionsAccumulateNoOrphanRows() = runBlocking {
+        scenario = ActivityScenario.launch(MainActivity::class.java)
+
+        repeat(SESSIONS) { session ->
+            RecordingService.start(appContext)
+            awaitRecordingService(running = true)
+            recorderFactory.awaitRecorder(index = session).feed(FED_DURATION_MS)
+            stopRecordingAndSettle(recorderFactory)
+        }
+
+        awaitUntil("Each stopped session left an orphan row behind (#62)") {
+            val rows = segmentDao.getAllSegments().first()
+            rows.size == SESSIONS && rows.all { it.isComplete }
+        }
+    }
+
     private companion object {
         const val FED_DURATION_MS = 1_000L
+        const val SESSIONS = 2
     }
 }

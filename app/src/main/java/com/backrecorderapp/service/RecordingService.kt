@@ -19,6 +19,7 @@ import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
+import com.backrecorderapp.di.ApplicationScope
 import com.backrecorderapp.service.recorder.AudioRecorder
 import com.backrecorderapp.service.recorder.AudioRecorderFactory
 import dagger.hilt.android.AndroidEntryPoint
@@ -112,6 +113,15 @@ class RecordingService : Service() {
     @Inject lateinit var waveformRepository: WaveformRepository
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var audioRecorderFactory: AudioRecorderFactory
+
+    /**
+     * Where the open segment is closed from when the service stops (#62).
+     *
+     * It cannot be `serviceScope` — `onDestroy` cancels that — and it cannot be `onDestroy` itself,
+     * which runs on the main thread and must never block. So the work is handed to a scope that
+     * outlives the service and left to finish on its own.
+     */
+    @Inject @ApplicationScope lateinit var applicationScope: CoroutineScope
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val rotationMutex = Mutex()
@@ -271,12 +281,22 @@ class RecordingService : Service() {
         // stopped by somebody — and since `AudioRecorder.stop()` is idempotent, both doing it is
         // harmless.
         stopCurrentRecording()
+        // The segment that was open has to be closed by somebody. No stop path used to do it, so
+        // its row stayed `isComplete = 0` with `endTime` and `durationMs` zero, for good: a row
+        // `pruneOldSegments` can never reclaim (it only deletes complete rows) and that
+        // `getSegmentsInRange` matches on every later save, one per recording session for the life
+        // of the install (#62). This is launched, never awaited — see `closeOpenSegment`.
+        closeOpenSegment()
         serviceScope.cancel()
         releaseWakeLock()
     }
 
     private suspend fun startRecordingLoop() {
-        startNewSegment()
+        // Under the rotation lock, as every other write of `currentSegment` is. The segment the
+        // first start opens is the one a stop seconds later has to close, and that close runs on
+        // another thread (#62): publishing it outside the lock leaves it unsynchronized with the
+        // read that matters most.
+        rotationMutex.withLock { startNewSegment() }
         startAmplitudeCapture()
 
         rotationJob = serviceScope.launch {
@@ -357,9 +377,10 @@ class RecordingService : Service() {
             // The other half of the teardown handshake described in `onDestroy`: publish the
             // recorder first, then re-read `destroyed`. If teardown began while this segment was
             // opening, close it here rather than leave it for an `onDestroy` that has already
-            // looked. The segment keeps its row and its finalized file, exactly as an ordinary
-            // stop would leave it.
-            if (destroyed) stopCurrentRecording()
+            // looked. It is closed the way an ordinary stop now closes a segment (#62) — not
+            // merely stopped — or a segment opened during teardown would be precisely the orphan
+            // row that stop path was changed to stop producing.
+            if (destroyed) closeOpenSegment()
         } catch (e: CancellationException) {
             // Teardown, not a failure to record. Wrapping it would make the rotation loop stop the
             // service for "cannot open a segment" when the service is already going away.
@@ -505,6 +526,67 @@ class RecordingService : Service() {
         delay(FOREGROUND_SETTLE_MS)
         // Bound to this start, so a recording the user began during the settle above survives.
         stopSelf(startId)
+    }
+
+    /**
+     * Hands the open segment to [applicationScope] to be closed, and returns at once.
+     *
+     * Called from `onDestroy` (the main thread, which must never block) and from [startNewSegment]
+     * when it finds teardown has begun. Both are safe to call repeatedly and from either side at
+     * once: [closeCurrentSegment] claims the segment under [rotationMutex], so whichever call
+     * arrives second finds nothing to do.
+     */
+    private fun closeOpenSegment() {
+        applicationScope.launch {
+            try {
+                closeCurrentSegment()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Nothing above this can report it — the service is gone — and an uncaught throw
+                // on a launched coroutine takes the process down.
+                Log.e(TAG, "Could not close the segment that was open when the service stopped", e)
+            }
+        }
+    }
+
+    /**
+     * Closes the segment that was open when the service stopped: finalized if it captured audio,
+     * discarded if it did not.
+     *
+     * **Why either and not always finalize.** A finalized row is a claim that there is audio to
+     * read at `filePath`. A segment whose recorder never wrote anything — opened and stopped in
+     * the same breath during teardown — would make that claim falsely, and `getSegmentsInRange`
+     * would hand it to every save in the buffer window for `MediaExtractor` to choke on. An
+     * emptiness test is the honest one here, and it is the file that is checked rather than the
+     * clock: a segment the user stopped a quarter of a second after it opened is real audio they
+     * asked for, while a minute-old segment with a zero-byte file is not.
+     *
+     * Takes [rotationMutex], so it cannot interleave with a rotation that is part-way through
+     * finalizing one segment and opening the next, and so a segment is closed exactly once.
+     */
+    private suspend fun closeCurrentSegment() = rotationMutex.withLock {
+        // Idempotent and atomic, so this is also the path that stops a recorder teardown raced.
+        stopCurrentRecording()
+
+        val segment = currentSegment ?: return@withLock
+        val waveformFile = currentWaveformFile
+        currentSegment = null
+        currentWaveformFile = null
+
+        val amplitudes = withAmplitudeBuffer { buffer ->
+            buffer.toList().also { buffer.clear() }
+        }
+
+        if (File(segment.filePath).length() == 0L) {
+            // Nothing was captured. Finalizing would leave a row nothing can read; leaving it
+            // incomplete is the orphan #62 is about. Take the row and both files away instead.
+            segmentManager.discardSegment(segment.id)
+            return@withLock
+        }
+
+        waveformFile?.let { waveformRepository.saveAmplitudes(it, amplitudes) }
+        segmentManager.finalizeSegment(segment.id, System.currentTimeMillis())
     }
 
     /**

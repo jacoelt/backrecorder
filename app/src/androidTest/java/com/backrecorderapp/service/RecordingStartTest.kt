@@ -12,6 +12,7 @@ import com.backrecorderapp.testing.PreferenceSnapshot
 import com.backrecorderapp.testing.appContext
 import com.backrecorderapp.testing.awaitRecordersSettled
 import com.backrecorderapp.testing.awaitRecordingService
+import com.backrecorderapp.testing.awaitUntil
 import com.backrecorderapp.testing.cleanUpRule
 import com.backrecorderapp.testing.clearRecordedState
 import com.backrecorderapp.testing.createNotificationChannels
@@ -139,14 +140,13 @@ class RecordingStartTest {
         // Every recorder the service opened was also closed — the orphaned microphone the
         // duplicate start used to leave behind would never settle here.
         assertTrue("A recorder was left running (#61)", recorderFactory.isSettled())
-        // Exactly one *finalized* segment: the one the flush rotated. The replacement the flush
-        // opened is still `isComplete = 0` here — no stop path finalizes it, which is #62 and is
-        // deliberately not asserted either way from this test.
-        assertEquals(
-            "A duplicate start left an extra segment behind (#61)",
-            1,
-            segmentDao.getAllSegments().first().count { it.isComplete }
-        )
+        // Two segments and no more: the one the flush rotated, and the replacement it opened,
+        // which the stop finalized (#62). A duplicate start that had opened its own segment would
+        // show up here as a third row, or as one left incomplete.
+        awaitUntil("A duplicate start left an extra segment behind (#61)") {
+            val rows = segmentDao.getAllSegments().first()
+            rows.size == 2 && rows.all { it.isComplete }
+        }
     }
 
     private companion object {
