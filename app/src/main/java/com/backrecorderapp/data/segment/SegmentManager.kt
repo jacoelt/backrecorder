@@ -6,8 +6,9 @@ import com.backrecorderapp.data.db.SegmentEntity
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
@@ -23,7 +24,11 @@ class SegmentManager @Inject constructor(
         const val BUFFER_DURATION_MS = 24 * 60 * 60 * 1000L // 24 hours
         private const val SEGMENT_DIR = "segments"
         private const val WAVEFORM_DIR = "waveforms"
-        private val DATE_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+
+        /** Immutable and thread-safe: segment files are named from `Dispatchers.Default`. */
+        private val DATE_FORMAT: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.US)
+                .withZone(ZoneId.systemDefault())
     }
 
     private val segmentDir: File
@@ -32,22 +37,43 @@ class SegmentManager @Inject constructor(
     private val waveformDir: File
         get() = File(context.cacheDir, WAVEFORM_DIR).also { it.mkdirs() }
 
-    fun createSegmentFile(startTime: Long): File {
-        val timestamp = DATE_FORMAT.format(Date(startTime))
-        return File(segmentDir, "segment_$timestamp.m4a")
-    }
+    /**
+     * A segment's id, start time and both of its file paths, minted together so they cannot
+     * disagree. [createSegmentEntry] takes this whole object rather than loose strings, which is
+     * what keeps a row's `filePath` pointing at the file its own id named.
+     */
+    data class NewSegment(
+        val id: String,
+        val startTime: Long,
+        val audioFile: File,
+        val waveformFile: File
+    )
 
-    fun createWaveformFile(startTime: Long): File {
-        val timestamp = DATE_FORMAT.format(Date(startTime))
-        return File(waveformDir, "waveform_$timestamp.bin")
-    }
-
-    suspend fun createSegmentEntry(filePath: String, waveformPath: String, startTime: Long): SegmentEntity {
-        val segment = SegmentEntity(
-            id = UUID.randomUUID().toString(),
-            filePath = filePath,
-            waveformPath = waveformPath,
+    /**
+     * Reserves the id and both paths for a segment starting at [startTime].
+     *
+     * The filenames carry the id, not just the timestamp. A timestamp alone is second-resolution,
+     * and a flush rotates a segment on demand: rotating one in the second it started would hand
+     * the replacement the path of the segment just finalized, and its muxer would truncate that
+     * audio to nothing while the finalized row still pointed there (#46).
+     */
+    fun prepareSegment(startTime: Long): NewSegment {
+        val id = UUID.randomUUID().toString()
+        val timestamp = DATE_FORMAT.format(Instant.ofEpochMilli(startTime))
+        return NewSegment(
+            id = id,
             startTime = startTime,
+            audioFile = File(segmentDir, "segment_${timestamp}_$id.m4a"),
+            waveformFile = File(waveformDir, "waveform_${timestamp}_$id.bin")
+        )
+    }
+
+    suspend fun createSegmentEntry(newSegment: NewSegment): SegmentEntity {
+        val segment = SegmentEntity(
+            id = newSegment.id,
+            filePath = newSegment.audioFile.absolutePath,
+            waveformPath = newSegment.waveformFile.absolutePath,
+            startTime = newSegment.startTime,
             endTime = 0,
             durationMs = 0,
             isComplete = false

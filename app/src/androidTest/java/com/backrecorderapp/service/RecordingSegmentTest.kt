@@ -118,14 +118,10 @@ class RecordingSegmentTest {
         val firstRecorder = recorderFactory.awaitRecorder(index = 0)
         firstRecorder.feed(FED_DURATION_MS)
 
-        // `SegmentManager.createSegmentFile` names files to the second, so a rotation in the same
-        // wall-clock second the segment started reuses the filename and the replacement segment's
-        // muxer truncates the one just finalized (jacoelt/backrecorder#46). Encoding is far faster
-        // than real time here, so cross the boundary deliberately rather than let the flush land
-        // inside it. The margin past the boundary also gives the service's flush collector — which
-        // subscribes shortly after the first segment opens — time to be listening, since a request
-        // emitted before it subscribes is dropped (#47).
-        awaitNextWallClockSecond(marginMs = FLUSH_READY_MARGIN_MS)
+        // No wall-clock alignment any more: segment filenames carry the segment's id, so a
+        // rotation inside the second the segment started cannot reuse its path (#46). What is
+        // left is purely the flush collector's head start — see [FLUSH_READY_MARGIN_MS].
+        delay(FLUSH_READY_MARGIN_MS)
 
         withTimeout("flushCurrentSegment() never completed") {
             RecordingService.flushCurrentSegment()
@@ -235,13 +231,6 @@ class RecordingSegmentTest {
         File(context.cacheDir, "waveforms").deleteRecursively()
     }
 
-    private suspend fun awaitNextWallClockSecond(marginMs: Long) {
-        val second = System.currentTimeMillis() / 1000
-        while (System.currentTimeMillis() < (second + 1) * 1000 + marginMs) {
-            delay(POLL_INTERVAL_MS)
-        }
-    }
-
     private suspend fun awaitSettledRecorders() = withTimeout(
         "Recorders never settled: the service is still finalizing a segment"
     ) {
@@ -276,7 +265,15 @@ class RecordingSegmentTest {
          */
         const val MIN_FED_SAMPLE_US = 1_000_000L
 
-        const val FLUSH_READY_MARGIN_MS = 250L
+        /**
+         * How long to let the service's flush collector subscribe before asking for a flush. It
+         * subscribes shortly after the first segment opens, and a request emitted before then is
+         * dropped and never completes (#47). Generous on purpose: this used to ride on the wait
+         * for the next wall-clock second, which averaged far more than a token delay, and
+         * shortening it along with that wait would have traded one bug's workaround for the
+         * other's flakiness. It can go once #47 lands.
+         */
+        const val FLUSH_READY_MARGIN_MS = 1_000L
         const val SAMPLE_BUFFER_BYTES = 64 * 1024
         const val STATE_TIMEOUT_MS = 30_000L
         const val POLL_INTERVAL_MS = 50L

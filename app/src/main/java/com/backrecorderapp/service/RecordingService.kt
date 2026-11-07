@@ -162,16 +162,12 @@ class RecordingService : Service() {
 
     private suspend fun startNewSegment() {
         val startTime = System.currentTimeMillis()
-        val audioFile = segmentManager.createSegmentFile(startTime)
-        val waveformFile = segmentManager.createWaveformFile(startTime)
-        currentWaveformFile = waveformFile
+        val newSegment = segmentManager.prepareSegment(startTime)
+        val audioFile = newSegment.audioFile
+        currentWaveformFile = newSegment.waveformFile
         amplitudeBuffer.clear()
 
-        val segment = segmentManager.createSegmentEntry(
-            filePath = audioFile.absolutePath,
-            waveformPath = waveformFile.absolutePath,
-            startTime = startTime
-        )
+        val segment = segmentManager.createSegmentEntry(newSegment)
         currentSegment = segment
 
         try {
