@@ -138,8 +138,14 @@ class FakeAudioRecorder(
         failure?.let { throw it }
     }
 
-    /** Constant and non-zero, so waveform capture records something deterministic. */
-    override fun maxAmplitude(): Int = FAKE_AMPLITUDE
+    /**
+     * Constant and non-zero while recording, so waveform capture records something deterministic —
+     * and 0 before [start] and from the moment [stop] begins, which is what the real recorder does
+     * (#48). A fake that reported audio after teardown would hide the zero samples production
+     * writes around a rotation boundary.
+     */
+    override fun maxAmplitude(): Int =
+        synchronized(lock) { if (codec == null || stopped) 0 else FAKE_AMPLITUDE }
 
     private fun encodeFrames(encoder: MediaCodec, frameCount: Int) {
         var remaining = frameCount
