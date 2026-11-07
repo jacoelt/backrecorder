@@ -37,24 +37,36 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
 
     override fun create(): AudioRecorder {
         val startFailure = synchronized(lock) { nextStartFailure.also { nextStartFailure = null } }
-        if (startFailure != null) return FailingAudioRecorder(startFailure)
+        if (startFailure != null) return FailingAudioRecorder(startFailure, ::awaitStartGate)
         return createWorking()
     }
 
     /** An [AudioRecorder] that refuses to open. It never reaches the started/finalized books. */
-    private class FailingAudioRecorder(private val cause: Throwable) : AudioRecorder {
-        override fun start(outputFile: File): Unit = throw cause
+    private class FailingAudioRecorder(
+        private val cause: Throwable,
+        private val onStarting: () -> Unit
+    ) : AudioRecorder {
+        override fun start(outputFile: File): Unit {
+            // Honours the gate as a working recorder does, so combining failNextStart() with
+            // holdStarts() behaves the way a test would expect rather than silently skipping it.
+            onStarting()
+            throw cause
+        }
         override fun stop() = Unit
         override fun maxAmplitude(): Int = 0
     }
 
     /**
-     * Holds every later [create]d recorder inside `start()` until the returned latch is counted
-     * down, and counts [startsHeld] as they arrive.
+     * Holds **the next** recorder inside `start()` until the returned latch is counted down.
      *
      * This is what makes a teardown that lands mid-rotation a *deterministic* test rather than a
      * race a test can only hope to hit: the rotation parks in a known place while the service is
      * destroyed. Always release the latch in a `finally`, or the service never stops.
+     *
+     * One-shot by design. The parked recorder is the service's rotation coroutine, so it occupies
+     * one of `Dispatchers.Default`'s threads — two threads wide on a CI emulator — for as long as
+     * it is held; holding every later start too would starve the pool the rest of the service
+     * runs on.
      */
     fun holdStarts(): CountDownLatch = CountDownLatch(1).also {
         synchronized(lock) { startGate = it }
@@ -65,7 +77,8 @@ class FakeAudioRecorderFactory @Inject constructor() : AudioRecorderFactory {
 
     private fun awaitStartGate() {
         val gate = synchronized(lock) {
-            startGate ?: return
+            // Claimed, so only the next start is held: see [holdStarts].
+            startGate?.also { startGate = null } ?: return
         }
         synchronized(lock) {
             held++

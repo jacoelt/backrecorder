@@ -234,16 +234,21 @@ class RecordingTeardownTest {
 
         assertTrue("A failed rotation stopped the service", RecordingService.isRunning.value)
 
-        // The real assertion: it can still rotate, and the rotation really happened — a new
-        // recorder was opened and a segment finalized, not just a flush that returned.
+        // The regression guard that matters, and the one this change was nearly shipped without:
+        // the rotation stops the recorder *before* the housekeeping, so a throw in the middle used
+        // to skip the reopen and leave the service alive with no recorder at all — capturing
+        // nothing, behind a notification saying it was recording, until the next tick a minute
+        // later. A replacement must already be open by now, before any further flush.
+        awaitUntil("A failed rotation left the service with no recorder at all (#48)") {
+            recorderFactory.startedCount() == 2
+        }
+
+        // And the next rotation still works end to end.
         RecordingService.flushCurrentSegment()
         assertTrue(
             "The service could not rotate again after a failed rotation",
             segmentDao.getAllSegments().first().any { it.isComplete }
         )
-        awaitUntil("No replacement recorder was opened after the failed rotation") {
-            recorderFactory.startedCount() >= 2
-        }
         assertTrue("The service stopped recording", RecordingService.isRunning.value)
     }
 

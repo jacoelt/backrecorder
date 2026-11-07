@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import com.backrecorderapp.BackRecorderApp
 import com.backrecorderapp.MainActivity
@@ -52,6 +53,9 @@ class RecordingService : Service() {
     companion object {
         private const val TAG = "RecordingService"
         private const val NOTIFICATION_ID = 1
+
+        /** Distinct from [NOTIFICATION_ID]: the foreground notification is removed as we stop. */
+        private const val FAILURE_NOTIFICATION_ID = 2
         private const val ACTION_STOP = "com.backrecorderapp.STOP_RECORDING"
 
         /**
@@ -118,21 +122,32 @@ class RecordingService : Service() {
 
     private var currentSegment: SegmentEntity? = null
     private var currentWaveformFile: File? = null
-    private var amplitudeBuffer = mutableListOf<Float>()
+
+    /** Always reached through [withAmplitudeBuffer]; never touched directly. */
+    private val amplitudeBuffer = mutableListOf<Float>()
+    private val amplitudeBufferLock = Any()
+
     private var amplitudeJob: Job? = null
     private var rotationJob: Job? = null
     private var flushJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     /**
-     * Set at the top of [onDestroy], before anything is cancelled.
+     * Set at the very top of [onDestroy], before anything is cancelled, and read by
+     * [startNewSegment] both before it opens a segment and again after it publishes the recorder.
      *
-     * The cancel-and-join below is the real guarantee that no segment is opened after teardown;
-     * this is the backstop for the case where that join hits its timeout, so a rotation that
-     * survives it still refuses to open a segment nothing would ever close.
+     * This is one half of the teardown handshake [onDestroy] describes — not a backstop for a
+     * join, because teardown deliberately never joins.
      */
     @Volatile
     private var destroyed = false
+
+    /**
+     * The most recent `startId`, so a self-stop that loses a race against a fresh start does not
+     * tear that start down: `stopSelf(startId)` is a no-op once a newer one has arrived.
+     */
+    @Volatile
+    private var latestStartId = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -142,6 +157,7 @@ class RecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        latestStartId = startId
         if (intent?.action == ACTION_STOP) {
             serviceScope.launch {
                 appPreferences.setWasRecordingBeforeShutdown(false)
@@ -277,18 +293,22 @@ class RecordingService : Service() {
         // Teardown has begun; opening a segment now would leave one nothing is going to close.
         if (destroyed) return
 
-        val startTime = System.currentTimeMillis()
-        val newSegment = segmentManager.prepareSegment(startTime)
-        val audioFile = newSegment.audioFile
-        currentWaveformFile = newSegment.waveformFile
-        amplitudeBuffer.clear()
-
-        val segment = segmentManager.createSegmentEntry(newSegment)
-        currentSegment = segment
-
+        var reservedId: String? = null
         try {
+            val newSegment = segmentManager.prepareSegment(System.currentTimeMillis())
+            val segment = segmentManager.createSegmentEntry(newSegment)
+            reservedId = segment.id
+
+            // Published only once the row exists. Assigning the waveform path first left the
+            // service pointing at a new segment's file while `currentSegment` still named the old
+            // one if the insert failed, and the next rotation wrote one segment's amplitudes into
+            // the other's file.
+            currentSegment = segment
+            currentWaveformFile = newSegment.waveformFile
+            withAmplitudeBuffer { it.clear() }
+
             val recorder = audioRecorderFactory.create()
-            recorder.start(audioFile)
+            recorder.start(newSegment.audioFile)
             audioRecorder = recorder
 
             // The other half of the teardown handshake described in `onDestroy`: publish the
@@ -297,17 +317,39 @@ class RecordingService : Service() {
             // looked. The segment keeps its row and its finalized file, exactly as an ordinary
             // stop would leave it.
             if (destroyed) stopCurrentRecording()
+        } catch (e: CancellationException) {
+            // Teardown, not a failure to record. Wrapping it would make the rotation loop stop the
+            // service for "cannot open a segment" when the service is already going away.
+            throw e
         } catch (e: Exception) {
             // Leave nothing half-open behind: the row and the empty file this reserved would
             // otherwise never be reclaimed, and an incomplete row matches every later range query.
             currentSegment = null
             currentWaveformFile = null
-            runCatching { segmentManager.discardSegment(segment.id) }
-                .exceptionOrNull()
-                ?.let { Log.e(TAG, "Failed to discard the segment that could not be started", it) }
+            reservedId?.let { id ->
+                try {
+                    segmentManager.discardSegment(id)
+                } catch (discardFailure: CancellationException) {
+                    throw discardFailure
+                } catch (discardFailure: Exception) {
+                    Log.e(TAG, "Failed to discard the segment that could not be started", discardFailure)
+                }
+            }
             throw SegmentStartException(e)
         }
     }
+
+    /**
+     * Runs [block] with exclusive access to [amplitudeBuffer].
+     *
+     * [rotateSegment] joins the amplitude coroutine before reading the buffer, but `onDestroy`
+     * cannot join anything — it runs on the main thread — so its bare `cancel()` can leave the
+     * coroutine mid-append while a surviving rotation reads. A plain `ArrayList` mutated from two
+     * threads is the exact defect #48 item 6 names; a lock closes it on *every* path rather than
+     * only the one that can afford to wait.
+     */
+    private inline fun <T> withAmplitudeBuffer(block: (MutableList<Float>) -> T): T =
+        synchronized(amplitudeBufferLock) { block(amplitudeBuffer) }
 
     private fun startAmplitudeCapture() {
         amplitudeJob?.cancel()
@@ -322,12 +364,11 @@ class RecordingService : Service() {
                 } catch (e: Exception) {
                     0f
                 }
-                // Capped: a rotation that fails leaves this buffer in place for the next segment,
-                // and before the rotation loop caught its own errors that could run for hours
-                // (#48). The cap is generous — twice a segment's worth — so a healthy segment is
-                // never truncated.
-                if (amplitudeBuffer.size < MAX_AMPLITUDE_SAMPLES) {
-                    amplitudeBuffer.add(amplitude)
+                // Capped as a last resort: the buffer is normally drained and cleared by every
+                // rotation, but before the rotation loop caught its own errors a stuck rotation
+                // let it grow for hours (#48).
+                withAmplitudeBuffer { buffer ->
+                    if (buffer.size < MAX_AMPLITUDE_SAMPLES) buffer.add(amplitude)
                 }
             }
         }
@@ -345,20 +386,36 @@ class RecordingService : Service() {
         // Stop current recording
         stopCurrentRecording()
 
-        // Safe now: the amplitude job has been joined, so nothing can be appending.
-        currentWaveformFile?.let { file ->
-            waveformRepository.saveAmplitudes(file, amplitudeBuffer.toList())
+        // The housekeeping for the segment just closed. It runs in its own try because the next
+        // segment must open whatever happens here: the recorder is already stopped at this point,
+        // so letting a failed waveform write or a locked database skip the reopen would leave the
+        // service alive and recording *nothing* until the next tick a minute later — behind a
+        // notification saying it is recording. With the rotation loop now surviving errors, a
+        // persistent failure (a full disk) would do that for hours (#48).
+        val housekeepingFailure = try {
+            val amplitudes = withAmplitudeBuffer { buffer ->
+                buffer.toList().also { buffer.clear() }
+            }
+            currentWaveformFile?.let { file ->
+                waveformRepository.saveAmplitudes(file, amplitudes)
+            }
+            segmentManager.finalizeSegment(segmentToFinalize.id, System.currentTimeMillis())
+            segmentManager.pruneOldSegments()
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e
         }
 
-        // Finalize segment in database
-        segmentManager.finalizeSegment(segmentToFinalize.id, System.currentTimeMillis())
-
-        // Prune old segments
-        segmentManager.pruneOldSegments()
-
-        // Start new segment and restart amplitude capture
+        // Always reopen, on every path out of the housekeeping above.
         startNewSegment()
         startAmplitudeCapture()
+
+        // Only now report the failure. Held back so the reopen above cannot be skipped, but not
+        // swallowed: a flush that could not finalize its segment must fail its caller rather than
+        // let `SaveRecordingUseCase` proceed as though the segment were complete.
+        housekeepingFailure?.let { throw it }
     }
 
     /**
@@ -370,9 +427,46 @@ class RecordingService : Service() {
      * too soon after entering it.
      */
     private suspend fun stopBecauseRecordingFailed() {
+        val startId = latestStartId
         _isRunning.value = false
+
+        // Fail any save waiting on a flush now, rather than leaving it to time out against a
+        // service that has already decided it cannot record (#47's handshake, #48's stop path).
+        flushCoordinator.abandonAll(FlushAbandonedException())
+
+        // Tell the user. A service that goes away silently leaves someone who started a background
+        // recording hours ago to discover the gap when their save comes back empty, and #48's
+        // defect 4 asks for the failure to be surfaced, not just acted on.
+        notifyRecordingStopped()
+
+        // Crash recovery must not restart a session that just failed; it would fail the same way.
+        runCatching { appPreferences.setWasRecordingBeforeShutdown(false) }
+            .exceptionOrNull()
+            ?.let { Log.e(TAG, "Failed to clear the crash-recovery flag", it) }
+
         delay(FOREGROUND_SETTLE_MS)
-        stopSelf()
+        // Bound to this start, so a recording the user began during the settle above survives.
+        stopSelf(startId)
+    }
+
+    private fun notifyRecordingStopped() {
+        val notification = NotificationCompat.Builder(this, BackRecorderApp.RECOVERY_CHANNEL_ID)
+            .setContentTitle(getString(R.string.notification_recording_failed_title))
+            .setContentText(getString(R.string.notification_recording_failed_text))
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    2,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            )
+            .setAutoCancel(true)
+            .build()
+        runCatching {
+            NotificationManagerCompat.from(this).notify(FAILURE_NOTIFICATION_ID, notification)
+        }.exceptionOrNull()?.let { Log.e(TAG, "Could not post the recording-failed notification", it) }
     }
 
     private fun stopCurrentRecording() {
