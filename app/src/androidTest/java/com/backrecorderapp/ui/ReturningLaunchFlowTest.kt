@@ -41,11 +41,7 @@ class ReturningLaunchFlowTest {
         runBlocking { preferences.restoreAll() }
     }
 
-    /**
-     * Ordered between the cleanup rule and the compose rule: the compose rule launches the
-     * activity, and `NavGraph` fixes its start destination on first composition, so a seed from
-     * `@Before` would arrive after the decision was already made.
-     */
+    /** Ordered ahead of the compose rule, which launches the activity. See [cleanUpRule]. */
     @get:Rule(order = 2)
     val returningUserState = object : ExternalResource() {
         override fun before() = runBlocking {

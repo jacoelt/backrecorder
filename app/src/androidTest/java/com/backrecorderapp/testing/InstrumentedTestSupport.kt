@@ -15,20 +15,18 @@ import kotlinx.coroutines.runBlocking
 import org.junit.rules.ExternalResource
 import java.io.File
 
-/**
- * The setup, teardown and polling the instrumented flow tests have in common
- * (jacoelt/backrecorder#55).
+/*
+ * The setup, teardown and polling the instrumented tests have in common.
  *
- * These tests share one process, one Room database, one DataStore and one cache directory, so the
- * cleanup contract has to be the same in all of them or they leak state into each other — and
- * since CI has run them on every PR since #37, a leak is a flaky **required** check. Before this
- * file each test carried its own copy and the copies had already drifted. What is shared here is
- * only the part that is genuinely identical: the rule *shape*, the state reset, the preference
- * capture/restore and the poll helper. **Seeding stays in each test**, because what a test needs
- * the world to look like is the part that actually differs.
+ * They share one process, one Room database, one DataStore and one cache directory, so all of them
+ * need the same cleanup contract or they leak state into each other — and the `Instrumented tests`
+ * check is required on `main`, so a leak is a flaky required check. Only what is genuinely
+ * identical lives here: the rule shape, the state reset, the preference capture/restore and the
+ * poll helper. **Seeding stays in each test**, because what a test needs the world to look like is
+ * the part that actually differs.
  */
 
-/** The app under test. `ApplicationProvider` is valid from any instrumented thread. */
+/** The app under test. */
 internal val appContext: Context get() = ApplicationProvider.getApplicationContext()
 
 internal const val POLL_INTERVAL_MS = 50L
@@ -55,9 +53,9 @@ internal suspend fun awaitUntil(
     }
 }
 
-/** Waits for `RecordingService.isRunning` — the single source of truth the UI observes too. */
-internal suspend fun awaitRecordingService(running: Boolean, timeoutMs: Long = STATE_TIMEOUT_MS) =
-    awaitUntil("RecordingService.isRunning never became $running", timeoutMs) {
+/** Waits for `RecordingService.isRunning` to reach [running]. */
+internal suspend fun awaitRecordingService(running: Boolean) =
+    awaitUntil("RecordingService.isRunning never became $running") {
         RecordingService.isRunning.value == running
     }
 
@@ -69,12 +67,10 @@ internal suspend fun awaitRecordingService(running: Boolean, timeoutMs: Long = S
  * cache at that point races a segment still being written and leaves its row behind for whichever
  * test runs next.
  */
-internal suspend fun awaitRecordersSettled(
-    recorderFactory: FakeAudioRecorderFactory,
-    timeoutMs: Long = STATE_TIMEOUT_MS
-) = awaitUntil("Recorders never settled: the service is still finalizing a segment", timeoutMs) {
-    recorderFactory.isSettled()
-}
+internal suspend fun awaitRecordersSettled(recorderFactory: FakeAudioRecorderFactory) =
+    awaitUntil("Recorders never settled: the service is still finalizing a segment") {
+        recorderFactory.isSettled()
+    }
 
 /** Stops the recording service and waits for it, and the recorders it owns, to go quiet. */
 internal suspend fun stopRecordingAndSettle(recorderFactory: FakeAudioRecorderFactory) {
@@ -93,33 +89,27 @@ internal suspend fun stopRecordingAndSettle(recorderFactory: FakeAudioRecorderFa
 internal fun createNotificationChannels() = NotificationChannels.createAll(appContext)
 
 /**
- * The cleanup rule.
+ * Performs `hiltRule.inject()` in `before()` and runs [cleanUp] in `after()`.
  *
  * **Order it outside (a lower `order` than) the test's seeding rule.** `ExternalResource` skips
  * its own `after()` when its `before()` threw, so a rule that both seeds and cleans up leaves
  * segment rows, cache files and flipped preferences behind whenever seeding fails part-way — for
- * whichever test runs next, in a process they all share. Only `RecordSelectSaveFlowTest` had this
- * right before #55; the shape is now in one place so it cannot drift again.
+ * whichever test runs next, in a process they all share. Injecting here is what lets the seeding
+ * rule below it use the test's `@Inject` fields.
  *
- * Its `before()` is also where `hiltRule.inject()` happens, which is what lets the seeding rule it
- * wraps use the test's injected fields.
- *
- * The rule stack a flow test ends up with:
- * ```
- * order = 0  HiltAndroidRule
- * order = 1  GrantPermissionRule        (only where a granted start is wanted)
- * order = 2  cleanUpRule(hiltRule)      — injects, and cleans up whatever happens below
- * order = 3  the test's own seeding     — may throw; cleanup above still runs
- * order = 4  createAndroidComposeRule   — launches the activity, so seeding must precede it
- * ```
+ * Relative order in a test: the Hilt rule, then `GrantPermissionRule` where a granted start is
+ * wanted, then this rule, then the test's own seeding, then the compose rule if there is one.
  * `NavGraph` fixes its start destination from `disclaimerAccepted` on first composition, which is
  * why seeding has to sit above the compose rule rather than in a `@Before` method.
+ *
+ * Because this rule sits outside the compose rule, its `after()` runs *after* the activity has
+ * been torn down — later than an `@After` method would.
  */
-internal fun cleanUpRule(hiltRule: HiltAndroidRule, after: () -> Unit): ExternalResource =
+internal fun cleanUpRule(hiltRule: HiltAndroidRule, cleanUp: () -> Unit): ExternalResource =
     object : ExternalResource() {
         override fun before() = hiltRule.inject()
 
-        override fun after() = after()
+        override fun after() = cleanUp()
     }
 
 /**
@@ -129,8 +119,8 @@ internal fun cleanUpRule(hiltRule: HiltAndroidRule, after: () -> Unit): External
  * Rows go first: a row pointing at a file that has already been deleted is the state that makes a
  * later test's buffer read fail for a reason that has nothing to do with what it tests.
  *
- * A free function rather than a method on [PreferenceSnapshot], so the two tests that never write
- * a segment do not have to inject a [SegmentDao] just to get preference capture/restore.
+ * A free function rather than a method on [PreferenceSnapshot], so the tests that never write a
+ * segment do not have to inject a [SegmentDao] just to get preference capture/restore.
  */
 internal fun clearRecordedState(segmentDao: SegmentDao, vararg alsoDelete: String) = runBlocking {
     segmentDao.getAllSegments().first().forEach { segmentDao.delete(it) }
@@ -156,18 +146,34 @@ internal class PreferenceSnapshot {
      * own cache, which is also why preferences are always written through [AppPreferences] and
      * never by deleting the backing file.
      *
-     * Only what was actually captured is restored, so a seeding rule that throws half-way puts
-     * back exactly the preferences it had read by then and invents nothing for the rest — the
-     * behaviour `RecordSelectSaveFlowTest` spelled out with a pair of nullable fields.
+     * Only what was captured is restored, so a seeding rule that throws half-way puts back exactly
+     * the preferences it had read by then and invents nothing for the rest. Note the consequence:
+     * a test puts the world back as it *found* it rather than forcing a default, so a value another
+     * test leaked is preserved rather than corrected. Under the AndroidX Test Orchestrator's
+     * `clearPackageData` each test starts from the real defaults anyway, and restoring what was
+     * there is the honest contract — correcting someone else's leak would hide it.
      */
     suspend fun <T> capture(preference: Flow<T>, restore: suspend (T) -> Unit) {
         val value = preference.first()
         captured += { restore(value) }
     }
 
-    /** Puts back every preference [capture] recorded, in the order they were read. */
+    /**
+     * Puts back every preference [capture] recorded, in the order they were read.
+     *
+     * Every restore is attempted even when one throws, so a single failure cannot strand the rest
+     * of the preferences — the first failure is rethrown once they have all run.
+     */
     suspend fun restoreAll() {
-        captured.forEach { it() }
+        var failure: Throwable? = null
+        captured.forEach { restore ->
+            try {
+                restore()
+            } catch (e: Throwable) {
+                if (failure == null) failure = e
+            }
+        }
         captured.clear()
+        failure?.let { throw it }
     }
 }

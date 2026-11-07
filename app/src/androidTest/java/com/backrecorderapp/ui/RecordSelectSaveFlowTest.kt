@@ -39,7 +39,7 @@ import com.backrecorderapp.service.recorder.FakeAudioRecorder
 import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
 import com.backrecorderapp.testing.PreferenceSnapshot
 import com.backrecorderapp.testing.appContext
-import com.backrecorderapp.testing.awaitUntil
+import com.backrecorderapp.testing.awaitRecordingService
 import com.backrecorderapp.testing.cleanUpRule
 import com.backrecorderapp.testing.clearRecordedState
 import com.backrecorderapp.testing.createNotificationChannels
@@ -202,7 +202,7 @@ class RecordSelectSaveFlowTest {
             .performClick()
         awaitText(RECORDING)
         runBlocking {
-            awaitUntil("RecordingService never started") { RecordingService.isRunning.value }
+            awaitRecordingService(running = true)
         }
         // Real AAC in the live segment, long enough that its presence in the saved clip is a
         // measurement rather than a judgement call against the history segments.
@@ -394,7 +394,7 @@ class RecordSelectSaveFlowTest {
             .performClick()
         awaitText(NOT_RECORDING)
         runBlocking {
-            awaitUntil("RecordingService never stopped") { !RecordingService.isRunning.value }
+            awaitRecordingService(running = false)
         }
     }
 

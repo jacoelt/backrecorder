@@ -68,13 +68,11 @@ class SubscriptionGateFlowTest {
     val hiltRule = HiltAndroidRule(this)
 
     /**
-     * Injects, and restores the preferences this class seeds.
+     * Injects, and restores the preferences this class seeds. See [cleanUpRule] for the ordering.
      *
-     * DataStore is the one piece of state that genuinely outlives a test: the Hilt component - and
-     * with it the `@Singleton` billing fake - is rebuilt per test, but the preference file is
-     * process-wide and shared with every other instrumented class. So the upload mode is put back
-     * rather than left wherever a test happened to leave it. Ordered outside the seeding rule, so
-     * it still runs when seeding throws part-way.
+     * The Hilt component - and with it the `@Singleton` billing fake - is rebuilt per test, but
+     * the preference file is process-wide and shared with every other instrumented class, so the
+     * upload mode is put back rather than left wherever a test happened to leave it.
      */
     @get:Rule(order = 1)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
@@ -82,11 +80,11 @@ class SubscriptionGateFlowTest {
     }
 
     /**
-     * Seeds between the cleanup rule and the compose rule: `NavGraph` fixes its start destination
-     * from `disclaimerAccepted` on first composition, and the compose rule launches the activity
-     * before any `@Before` runs. Written through [AppPreferences] rather than by deleting the
-     * backing file, because the `preferencesDataStore` delegate caches in-process and a delete is
-     * a silent no-op once a sibling test has read prefs.
+     * Ordered ahead of the compose rule, which launches the activity. See [cleanUpRule].
+     *
+     * Written through [AppPreferences] rather than by deleting the backing file, because the
+     * `preferencesDataStore` delegate caches in-process and a delete is a silent no-op once a
+     * sibling test has read prefs.
      */
     @get:Rule(order = 2)
     val seedPreferences = object : ExternalResource() {

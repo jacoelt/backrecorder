@@ -41,13 +41,10 @@ class ComposeHarnessSmokeTest {
     }
 
     /**
-     * Seeds preferences between the cleanup rule and the compose rule. A lower `order` wraps a
-     * higher one, so this `before()` runs ahead of the compose rule's statement — which is what
-     * launches the activity — and ahead of any `@Before` method. That matters because `NavGraph`
-     * fixes its start destination from `disclaimerAccepted` on first composition and `NavHost`
-     * keeps the graph afterwards, so seeding later cannot re-route. Writing through
-     * [AppPreferences] rather than deleting the backing file keeps the process-wide DataStore
-     * cache in step with the disk, which matters once other tests share this process.
+     * Seeds ahead of the compose rule, which is what launches the activity. See [cleanUpRule] —
+     * `NavGraph` fixes its start destination on first composition and `NavHost` keeps the graph
+     * afterwards, so seeding later cannot re-route. Writing through [AppPreferences] rather than
+     * deleting the backing file keeps the process-wide DataStore cache in step with the disk.
      */
     @get:Rule(order = 2)
     val seedPreferences = object : ExternalResource() {

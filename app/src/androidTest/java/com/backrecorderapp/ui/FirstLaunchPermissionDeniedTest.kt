@@ -53,7 +53,6 @@ class FirstLaunchPermissionDeniedTest {
 
     @Inject lateinit var appPreferences: AppPreferences
 
-
     private val device: UiDevice
         get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
 
@@ -140,7 +139,8 @@ class FirstLaunchPermissionDeniedTest {
     }
 
     private fun isGranted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(appContext, permission) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(appContext, permission) ==
+            PackageManager.PERMISSION_GRANTED
 
     /**
      * Mirrors what `MainScreen` asks for. Notifications are only a runtime permission from API 33,

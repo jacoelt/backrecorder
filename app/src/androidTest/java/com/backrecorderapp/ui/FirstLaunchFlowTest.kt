@@ -61,11 +61,7 @@ class FirstLaunchFlowTest {
         Manifest.permission.POST_NOTIFICATIONS
     )
 
-    /**
-     * Injects, and cleans up. Outside the seeding rule rather than in an `@After`, because
-     * `ExternalResource` skips its own `after()` when its `before()` threw: a seeding failure
-     * would otherwise leave `disclaimerAccepted` flipped for the next test in this process.
-     */
+    /** Injects, and puts `disclaimerAccepted` back. See [cleanUpRule] for why it sits here. */
     @get:Rule(order = 2)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
         RecordingService.stop(appContext)

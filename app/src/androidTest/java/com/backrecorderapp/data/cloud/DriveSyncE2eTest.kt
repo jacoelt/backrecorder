@@ -16,6 +16,7 @@ import com.backrecorderapp.service.recorder.FakeAudioRecorderFactory
 import com.backrecorderapp.testing.PreferenceSnapshot
 import com.backrecorderapp.testing.STATE_TIMEOUT_MS
 import com.backrecorderapp.testing.appContext
+import com.backrecorderapp.testing.awaitRecordingService
 import com.backrecorderapp.testing.awaitUntil
 import com.backrecorderapp.testing.cleanUpRule
 import com.backrecorderapp.testing.clearRecordedState
@@ -98,9 +99,9 @@ class DriveSyncE2eTest {
      * closes and the database is cleared, so a tick still in flight cannot write a row after the
      * clear or hit a half-shut server.
      *
-     * It is a rule outside the seeding rule rather than an `@After`, because `ExternalResource`
-     * skips its own `after()` when its `before()` threw — seeding here starts a server and grants
-     * tokens, so a half-finished seed is exactly the case that most needs tearing down.
+     * See [cleanUpRule] for why this is a rule outside the seeding rule and not an `@After`.
+     * Seeding here starts a server and grants tokens, so a half-finished seed is exactly the case
+     * that most needs tearing down.
      */
     @get:Rule(order = 2)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
@@ -428,7 +429,7 @@ class DriveSyncE2eTest {
     private suspend fun recordOneSegment(): File {
         scenario = ActivityScenario.launch(MainActivity::class.java)
         RecordingService.start(appContext)
-        awaitUntil("RecordingService never started") { RecordingService.isRunning.value }
+        awaitRecordingService(running = true)
 
         recorderFactory.awaitRecorder(index = 0).feed(FED_DURATION_MS)
 
