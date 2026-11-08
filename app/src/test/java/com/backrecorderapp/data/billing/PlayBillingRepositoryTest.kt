@@ -265,12 +265,16 @@ class PlayBillingRepositoryTest {
     }
 
     /**
-     * Two taps must not open two connections on the one client: Play answers the second with an
-     * error, which surfaced as "unavailable" over a purchase that was working. Both still have
-     * to reach Play - a tap that is merely dropped leaves the other screen with nothing to show.
+     * Both taps must reach Play: a tap that is merely dropped leaves the screen that made it
+     * with nothing to show, which is the dead button again.
+     *
+     * Note what this does **not** cover: the two calls serialize on `purchaseMutex`, so the
+     * second never races the first into `ensureConnected`. The shared-connection deferred is
+     * exercised by `connect()` racing a purchase, which is not pinned by a test - see the PR
+     * description.
      */
     @Test
-    fun `overlapping hand-offs share one connection attempt`() =
+    fun `a second tap is served rather than dropped`() =
         runTest(StandardTestDispatcher()) {
             every { client.isReady } returns false
             val listener = slot<BillingClientStateListener>()
@@ -370,6 +374,27 @@ class PlayBillingRepositoryTest {
 
         verify(exactly = 1) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
         assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+    }
+
+    /**
+     * The authoritative read can fail right after a purchase completes. The user has paid by
+     * then, so the callback may still upgrade them - it just may never downgrade.
+     */
+    @Test
+    fun `a purchase still counts when the follow-up query fails`() = runTest {
+        val listener = slot<PurchasesResponseListener>()
+        every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } answers {
+            listener.captured.onQueryPurchasesResponse(
+                result(BillingClient.BillingResponseCode.SERVICE_DISCONNECTED),
+                emptyList()
+            )
+        }
+
+        val repository = createRepository()
+        repository.onPurchasesUpdated(okResult(), listOf(purchase(acknowledged = true)))
+
+        assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        assertEquals(true, repository.statusResolved.value)
     }
 
     @Test

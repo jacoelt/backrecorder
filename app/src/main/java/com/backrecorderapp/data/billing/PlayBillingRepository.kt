@@ -86,9 +86,11 @@ class PlayBillingRepository @Inject constructor(
 
     override fun connect() {
         appScope.launch {
-            // Bounded like the purchase path, and for a sharper reason: if Play never answers,
-            // statusResolved stays false for the whole session, and every premium gate that
-            // waits on it - cloud sync above all - would lock out a paying subscriber.
+            // Bounded like the purchase path, so a silent Play never holds the connection slot
+            // open. Note what this does *not* fix: statusResolved is only set by a successful
+            // purchase query, so after a timeout it stays false until something triggers
+            // another connect, and every gate that waits on it keeps refusing. Making the
+            // launch-time connection recover on its own is its own change.
             val outcome = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { Connection(ensureConnected()) }
             if (outcome == null) {
                 Log.w(TAG, "billing connect got no answer within ${PREPARE_TIMEOUT_MS}ms")
@@ -159,9 +161,16 @@ class PlayBillingRepository @Inject constructor(
     override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
         if (result.responseCode == BillingClient.BillingResponseCode.OK && purchases != null) {
             acknowledge(purchases)
+
             // Play delivers only the purchases from this flow, which is not an entitlement
             // snapshot: handing that list to updateSubscriptionStatus would read FREE - and
-            // downgrade a subscriber mid-session - whenever it holds nothing PURCHASED.
+            // downgrade a subscriber mid-session - whenever it holds nothing PURCHASED. So it
+            // may only ever *upgrade*, and the authoritative read comes from the query below.
+            // Without this the user who just paid stays FREE whenever that query fails.
+            if (purchases.any { it.purchaseState == Purchase.PurchaseState.PURCHASED }) {
+                _subscriptionStatus.value = SubscriptionStatus.ACTIVE
+                _statusResolved.value = true
+            }
             queryPurchases()
         }
     }
@@ -230,8 +239,11 @@ class PlayBillingRepository @Inject constructor(
             val attempt = CompletableDeferred<PurchaseFailure?>()
             if (!connection.compareAndSet(existing, attempt)) continue
 
-            startConnection(attempt)
             try {
+                // Inside the try: a throw out of the Play client would otherwise leave this
+                // attempt published and never completed, which is the very stranding the
+                // finally below exists to prevent.
+                startConnection(attempt)
                 return attempt.await()
             } finally {
                 // An attempt whose owner gave up - timed out, or its screen went away - must not
