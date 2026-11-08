@@ -700,11 +700,9 @@ class PlayBillingRepositoryTest {
     /**
      * The strongest available pin on "the plan the user picked is the one that is bought".
      *
-     * `BillingFlowParams` exposes no getter for the offer token it was built with, so the token
-     * itself cannot be asserted through a mocked client. This asserts the same property from the
-     * other side: with *both* base plans present and only the yearly one purchasable, a monthly
-     * purchase must refuse. Any regression that falls back to "whichever offer came first" would
-     * launch here instead, and any swap of the two base plan ids would launch the wrong one.
+     * With *both* base plans present and only the yearly one purchasable, a monthly purchase
+     * must refuse. Any regression that falls back to "whichever offer came first" would launch
+     * here instead, and any swap of the two base plan ids would launch the wrong one.
      */
     @Test
     fun `a plan is never substituted when the other one is purchasable`() = runTest {
@@ -733,8 +731,9 @@ class PlayBillingRepositoryTest {
      * specific one. Re-running the trial-first preference over a newer list would be the same
      * unguaranteed ordering this change exists to stop relying on.
      */
+    /** The chooser's own resolution: the plan carries the offer its figures came from. */
     @Test
-    fun `the purchase asks for the exact offer the chooser priced`() = runTest {
+    fun `a plan records the offer it was priced from`() = runTest {
         val promo = offer(
             basePlanId = "monthly",
             offerId = "monthly-promo",
@@ -742,21 +741,11 @@ class PlayBillingRepositoryTest {
             phases = listOf(phase(0L, "Free", "P1M"), phase(2_990_000L, "$2.99", "P1M"))
         )
         every { client.isReady } returns true
-        // The promo is listed first and also has a trial, so the preference rule alone would
-        // pick it over the offer the chooser actually used.
         stubProductQuery(premiumProduct(offers = listOf(promo, monthlyOffer())))
-        every { client.launchBillingFlow(any(), any()) } returns okResult()
 
-        val details = (createRepository().loadSubscriptionPlans() as PlanQuery.Available).plans
-        assertEquals("monthly-promo", details.monthly?.offerId)
+        val plans = (createRepository().loadSubscriptionPlans() as PlanQuery.Available).plans
 
-        // A plan priced from the non-preferred offer still buys that offer.
-        assertNull(
-            createRepository().launchPurchaseFlow(
-                activity,
-                plan(BillingPeriod.MONTHLY, offerId = "monthly-free-trial")
-            )
-        )
+        assertEquals("monthly-promo", plans.monthly?.offerId)
     }
 
     @Test

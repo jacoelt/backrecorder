@@ -12,8 +12,6 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -23,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -51,6 +48,7 @@ import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.ui.components.PlanChooserDialog
+import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.util.findActivity
 import com.backrecorderapp.util.messageRes
 
@@ -65,7 +63,7 @@ fun SettingsScreen(
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
     val driveError by viewModel.driveError.collectAsState()
     val purchaseError by viewModel.purchaseError.collectAsState()
-    val plansLoading by viewModel.plansLoading.collectAsState()
+    val upgradeBusy by viewModel.upgradeBusy.collectAsState()
     val subscriptionPlans by viewModel.subscriptionPlans.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
@@ -140,20 +138,10 @@ fun SettingsScreen(
                         state.subscriptionStatus == SubscriptionStatus.EXPIRED
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = { viewModel.showPlanChooser() },
-                            enabled = !plansLoading
-                        ) {
-                            if (plansLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                            }
-                            Text(stringResource(R.string.upgrade_button))
-                        }
+                        UpgradeButton(
+                            busy = upgradeBusy,
+                            onClick = { viewModel.showPlanChooser() }
+                        )
                     }
                 }
             }
@@ -233,20 +221,10 @@ fun SettingsScreen(
             confirmButton = {
                 // The dialog stays up, with the button busy, until the plans arrive: asking Play
                 // can take seconds, and closing onto a blank screen is the dead button again.
-                Button(
-                    onClick = { viewModel.showPlanChooser() },
-                    enabled = !plansLoading
-                ) {
-                    if (plansLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-                    Text(stringResource(R.string.upgrade_button))
-                }
+                UpgradeButton(
+                    busy = upgradeBusy,
+                    onClick = { viewModel.showPlanChooser() }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpgradeDialog() }) {

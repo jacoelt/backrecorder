@@ -265,11 +265,40 @@ class SubscriptionGateFlowTest {
     }
 
     /**
-     * The other half of the same guarantee: leaving the selection alone buys the default, and
-     * the default is the one the chooser visibly marks as the better value.
+     * The selection has to survive an activity re-creation.
+     *
+     * Orientation cannot be restricted at this target on large screens, so a rotation mid-choice
+     * is unavoidable - and if it reset the selection to the default, someone who picked monthly
+     * would be sent to Play for a *year*. That is the exact harm the chooser exists to prevent,
+     * so it is worth an instrumented test rather than trust in a `rememberSaveable`.
      */
     @Test
-    fun theChooserDefaultsToTheYearlyPlanItRecommends() {
+    fun theChosenPlanSurvivesTheScreenBeingRecreated() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        tapUpgradeInDialog()
+        awaitPlanChooser()
+
+        // Monthly is deliberately the non-default, so a reset would be visible as a yearly buy.
+        composeRule.onNodeWithText(string(R.string.plan_period_monthly)).performClick()
+
+        composeRule.activityRule.scenario.recreate()
+        awaitPlanChooser()
+        composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) { billing.purchaseFlowLaunches == 1 }
+        assertEquals(BillingPeriod.MONTHLY, billing.lastPurchasedPlan?.period)
+    }
+
+    /**
+     * The other half of the same guarantee: leaving the selection alone buys the default.
+     */
+    @Test
+    fun theChooserDefaultsToTheYearlyPlan() {
         billing.setStatus(SubscriptionStatus.FREE)
         openSettings()
 

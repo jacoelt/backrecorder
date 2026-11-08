@@ -377,13 +377,11 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Drops a plan load the user has navigated away from.
+     * Drops a plan load whose answer nobody is waiting for any more.
      *
-     * This view model outlives the screen - settings sits on top of it in the back stack - so a
-     * load left running would land its chooser, or its error, in state that is rendered the next
-     * time the user comes back: a dialog appearing with no tap behind it, minutes later. That
-     * cross-screen latching is the defect #72 removed, and it must not return through the
-     * chooser. An open chooser is deliberately left alone, so a rotation does not close it.
+     * A load left running lands its chooser, or its error, in state that is rendered later: a
+     * dialog appearing with no tap behind it, seconds or minutes after the tap was abandoned.
+     * That is the cross-screen latching #72 removed, and it must not return through the chooser.
      */
     fun cancelPendingPlanLoad() {
         planLoadJob?.cancel()
@@ -391,6 +389,21 @@ class MainViewModel @Inject constructor(
         if (_uiState.value.plansLoading) {
             _uiState.value = _uiState.value.copy(plansLoading = false)
         }
+    }
+
+    /**
+     * The user has left this screen for good - not merely rotated it.
+     *
+     * This view model outlives its screen: settings sits on top of it in the back stack, so
+     * anything left in state here is rendered again on the way back. A pending load is dropped,
+     * and the chooser and any purchase failure are cleared, so neither greets the user on a
+     * return trip long after the tap that caused it. A configuration change must *not* reach
+     * here - the screen is coming straight back, and discarding the chooser (or the load behind
+     * it) would make a rotation silently swallow the tap.
+     */
+    fun onScreenLeft() {
+        cancelPendingPlanLoad()
+        _uiState.value = _uiState.value.copy(subscriptionPlans = null, purchaseError = null)
     }
 
     fun dismissPlanChooser() {
@@ -403,6 +416,10 @@ class MainViewModel @Inject constructor(
      * hand-off - saying nothing would be the dead button again.
      */
     fun launchPurchaseFlow(activity: Activity?, plan: SubscriptionPlan) {
+        // Two Continue taps delivered before the dialog leaves composition would otherwise start
+        // two hand-offs; the second serializes behind the first and reports a failure over a
+        // purchase that is going ahead.
+        if (purchaseInFlight) return
         _uiState.value = _uiState.value.copy(subscriptionPlans = null)
         if (activity == null) {
             _uiState.value = _uiState.value.copy(purchaseError = PurchaseFailure.LAUNCH_FAILED)
@@ -425,6 +442,9 @@ class MainViewModel @Inject constructor(
     }
 
     fun dismissUpgradeDialog() {
+        // Whatever that dialog's Upgrade button started goes with it: a load left running would
+        // raise the chooser, or an error, seconds after the user dismissed the offer.
+        cancelPendingPlanLoad()
         _uiState.value = _uiState.value.copy(showUpgradeDialog = false, upgradeReason = null)
     }
 

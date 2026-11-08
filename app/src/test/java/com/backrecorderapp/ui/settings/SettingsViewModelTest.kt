@@ -24,6 +24,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -349,7 +350,7 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         assertEquals(plans, viewModel.subscriptionPlans.value)
-        assertEquals(false, viewModel.plansLoading.value)
+        assertEquals(false, viewModel.upgradeBusy.value)
         coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
     }
 
@@ -366,6 +367,71 @@ class SettingsViewModelTest {
 
         assertNull(viewModel.subscriptionPlans.value)
         coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
+    }
+
+    /** Dismissing the offer takes its load with it, on this screen too. */
+    @Test
+    fun `dismissing the upgrade dialog drops the load it started`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.dismissUpgradeDialog()
+        parked.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+
+        assertNull(viewModel.subscriptionPlans.value)
+        assertFalse(viewModel.upgradeBusy.value)
+    }
+
+    /** The Upgrade button must look busy while a purchase is on its way to Play, not live. */
+    @Test
+    fun `the upgrade button stays busy while a purchase is handed over`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.upgradeBusy.test {
+            assertFalse(awaitItem())
+
+            viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+            assertTrue(awaitItem())
+
+            parked.complete(null)
+            assertFalse(awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `no chooser opens while a purchase is being handed to Play`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { billingRepository.loadSubscriptionPlans() }
+        parked.complete(null)
+    }
+
+    @Test
+    fun `a double tap on Continue hands off once`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), any()) }
+        parked.complete(null)
     }
 
     @Test
@@ -393,7 +459,7 @@ class SettingsViewModelTest {
 
         assertNull(viewModel.subscriptionPlans.value)
         assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, viewModel.purchaseError.value)
-        assertEquals(false, viewModel.plansLoading.value)
+        assertEquals(false, viewModel.upgradeBusy.value)
     }
 
     @Test

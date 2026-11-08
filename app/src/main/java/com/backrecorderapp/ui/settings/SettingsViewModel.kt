@@ -20,6 +20,7 @@ import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.service.RecordingService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -94,13 +95,21 @@ class SettingsViewModel @Inject constructor(
     private val _showUpgradeDialog = MutableStateFlow(false)
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
 
-    /** True from the moment a purchase is handed to Play until it answers. */
-    private var purchaseInFlight = false
+    /** The plan load in flight, so dismissing the offer can drop it. */
+    private var planLoadJob: Job? = null
+
+    private val _purchaseInFlight = MutableStateFlow(false)
 
     private val _plansLoading = MutableStateFlow(false)
 
-    /** True while Play is being asked for the plans, so the Upgrade button can show progress. */
-    val plansLoading: StateFlow<Boolean> = _plansLoading.asStateFlow()
+    /**
+     * True while the Upgrade affordance is busy - asking Play for the plans, or handing a chosen
+     * plan over to it. Both are multi-second waits in which a tap would be swallowed by the
+     * guards below, so the button has to say so rather than look live.
+     */
+    val upgradeBusy: StateFlow<Boolean> =
+        combine(_plansLoading, _purchaseInFlight) { loading, purchasing -> loading || purchasing }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     private val _subscriptionPlans = MutableStateFlow<SubscriptionPlans?>(null)
 
@@ -264,9 +273,9 @@ class SettingsViewModel @Inject constructor(
     fun showPlanChooser() {
         // A purchase already on its way to Play would otherwise be joined by a second chooser
         // opening behind Play's sheet.
-        if (_plansLoading.value || purchaseInFlight) return
+        if (_plansLoading.value || _purchaseInFlight.value) return
         _plansLoading.value = true
-        viewModelScope.launch {
+        planLoadJob = viewModelScope.launch {
             try {
                 when (val query = billingRepository.loadSubscriptionPlans()) {
                     is PlanQuery.Available -> _subscriptionPlans.value = query.plans
@@ -290,20 +299,31 @@ class SettingsViewModel @Inject constructor(
      * null [activity] means the screen could not resolve one, which is itself a failed hand-off.
      */
     fun launchPurchaseFlow(activity: Activity?, plan: SubscriptionPlan) {
+        // Two Continue taps delivered before the dialog leaves composition would otherwise start
+        // two hand-offs; the second serializes behind the first and reports a failure over a
+        // purchase that is going ahead.
+        if (_purchaseInFlight.value) return
         _subscriptionPlans.value = null
         if (activity == null) {
             _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
             return
         }
-        purchaseInFlight = true
+        _purchaseInFlight.value = true
         viewModelScope.launch {
             try {
                 billingRepository.launchPurchaseFlow(activity, plan)
                     ?.let { _purchaseError.value = it }
             } finally {
-                purchaseInFlight = false
+                _purchaseInFlight.value = false
             }
         }
+    }
+
+    /** Drops a plan load whose answer nobody is waiting for any more. See [dismissUpgradeDialog]. */
+    private fun cancelPendingPlanLoad() {
+        planLoadJob?.cancel()
+        planLoadJob = null
+        _plansLoading.value = false
     }
 
     fun dismissPurchaseError() {
@@ -311,6 +331,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun dismissUpgradeDialog() {
+        // Whatever that dialog's Upgrade button started goes with it: a load left running would
+        // raise the chooser, or an error, seconds after the user dismissed the offer.
+        cancelPendingPlanLoad()
         _showUpgradeDialog.value = false
     }
 }

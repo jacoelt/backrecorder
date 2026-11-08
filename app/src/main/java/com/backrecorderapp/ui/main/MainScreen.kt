@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -66,6 +65,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.ui.components.PlanChooserDialog
+import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.ui.components.WaveformView
 import com.backrecorderapp.util.TimeUtils
 import com.backrecorderapp.util.findActivity
@@ -81,10 +81,16 @@ fun MainScreen(
     val context = LocalContext.current
 
     // This view model outlives the screen - settings sits on top of it in the back stack - so a
-    // plan load left running would land its chooser, or its error, in state that is rendered when
-    // the user next comes back: a dialog with no tap behind it, minutes later.
-    DisposableEffect(Unit) {
-        onDispose { viewModel.cancelPendingPlanLoad() }
+    // plan load left running, or a chooser left open, is rendered again when the user comes back:
+    // a dialog with no tap behind it, minutes later. A *configuration change* disposes too, and
+    // must not be mistaken for leaving: the screen is coming straight back, and discarding the
+    // chooser (or the load behind it) would make a rotation silently swallow the tap - which at
+    // this target cannot be avoided by locking the orientation on large screens.
+    val activity = context.findActivity()
+    DisposableEffect(activity) {
+        onDispose {
+            if (activity?.isChangingConfigurations != true) viewModel.onScreenLeft()
+        }
     }
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
@@ -354,20 +360,10 @@ fun MainScreen(
             confirmButton = {
                 // The dialog stays up, with the button busy, until the plans arrive: asking Play
                 // can take seconds, and closing onto a blank screen is the dead button again.
-                Button(
-                    onClick = { viewModel.showPlanChooser() },
-                    enabled = !state.plansLoading
-                ) {
-                    if (state.plansLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }
-                    Text(stringResource(R.string.upgrade_button))
-                }
+                UpgradeButton(
+                    busy = state.plansLoading,
+                    onClick = { viewModel.showPlanChooser() }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpgradeDialog() }) {

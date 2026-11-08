@@ -10,6 +10,8 @@ import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionPlan
 import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.data.cloud.CloudSyncManager
+import com.backrecorderapp.domain.BlockReason
+import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
@@ -19,6 +21,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -240,6 +243,152 @@ class MainViewModelPurchaseTest {
 
         assertNull(viewModel.uiState.value.subscriptionPlans)
         coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
+    }
+
+    /**
+     * The #72 latching guard. A load the user walked away from must not publish anything: its
+     * chooser would appear on the next back navigation with no tap behind it.
+     */
+    @Test
+    fun `a load the user left behind publishes nothing`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        assertEquals("precondition: the load must be in flight", true, viewModel.uiState.value.plansLoading)
+
+        viewModel.onScreenLeft()
+        parked.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.subscriptionPlans)
+        assertNull(viewModel.uiState.value.purchaseError)
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+    }
+
+    /** Leaving also drops a failure, which would otherwise greet the user on the way back. */
+    @Test
+    fun `leaving the screen clears a purchase failure`() = runTest {
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns
+            PurchaseFailure.BILLING_UNAVAILABLE
+
+        val viewModel = buildViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+        assertNotNull(viewModel.uiState.value.purchaseError)
+
+        viewModel.onScreenLeft()
+
+        assertNull(viewModel.uiState.value.purchaseError)
+    }
+
+    /**
+     * Dismissing the offer takes its load with it: otherwise the chooser arrives seconds after
+     * the user said no.
+     */
+    @Test
+    fun `dismissing the upgrade dialog drops the load it started`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.dismissUpgradeDialog()
+        parked.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.subscriptionPlans)
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+    }
+
+    @Test
+    fun `the screen is told the plans are loading while Play is asked`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        assertEquals(true, viewModel.uiState.value.plansLoading)
+
+        parked.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+    }
+
+    /** A second tap while the first is still in flight must not ask Play twice. */
+    @Test
+    fun `a second tap during a load is not a second query`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+        parked.complete(PlanQuery.Available(plans))
+    }
+
+    /** A chooser must never open behind Play's sheet. */
+    @Test
+    fun `no chooser opens while a purchase is being handed to Play`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { billingRepository.loadSubscriptionPlans() }
+        assertNull(viewModel.uiState.value.subscriptionPlans)
+        parked.complete(null)
+    }
+
+    /** Two Continue taps must not start two hand-offs. */
+    @Test
+    fun `a double tap on Continue hands off once`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), any()) }
+        parked.complete(null)
+    }
+
+    /** The offer dialog closes only once there is something to replace it with. */
+    @Test
+    fun `the upgrade offer closes when the chooser takes its place`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+        // A save the gate refuses is what raises the offer in the first place.
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk())
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns
+            GateResult.Blocked(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+        assertEquals("precondition: the offer must be up", true, viewModel.uiState.value.showUpgradeDialog)
+
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        assertEquals(false, viewModel.uiState.value.showUpgradeDialog)
+        assertNull(viewModel.uiState.value.upgradeReason)
+        assertEquals(plans, viewModel.uiState.value.subscriptionPlans)
     }
 
     @Test
