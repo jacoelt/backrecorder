@@ -1,27 +1,31 @@
 package com.backrecorderapp.data.billing
 
 import android.app.Activity
-import android.content.Context
 import android.util.Log
+import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
-import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
-import dagger.hilt.android.qualifiers.ApplicationContext
+import com.backrecorderapp.di.ApplicationScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -29,20 +33,23 @@ import kotlin.coroutines.resume
 /** The real [BillingRepository], backed by the Play Billing client. */
 @Singleton
 class PlayBillingRepository @Inject constructor(
-    @ApplicationContext private val context: Context
+    clientFactory: BillingClientFactory,
+    @ApplicationScope private val appScope: CoroutineScope
 ) : BillingRepository, PurchasesUpdatedListener {
 
     companion object {
         private const val TAG = "PlayBilling"
 
         /**
-         * How long the whole hand-off may take before it is reported as unavailable.
+         * How long connecting and asking Play for the offer may take.
          *
          * Play's callbacks are not guaranteed to arrive at all - the service can be killed or
-         * mid-update - and a hand-off that waits forever is exactly the dead button this class
-         * exists to prevent.
+         * mid-update - and a hand-off that waits forever is the dead button this class exists to
+         * prevent. It deliberately does *not* cover showing the sheet: cancelling that after
+         * `launchBillingFlow` has already put Play on screen would report a failure over a
+         * purchase that is going ahead.
          */
-        private const val LAUNCH_TIMEOUT_MS = 20_000L
+        private const val PREPARE_TIMEOUT_MS = 20_000L
     }
 
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
@@ -53,36 +60,32 @@ class PlayBillingRepository @Inject constructor(
 
     override val statusResolved: StateFlow<Boolean> = _statusResolved.asStateFlow()
 
-    /**
-     * One hand-off at a time. A second tap while Play is still answering the first used to open
-     * a second connection and a second query on the one client, which Play answers with an error
-     * - so double-tapping a button that felt dead produced a false "unavailable" over a purchase
-     * flow that was about to work.
-     */
-    private val launchInFlight = AtomicBoolean(false)
+    private val billingClient: BillingClient = clientFactory.create(this)
 
-    private var billingClient: BillingClient = BillingClient.newBuilder(context)
-        .setListener(this)
-        .enablePendingPurchases(
-            PendingPurchasesParams.newBuilder()
-                .enableOneTimeProducts()
-                .enablePrepaidPlans()
-                .build()
-        )
-        .build()
+    /**
+     * One hand-off at a time, queued rather than dropped. Two overlapping attempts would open two
+     * connections on the one client, which Play answers with an error - so a double tap on a
+     * button that felt dead used to produce a false "unavailable" over a purchase that was
+     * working. A dropped tap is not an option either: the second caller is often a different
+     * screen, and it would be left with nothing to show.
+     */
+    private val purchaseMutex = Mutex()
+
+    /** Guards [connection], which is the one in-flight connection every caller shares. */
+    private val connectionMutex = Mutex()
+
+    /**
+     * The connection attempt in progress, so a purchase started while the app-launch [connect] is
+     * still connecting waits for that one. Play answers a second concurrent `startConnection`
+     * with an error, which would surface as "billing unavailable" seconds before the first
+     * connection succeeds.
+     */
+    private var connection: CompletableDeferred<PurchaseFailure?>? = null
 
     override fun connect() {
-        billingClient.startConnection(object : BillingClientStateListener {
-            override fun onBillingSetupFinished(result: BillingResult) {
-                if (result.responseCode == BillingClient.BillingResponseCode.OK) {
-                    queryPurchases()
-                }
-            }
-
-            override fun onBillingServiceDisconnected() {
-                // Retry on next user action
-            }
-        })
+        appScope.launch {
+            if (ensureConnected() == null) queryPurchases()
+        }
     }
 
     override fun queryPurchases() {
@@ -108,6 +111,30 @@ class PlayBillingRepository @Inject constructor(
             SubscriptionStatus.ACTIVE
         }
         _statusResolved.value = true
+
+        acknowledge(purchases)
+    }
+
+    /**
+     * Play refunds a subscription that is never acknowledged after three days, so a purchase the
+     * user has paid for would quietly expire. Nothing acknowledged before, which was harmless
+     * only because the Upgrade button never reached Play at all.
+     */
+    private fun acknowledge(purchases: List<Purchase>) {
+        purchases.filter { it.purchaseState == Purchase.PurchaseState.PURCHASED && !it.isAcknowledged }
+            .forEach { purchase ->
+                val params = AcknowledgePurchaseParams.newBuilder()
+                    .setPurchaseToken(purchase.purchaseToken)
+                    .build()
+                billingClient.acknowledgePurchase(params) { result ->
+                    if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+                        Log.w(
+                            TAG,
+                            "acknowledgePurchase: ${result.responseCode} ${result.debugMessage}"
+                        )
+                    }
+                }
+            }
     }
 
     override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
@@ -116,110 +143,166 @@ class PlayBillingRepository @Inject constructor(
         }
     }
 
-    override suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure? {
-        // A tap that lands while the previous one is still being answered is dropped rather than
-        // started again: the hand-off already under way will show the sheet or report why not.
-        if (!launchInFlight.compareAndSet(false, true)) {
-            Log.i(TAG, "Upgrade tap ignored: a hand-off is already in flight")
-            return null
-        }
-        try {
-            return withTimeoutOrNull(LAUNCH_TIMEOUT_MS) { launchPurchase(activity) }
-                ?: reportFailure(PurchaseFailure.BILLING_UNAVAILABLE, "timed out after ${LAUNCH_TIMEOUT_MS}ms")
-        } finally {
-            launchInFlight.set(false)
-        }
-    }
-
-    private suspend fun launchPurchase(activity: Activity): PurchaseFailure? {
-        if (!billingClient.isReady) {
-            val connection = connectForPurchase()
-            if (connection != null) return connection
-        }
-
-        val details = queryPremiumOffer() ?: return reportFailure(
-            PurchaseFailure.PRODUCT_UNAVAILABLE,
-            "no product details for ${BillingRepository.PREMIUM_SUBSCRIPTION_ID}"
-        )
-
-        // Play has the product but no offer to buy it on: a base plan with no active offer, or
-        // one this account cannot take.
-        val offerToken = details.subscriptionOfferDetails?.firstOrNull()?.offerToken
-            ?: return reportFailure(
-                PurchaseFailure.PRODUCT_UNAVAILABLE,
-                "no subscription offer on ${details.productId}"
-            )
-
-        return showPurchaseSheet(activity, details, offerToken)
-    }
-
-    /** Non-null when the connection failed, carrying the failure to report. */
-    private suspend fun connectForPurchase(): PurchaseFailure? =
-        suspendCancellableCoroutine { continuation ->
-            billingClient.startConnection(object : BillingClientStateListener {
-                override fun onBillingSetupFinished(result: BillingResult) {
-                    if (!continuation.isActive) return
-                    if (result.responseCode == BillingClient.BillingResponseCode.OK) {
-                        continuation.resume(null)
-                    } else {
-                        continuation.resume(
-                            reportFailure(
-                                PurchaseFailure.BILLING_UNAVAILABLE,
-                                "billing setup failed: ${result.responseCode} ${result.debugMessage}"
-                            )
-                        )
-                    }
-                }
-
-                override fun onBillingServiceDisconnected() {
-                    // The service can die while this purchase's setup is still pending, in which
-                    // case the callback above never arrives. Answer here rather than wait out the
-                    // timeout.
-                    if (!continuation.isActive) return
-                    continuation.resume(
-                        reportFailure(
-                            PurchaseFailure.BILLING_UNAVAILABLE,
-                            "billing service disconnected before setup finished"
-                        )
+    override suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure? =
+        purchaseMutex.withLock {
+            try {
+                // Only the preparation is timed. A non-null Prepared keeps "the sheet was shown"
+                // (null) distinguishable from "nothing came back", which an earlier version
+                // conflated - reporting every successful purchase as a timeout.
+                val prepared = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePurchase() }
+                    ?: return@withLock reportFailure(
+                        PurchaseFailure.BILLING_UNAVAILABLE,
+                        "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
                     )
-                }
-            })
-        }
 
-    /** The premium product's details, or null when Play has none to offer this account. */
-    private suspend fun queryPremiumOffer(): ProductDetails? =
-        suspendCancellableCoroutine { continuation ->
-            val productList = listOf(
-                QueryProductDetailsParams.Product.newBuilder()
-                    .setProductId(BillingRepository.PREMIUM_SUBSCRIPTION_ID)
-                    .setProductType(BillingClient.ProductType.SUBS)
-                    .build()
-            )
-            val params = QueryProductDetailsParams.newBuilder()
-                .setProductList(productList)
-                .build()
-
-            billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
-                if (!continuation.isActive) return@queryProductDetailsAsync
-                if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
-                    Log.w(
-                        TAG,
-                        "queryProductDetails: ${billingResult.responseCode} ${billingResult.debugMessage}"
-                    )
-                    continuation.resume(null)
-                    return@queryProductDetailsAsync
+                when (prepared) {
+                    is Prepared.Unavailable -> prepared.failure
+                    is Prepared.Offer -> showPurchaseSheet(activity, prepared)
                 }
-                continuation.resume(productDetailsResult.productDetailsList.firstOrNull())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A throw out of the Play client (a dead service binding, say) would otherwise
+                // reach viewModelScope and take the app down instead of reporting.
+                reportFailure(PurchaseFailure.LAUNCH_FAILED, "billing threw: $e")
             }
         }
 
+    private sealed interface Prepared {
+        data class Offer(val details: ProductDetails, val offerToken: String) : Prepared
+        data class Unavailable(val failure: PurchaseFailure) : Prepared
+    }
+
+    private suspend fun preparePurchase(): Prepared {
+        if (!billingClient.isReady) {
+            ensureConnected()?.let { return Prepared.Unavailable(it) }
+        }
+
+        val details = when (val query = queryPremiumOffer()) {
+            is OfferQuery.Failed -> return Prepared.Unavailable(query.failure)
+            is OfferQuery.Found -> query.details
+        }
+
+        // Play knows the product but has no offer to buy it on: a base plan with no active
+        // offer, or none this account can take.
+        val offerToken = details.subscriptionOfferDetails?.firstOrNull()?.offerToken
+            ?: return Prepared.Unavailable(
+                reportFailure(
+                    PurchaseFailure.PRODUCT_UNAVAILABLE,
+                    "no subscription offer on ${details.productId}"
+                )
+            )
+
+        return Prepared.Offer(details, offerToken)
+    }
+
+    /** Null once connected; otherwise the failure to report. */
+    private suspend fun ensureConnected(): PurchaseFailure? {
+        if (billingClient.isReady) return null
+
+        val (pending, isOwner) = connectionMutex.withLock {
+            val existing = connection
+            if (existing != null && !existing.isCompleted) {
+                existing to false
+            } else {
+                CompletableDeferred<PurchaseFailure?>().also { connection = it } to true
+            }
+        }
+        if (isOwner) startConnection(pending)
+        return pending.await()
+    }
+
+    private fun startConnection(pending: CompletableDeferred<PurchaseFailure?>) {
+        billingClient.startConnection(object : BillingClientStateListener {
+            override fun onBillingSetupFinished(result: BillingResult) {
+                if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+                    pending.complete(null)
+                } else {
+                    pending.complete(
+                        reportFailure(
+                            PurchaseFailure.BILLING_UNAVAILABLE,
+                            "billing setup failed: ${result.responseCode} ${result.debugMessage}"
+                        )
+                    )
+                }
+            }
+
+            override fun onBillingServiceDisconnected() {
+                // The service can die while setup is still pending, in which case the callback
+                // above never arrives. Answer whoever is waiting rather than let them time out.
+                // `complete` on an already-completed deferred is a no-op, so a disconnect after a
+                // successful connection changes nothing here.
+                pending.complete(
+                    reportFailure(
+                        PurchaseFailure.BILLING_UNAVAILABLE,
+                        "billing service disconnected before setup finished"
+                    )
+                )
+            }
+        })
+    }
+
+    private sealed interface OfferQuery {
+        data class Found(val details: ProductDetails) : OfferQuery
+        data class Failed(val failure: PurchaseFailure) : OfferQuery
+    }
+
+    private suspend fun queryPremiumOffer(): OfferQuery = suspendCancellableCoroutine { cont ->
+        val productList = listOf(
+            QueryProductDetailsParams.Product.newBuilder()
+                .setProductId(BillingRepository.PREMIUM_SUBSCRIPTION_ID)
+                .setProductType(BillingClient.ProductType.SUBS)
+                .build()
+        )
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(productList)
+            .build()
+
+        billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
+            if (!cont.isActive) return@queryProductDetailsAsync
+
+            val code = billingResult.responseCode
+            if (code != BillingClient.BillingResponseCode.OK) {
+                // A dropped connection or a network error is not a Play Console problem, and
+                // saying "not available for this account" would send a tester to fix the wrong
+                // thing. Only Play's own "no such item" means the product.
+                val failure = if (code == BillingClient.BillingResponseCode.ITEM_UNAVAILABLE) {
+                    PurchaseFailure.PRODUCT_UNAVAILABLE
+                } else {
+                    PurchaseFailure.BILLING_UNAVAILABLE
+                }
+                cont.resume(
+                    OfferQuery.Failed(
+                        reportFailure(failure, "queryProductDetails: $code ${billingResult.debugMessage}")
+                    )
+                )
+                return@queryProductDetailsAsync
+            }
+
+            val details = productDetailsResult.productDetailsList.firstOrNull()
+            if (details == null) {
+                // Play answered, and has nothing to sell this account: the product id does not
+                // exist, is not active, or this build is not on a track that can buy.
+                cont.resume(
+                    OfferQuery.Failed(
+                        reportFailure(
+                            PurchaseFailure.PRODUCT_UNAVAILABLE,
+                            "no product details for ${BillingRepository.PREMIUM_SUBSCRIPTION_ID}"
+                        )
+                    )
+                )
+            } else {
+                cont.resume(OfferQuery.Found(details))
+            }
+        }
+    }
+
     private suspend fun showPurchaseSheet(
         activity: Activity,
-        details: ProductDetails,
-        offerToken: String
+        offer: Prepared.Offer
     ): PurchaseFailure? = withContext(Dispatchers.Main) {
-        // The query above crosses an async callback, so the screen that asked may be gone by now;
-        // launching over a finishing Activity shows nothing and can still answer OK.
+        // Preparing crossed a callback, so the screen that asked may be gone by now; launching
+        // over a finishing Activity shows nothing and can still answer OK.
         if (activity.isFinishing || activity.isDestroyed) {
             return@withContext reportFailure(
                 PurchaseFailure.LAUNCH_FAILED,
@@ -231,14 +314,14 @@ class PlayBillingRepository @Inject constructor(
             .setProductDetailsParamsList(
                 listOf(
                     BillingFlowParams.ProductDetailsParams.newBuilder()
-                        .setProductDetails(details)
-                        .setOfferToken(offerToken)
+                        .setProductDetails(offer.details)
+                        .setOfferToken(offer.offerToken)
                         .build()
                 )
             )
             .build()
 
-        // launchBillingFlow must run on the main thread - off it, Play answers DEVELOPER_ERROR
+        // launchBillingFlow must run on the main thread - off it Play answers DEVELOPER_ERROR
         // and no sheet is ever shown. Hence the withContext above.
         val result = billingClient.launchBillingFlow(activity, flowParams)
         if (result.responseCode == BillingClient.BillingResponseCode.OK) {

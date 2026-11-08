@@ -1,6 +1,8 @@
 package com.backrecorderapp.di
 
+import com.backrecorderapp.data.billing.BillingClientFactory
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PlayBillingClientFactory
 import com.backrecorderapp.data.billing.PlayBillingRepository
 import dagger.Binds
 import dagger.Module
@@ -20,4 +22,8 @@ abstract class BillingModule {
     @Binds
     @Singleton
     abstract fun bindBillingRepository(repository: PlayBillingRepository): BillingRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindBillingClientFactory(factory: PlayBillingClientFactory): BillingClientFactory
 }

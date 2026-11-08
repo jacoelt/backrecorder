@@ -26,6 +26,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -154,14 +155,25 @@ class MainViewModelPurchaseTest {
      * two can arrive together, and whichever wrote last would otherwise erase the other.
      */
     @Test
-    fun `reporting a failure leaves the save error slot alone`() = runTest {
+    fun `reporting a failure leaves a pending save error intact`() = runTest {
+        // A save error first, so the assertion below is about survival rather than emptiness.
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns emptyList()
         coEvery { billingRepository.launchPurchaseFlow(any()) } returns
             PurchaseFailure.LAUNCH_FAILED
 
         val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+        val saveError = viewModel.uiState.value.errorMessage
+        assertNotNull("precondition: the save must have reported an error", saveError)
+
         viewModel.launchPurchaseFlow(mockk<Activity>())
         advanceUntilIdle()
 
-        assertNull(viewModel.uiState.value.errorMessage)
+        assertEquals(saveError, viewModel.uiState.value.errorMessage)
+        assertEquals(PurchaseFailure.LAUNCH_FAILED, viewModel.uiState.value.purchaseError)
+
+        viewModel.dismissPurchaseError()
+        assertEquals(saveError, viewModel.uiState.value.errorMessage)
     }
 }
