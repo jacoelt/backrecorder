@@ -48,11 +48,8 @@ fun PlanChooserDialog(
 ) {
     // Yearly is the better value when there is a saving to show, so it starts selected; with one
     // plan there is nothing to choose and it is simply the one.
-    val default = if (plans.yearlySavingsPercent != null) {
-        plans.yearly ?: plans.plans.first()
-    } else {
-        plans.plans.first()
-    }
+    // A saving can only be computed when both plans are there, so yearly is non-null here.
+    val default = if (plans.yearlySavingsPercent != null) plans.yearly!! else plans.plans.first()
 
     // rememberSaveable, and the period rather than the plan: orientation cannot be restricted at
     // this target on large screens, so a rotation here would otherwise silently put the selection

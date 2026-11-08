@@ -354,6 +354,27 @@ class MainViewModelPurchaseTest {
         parked.complete(null)
     }
 
+    /**
+     * The main screen's Upgrade button has to show the hand-off, not just the plan load: the
+     * save gate can raise the offer again mid-purchase, and `showPlanChooser` refuses then.
+     */
+    @Test
+    fun `the state says a purchase is in flight so the button can show it`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+
+        assertEquals(true, viewModel.uiState.value.purchaseInFlight)
+
+        parked.complete(null)
+        advanceUntilIdle()
+
+        assertEquals(false, viewModel.uiState.value.purchaseInFlight)
+    }
+
     /** Two Continue taps must not start two hand-offs. */
     @Test
     fun `a double tap on Continue hands off once`() = runTest {

@@ -29,7 +29,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
@@ -50,6 +49,7 @@ data class MainUiState(
     val showUpgradeDialog: Boolean = false,
     val upgradeReason: BlockReason? = null,
     val plansLoading: Boolean = false,
+    val purchaseInFlight: Boolean = false,
     val subscriptionPlans: SubscriptionPlans? = null,
     val purchaseError: PurchaseFailure? = null,
     val errorMessage: String? = null,
@@ -71,6 +71,7 @@ data class MainUiState(
             showUpgradeDialog == other.showUpgradeDialog &&
             upgradeReason == other.upgradeReason &&
             plansLoading == other.plansLoading &&
+            purchaseInFlight == other.purchaseInFlight &&
             subscriptionPlans == other.subscriptionPlans &&
             purchaseError == other.purchaseError &&
             errorMessage == other.errorMessage &&
@@ -91,6 +92,7 @@ data class MainUiState(
         result = 31 * result + showUpgradeDialog.hashCode()
         result = 31 * result + (upgradeReason?.hashCode() ?: 0)
         result = 31 * result + plansLoading.hashCode()
+        result = 31 * result + purchaseInFlight.hashCode()
         result = 31 * result + (subscriptionPlans?.hashCode() ?: 0)
         result = 31 * result + (purchaseError?.hashCode() ?: 0)
         result = 31 * result + (errorMessage?.hashCode() ?: 0)
@@ -112,11 +114,18 @@ class MainViewModel @Inject constructor(
     private val subscriptionGate: SubscriptionGate
 ) : ViewModel() {
 
-    /** The plan load in flight, so leaving the screen can drop it. See [cancelPendingPlanLoad]. */
-    private var planLoadJob: Job? = null
-
-    /** True from the moment a purchase is handed to Play until it answers. */
-    private var purchaseInFlight = false
+    /**
+     * Bumped whenever the user abandons an upgrade they started - dismissing the offer, or
+     * leaving the screen. An answer carrying a stale value is dropped instead of written.
+     *
+     * Deliberately *not* implemented by cancelling the coroutine. The call it is waiting on is
+     * `PlayBillingRepository`'s, which shares one connection attempt across every caller: a
+     * cancelled caller's cleanup completes that shared attempt with a failure, answering the
+     * launch-time resolve ladder - the thing `statusResolved`, and so cloud sync for a paying
+     * subscriber, depends on - with a refusal nobody asked for. Letting the call finish and
+     * discarding its answer costs nothing but a little time on a lock.
+     */
+    private var upgradeGeneration = 0
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -348,13 +357,17 @@ class MainViewModel @Inject constructor(
      * this screen only.
      */
     fun showPlanChooser() {
+        val current = _uiState.value
         // A purchase already on its way to Play would otherwise be joined by a second chooser
         // opening behind Play's sheet.
-        if (_uiState.value.plansLoading || purchaseInFlight) return
-        _uiState.value = _uiState.value.copy(plansLoading = true)
-        planLoadJob = viewModelScope.launch {
+        if (current.plansLoading || current.purchaseInFlight) return
+        val issued = upgradeGeneration
+        _uiState.value = current.copy(plansLoading = true)
+        viewModelScope.launch {
             try {
-                _uiState.value = when (val query = billingRepository.loadSubscriptionPlans()) {
+                val query = billingRepository.loadSubscriptionPlans()
+                if (issued != upgradeGeneration) return@launch
+                _uiState.value = when (query) {
                     // The upgrade dialog stays up until there is something to replace it with,
                     // so the tap is never answered by an empty screen.
                     is PlanQuery.Available -> _uiState.value.copy(
@@ -370,39 +383,38 @@ class MainViewModel @Inject constructor(
                 }
             } finally {
                 // Cleared whatever happened: a flag left set would refuse every later tap, which
-                // is the dead button again.
-                _uiState.value = _uiState.value.copy(plansLoading = false)
+                // is the dead button again. Skipped once abandoned, because the flag was already
+                // cleared then and a newer load may own it now.
+                if (issued == upgradeGeneration) {
+                    _uiState.value = _uiState.value.copy(plansLoading = false)
+                }
             }
         }
     }
 
     /**
-     * Drops a plan load whose answer nobody is waiting for any more.
+     * Stops listening to an upgrade the user has walked away from.
      *
-     * A load left running lands its chooser, or its error, in state that is rendered later: a
-     * dialog appearing with no tap behind it, seconds or minutes after the tap was abandoned.
-     * That is the cross-screen latching #72 removed, and it must not return through the chooser.
+     * Whatever is in flight keeps running - see [upgradeGeneration] for why cancelling it would
+     * be worse - but its answer no longer reaches the screen. Without this, a chooser or an
+     * error dialog arrives with no tap behind it, seconds or minutes later: the cross-screen
+     * latching #72 removed, and it must not return through the chooser.
      */
-    fun cancelPendingPlanLoad() {
-        planLoadJob?.cancel()
-        planLoadJob = null
-        if (_uiState.value.plansLoading) {
-            _uiState.value = _uiState.value.copy(plansLoading = false)
-        }
+    private fun abandonPendingUpgrade() {
+        upgradeGeneration++
+        _uiState.value = _uiState.value.copy(plansLoading = false, purchaseInFlight = false)
     }
 
     /**
      * The user has left this screen for good - not merely rotated it.
      *
      * This view model outlives its screen: settings sits on top of it in the back stack, so
-     * anything left in state here is rendered again on the way back. A pending load is dropped,
-     * and the chooser and any purchase failure are cleared, so neither greets the user on a
-     * return trip long after the tap that caused it. A configuration change must *not* reach
-     * here - the screen is coming straight back, and discarding the chooser (or the load behind
-     * it) would make a rotation silently swallow the tap.
+     * anything left in state here is rendered again on the way back. A configuration change must
+     * *not* reach here - the screen is coming straight back, and discarding the chooser (or the
+     * load behind it) would make a rotation silently swallow the tap.
      */
     fun onScreenLeft() {
-        cancelPendingPlanLoad()
+        abandonPendingUpgrade()
         _uiState.value = _uiState.value.copy(subscriptionPlans = null, purchaseError = null)
     }
 
@@ -419,20 +431,25 @@ class MainViewModel @Inject constructor(
         // Two Continue taps delivered before the dialog leaves composition would otherwise start
         // two hand-offs; the second serializes behind the first and reports a failure over a
         // purchase that is going ahead.
-        if (purchaseInFlight) return
+        if (_uiState.value.purchaseInFlight) return
         _uiState.value = _uiState.value.copy(subscriptionPlans = null)
         if (activity == null) {
             _uiState.value = _uiState.value.copy(purchaseError = PurchaseFailure.LAUNCH_FAILED)
             return
         }
-        purchaseInFlight = true
+        val issued = upgradeGeneration
+        _uiState.value = _uiState.value.copy(purchaseInFlight = true)
         viewModelScope.launch {
             try {
-                billingRepository.launchPurchaseFlow(activity, plan)?.let { failure ->
-                    _uiState.value = _uiState.value.copy(purchaseError = failure)
+                val failure = billingRepository.launchPurchaseFlow(activity, plan)
+                if (issued != upgradeGeneration) return@launch
+                failure?.let {
+                    _uiState.value = _uiState.value.copy(purchaseError = it)
                 }
             } finally {
-                purchaseInFlight = false
+                if (issued == upgradeGeneration) {
+                    _uiState.value = _uiState.value.copy(purchaseInFlight = false)
+                }
             }
         }
     }
@@ -442,9 +459,9 @@ class MainViewModel @Inject constructor(
     }
 
     fun dismissUpgradeDialog() {
-        // Whatever that dialog's Upgrade button started goes with it: a load left running would
-        // raise the chooser, or an error, seconds after the user dismissed the offer.
-        cancelPendingPlanLoad()
+        // Whatever that dialog's Upgrade button started goes with it: an answer still on its way
+        // would raise the chooser, or an error, seconds after the user dismissed the offer.
+        abandonPendingUpgrade()
         _uiState.value = _uiState.value.copy(showUpgradeDialog = false, upgradeReason = null)
     }
 

@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -67,6 +68,17 @@ fun SettingsScreen(
     val subscriptionPlans by viewModel.subscriptionPlans.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
+
+    // This view model is not always torn down on the way out: settings navigates *forward* to
+    // the disclaimer, which keeps its back-stack entry alive, so an upgrade left in flight would
+    // raise its chooser over this screen on the way back. A configuration change disposes too
+    // and must not be mistaken for leaving - the screen is coming straight back.
+    val activity = context.findActivity()
+    DisposableEffect(activity) {
+        onDispose {
+            if (activity?.isChangingConfigurations != true) viewModel.onScreenLeft()
+        }
+    }
 
     val consentLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()

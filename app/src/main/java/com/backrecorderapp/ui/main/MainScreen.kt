@@ -361,7 +361,7 @@ fun MainScreen(
                 // The dialog stays up, with the button busy, until the plans arrive: asking Play
                 // can take seconds, and closing onto a blank screen is the dead button again.
                 UpgradeButton(
-                    busy = state.plansLoading,
+                    busy = state.plansLoading || state.purchaseInFlight,
                     onClick = { viewModel.showPlanChooser() }
                 )
             },

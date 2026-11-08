@@ -369,6 +369,44 @@ class SettingsViewModelTest {
         coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
     }
 
+    /**
+     * Settings is not always torn down on the way out - it navigates forward to the disclaimer -
+     * so a load the user left behind must not publish its chooser over this screen later.
+     */
+    @Test
+    fun `a load the user left behind publishes nothing`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        assertTrue("precondition: the load must be in flight", viewModel.upgradeBusy.value)
+
+        viewModel.onScreenLeft()
+        parked.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+
+        assertNull(viewModel.subscriptionPlans.value)
+        assertNull(viewModel.purchaseError.value)
+        assertFalse(viewModel.upgradeBusy.value)
+    }
+
+    @Test
+    fun `leaving the screen clears a purchase failure`() = runTest {
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns
+            PurchaseFailure.BILLING_UNAVAILABLE
+
+        val viewModel = createViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+        assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, viewModel.purchaseError.value)
+
+        viewModel.onScreenLeft()
+
+        assertNull(viewModel.purchaseError.value)
+    }
+
     /** Dismissing the offer takes its load with it, on this screen too. */
     @Test
     fun `dismissing the upgrade dialog drops the load it started`() = runTest {
