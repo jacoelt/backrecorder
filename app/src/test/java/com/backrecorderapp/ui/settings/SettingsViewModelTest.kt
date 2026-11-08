@@ -1,8 +1,10 @@
 package com.backrecorderapp.ui.settings
 
+import android.app.Activity
 import android.app.PendingIntent
 import app.cash.turbine.test
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
@@ -279,6 +281,47 @@ class SettingsViewModelTest {
 
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    /**
+     * Settings is the second upgrade entry point (issue #72). A refusal has to be reported here
+     * too, and only here - the main screen's view model is alive behind this one, so a failure
+     * both of them acted on would show twice.
+     */
+    @Test
+    fun `a refused upgrade hand-off is reported and clears on dismiss`() = runTest {
+        coEvery { billingRepository.launchPurchaseFlow(any()) } returns
+            PurchaseFailure.PRODUCT_UNAVAILABLE
+
+        val viewModel = createViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>())
+        advanceUntilIdle()
+
+        assertEquals(PurchaseFailure.PRODUCT_UNAVAILABLE, viewModel.purchaseError.value)
+
+        viewModel.dismissPurchaseError()
+        assertNull(viewModel.purchaseError.value)
+    }
+
+    @Test
+    fun `a hand-off that reached Play reports nothing`() = runTest {
+        coEvery { billingRepository.launchPurchaseFlow(any()) } returns null
+
+        val viewModel = createViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>())
+        advanceUntilIdle()
+
+        assertNull(viewModel.purchaseError.value)
+    }
+
+    @Test
+    fun `no activity to launch over is reported rather than ignored`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.launchPurchaseFlow(null)
+        advanceUntilIdle()
+
+        assertEquals(PurchaseFailure.LAUNCH_FAILED, viewModel.purchaseError.value)
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any()) }
     }
 
     @Test

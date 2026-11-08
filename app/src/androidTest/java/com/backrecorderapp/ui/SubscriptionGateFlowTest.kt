@@ -3,6 +3,9 @@ package com.backrecorderapp.ui
 import android.net.Uri
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.filterToOne
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -14,6 +17,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.FakeBillingRepository
+import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
@@ -170,6 +174,36 @@ class SubscriptionGateFlowTest {
 
         awaitUpgradeDialog()
         assertEquals(CloudUploadMode.OFF, currentUploadMode())
+    }
+
+    /**
+     * The upgrade offer has to survive a hand-off Play refuses: the failure is reported, not
+     * silent.
+     */
+    @Test
+    fun anUpgradePlayCannotOfferIsReportedRatherThanSilentlyDropped() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        billing.nextLaunchFails = PurchaseFailure.PRODUCT_UNAVAILABLE
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        // The settings screen carries its own Upgrade button in the Subscription section, so
+        // once the dialog is up two nodes read "Upgrade to Premium". It is the dialog's one
+        // this test means.
+        composeRule.onAllNodesWithText(string(R.string.upgrade_button))
+            .filterToOne(hasAnyAncestor(isDialog()))
+            .performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText(string(R.string.upgrade_error_title))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText(
+            string(R.string.upgrade_error_product_unavailable)
+        ).assertIsDisplayed()
+        assertEquals(1, billing.purchaseFlowLaunches)
     }
 
     @Test

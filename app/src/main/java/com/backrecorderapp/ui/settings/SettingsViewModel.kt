@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
@@ -89,6 +90,11 @@ class SettingsViewModel @Inject constructor(
 
     private val _showUpgradeDialog = MutableStateFlow(false)
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
+
+    private val _purchaseError = MutableStateFlow<PurchaseFailure?>(null)
+
+    /** Why the last Upgrade tap never reached Play, or null. */
+    val purchaseError: StateFlow<PurchaseFailure?> = _purchaseError.asStateFlow()
 
     private val _driveError = MutableStateFlow<DriveError?>(null)
 
@@ -235,8 +241,22 @@ class SettingsViewModel @Inject constructor(
         _driveError.value = null
     }
 
-    fun launchPurchaseFlow(activity: Activity) {
-        billingRepository.launchPurchaseFlow(activity)
+    /**
+     * Hands off to Play and reports back on this screen only. A null [activity] means the screen
+     * could not resolve one, which is itself a failed hand-off.
+     */
+    fun launchPurchaseFlow(activity: Activity?) {
+        if (activity == null) {
+            _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
+            return
+        }
+        viewModelScope.launch {
+            billingRepository.launchPurchaseFlow(activity)?.let { _purchaseError.value = it }
+        }
+    }
+
+    fun dismissPurchaseError() {
+        _purchaseError.value = null
     }
 
     fun dismissUpgradeDialog() {

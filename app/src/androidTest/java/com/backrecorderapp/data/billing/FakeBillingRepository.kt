@@ -28,6 +28,12 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
     private val _statusResolved = MutableStateFlow(false)
     override val statusResolved: StateFlow<Boolean> = _statusResolved.asStateFlow()
 
+    /**
+     * Refuses the next hand-off with this failure, so a test can drive the "nothing happens" path
+     * that this fake otherwise always succeeds on.
+     */
+    var nextLaunchFails: PurchaseFailure? = null
+
     /** Set by [launchPurchaseFlow], so a test can tell the screen handed off to Play. */
     var purchaseFlowLaunches: Int = 0
         private set
@@ -52,8 +58,9 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     override fun queryPurchases() = Unit
 
-    override fun launchPurchaseFlow(activity: Activity) {
+    override suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure? {
         purchaseFlowLaunches++
+        return nextLaunchFails?.also { nextLaunchFails = null }
     }
 
     override suspend fun getSubscriptionStatus(): SubscriptionStatus = _subscriptionStatus.value
