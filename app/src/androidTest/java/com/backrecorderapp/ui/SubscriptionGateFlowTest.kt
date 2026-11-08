@@ -174,10 +174,8 @@ class SubscriptionGateFlowTest {
     }
 
     /**
-     * The upgrade offer has to survive a hand-off that Play refuses. Every failure branch in
-     * `PlayBillingRepository.launchPurchaseFlow` used to return silently, so the dialog closed
-     * and the screen went back to what it was - a button that does nothing, which is exactly
-     * what an internal tester sees when the subscription is not purchasable for their account.
+     * The upgrade offer has to survive a hand-off Play refuses: the failure is reported, not
+     * silent.
      */
     @Test
     fun anUpgradePlayCannotOfferIsReportedRatherThanSilentlyDropped() {

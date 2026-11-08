@@ -47,8 +47,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
-import com.backrecorderapp.ui.util.findActivity
-import com.backrecorderapp.ui.util.messageRes
+import com.backrecorderapp.util.findActivity
+import com.backrecorderapp.util.messageRes
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -135,7 +135,7 @@ fun SettingsScreen(
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(onClick = {
-                            context.findActivity()?.let { viewModel.launchPurchaseFlow(it) }
+                            viewModel.launchPurchaseFlow(context.findActivity())
                         }) {
                             Text(stringResource(R.string.upgrade_button))
                         }
@@ -218,7 +218,7 @@ fun SettingsScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    context.findActivity()?.let { viewModel.launchPurchaseFlow(it) }
+                    viewModel.launchPurchaseFlow(context.findActivity())
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }
@@ -231,7 +231,6 @@ fun SettingsScreen(
         )
     }
 
-    // The upgrade hand-off never reached Play. Without this the dialog above just closes.
     purchaseError?.let { failure ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissPurchaseError() },
@@ -239,7 +238,7 @@ fun SettingsScreen(
             text = { Text(stringResource(failure.messageRes())) },
             confirmButton = {
                 TextButton(onClick = { viewModel.dismissPurchaseError() }) {
-                    Text(stringResource(android.R.string.ok))
+                    Text(stringResource(R.string.ok))
                 }
             }
         )

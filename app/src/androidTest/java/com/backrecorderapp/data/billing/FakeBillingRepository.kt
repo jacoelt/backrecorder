@@ -1,11 +1,8 @@
 package com.backrecorderapp.data.billing
 
 import android.app.Activity
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,9 +27,6 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     private val _statusResolved = MutableStateFlow(false)
     override val statusResolved: StateFlow<Boolean> = _statusResolved.asStateFlow()
-
-    private val _purchaseFailures = MutableSharedFlow<PurchaseFailure>(extraBufferCapacity = 1)
-    override val purchaseFailures: Flow<PurchaseFailure> = _purchaseFailures.asSharedFlow()
 
     /**
      * Makes the next hand-off fail the way Play does when the product is not purchasable, so a
@@ -64,12 +58,9 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     override fun queryPurchases() = Unit
 
-    override fun launchPurchaseFlow(activity: Activity) {
+    override suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure? {
         purchaseFlowLaunches++
-        nextLaunchFails?.let { failure ->
-            nextLaunchFails = null
-            _purchaseFailures.tryEmit(failure)
-        }
+        return nextLaunchFails?.also { nextLaunchFails = null }
     }
 
     override suspend fun getSubscriptionStatus(): SubscriptionStatus = _subscriptionStatus.value

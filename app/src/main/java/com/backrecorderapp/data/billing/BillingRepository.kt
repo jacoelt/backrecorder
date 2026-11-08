@@ -1,7 +1,6 @@
 package com.backrecorderapp.data.billing
 
 import android.app.Activity
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
 enum class SubscriptionStatus {
@@ -11,22 +10,18 @@ enum class SubscriptionStatus {
 /**
  * Why a hand-off to Play never reached the purchase sheet.
  *
- * Each of these used to be a silent `return`: the upgrade dialog closed and nothing else
- * happened, which from the outside is a dead button. They are reported so the user sees
- * something, and so a tester can tell a Play Console misconfiguration (no such product, no offer
- * on the base plan, the account not on a track that can buy) from a connection problem.
+ * Reported so the user is told something, and so a tester can tell a Play Console
+ * misconfiguration (no such product, no offer on the base plan, an account not on a track that
+ * can buy) from a connection problem.
  */
 enum class PurchaseFailure {
-    /** The billing client could not connect, or this device/account cannot buy at all. */
+    /** The billing client could not connect, or did not answer. */
     BILLING_UNAVAILABLE,
 
-    /**
-     * Play answered but has no purchasable offer for [BillingRepository.PREMIUM_SUBSCRIPTION_ID]
-     * - the usual cause of a dead Upgrade button on a fresh internal-test build.
-     */
+    /** Play has no purchasable offer for [BillingRepository.PREMIUM_SUBSCRIPTION_ID]. */
     PRODUCT_UNAVAILABLE,
 
-    /** Play refused to show the purchase sheet. */
+    /** Play refused to show the purchase sheet, or there was no live screen to show it over. */
     LAUNCH_FAILED
 }
 
@@ -58,13 +53,17 @@ interface BillingRepository {
     fun queryPurchases()
 
     /**
-     * Emitted when [launchPurchaseFlow] could not put the user in front of the Play purchase
-     * sheet. A failure is an event, not a state to clear, so this is a hot stream with no
-     * replay: a screen that is not listening at the time simply misses it.
+     * Puts the user in front of Play's purchase sheet, and answers the caller rather than
+     * broadcasting: null when the sheet was shown, otherwise why it was not.
+     *
+     * The result goes back to the one screen that asked for it. An earlier version published
+     * failures on a shared flow, which both view models collected - so a refusal in settings also
+     * latched a snackbar on the main screen that fired whenever the user next went back.
+     *
+     * Always returns, including when Play never calls back. A hand-off that hangs is the dead
+     * button this method exists to prevent.
      */
-    val purchaseFailures: Flow<PurchaseFailure>
-
-    fun launchPurchaseFlow(activity: Activity)
+    suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure?
 
     suspend fun getSubscriptionStatus(): SubscriptionStatus
 

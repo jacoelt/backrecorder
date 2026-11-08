@@ -1,4 +1,4 @@
-package com.backrecorderapp.ui.util
+package com.backrecorderapp.util
 
 import androidx.annotation.StringRes
 import com.backrecorderapp.R

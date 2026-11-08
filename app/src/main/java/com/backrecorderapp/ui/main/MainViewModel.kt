@@ -17,8 +17,8 @@ import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SaveResult
 import com.backrecorderapp.domain.SubscriptionGate
+import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.service.RecordingService
-import com.backrecorderapp.ui.util.messageRes
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,6 +45,7 @@ data class MainUiState(
     val launchSavePicker: Boolean = false,
     val showUpgradeDialog: Boolean = false,
     val upgradeReason: BlockReason? = null,
+    val purchaseError: PurchaseFailure? = null,
     val errorMessage: String? = null,
     val successMessage: String? = null,
     val recoveryMessage: String? = null
@@ -63,6 +64,7 @@ data class MainUiState(
             launchSavePicker == other.launchSavePicker &&
             showUpgradeDialog == other.showUpgradeDialog &&
             upgradeReason == other.upgradeReason &&
+            purchaseError == other.purchaseError &&
             errorMessage == other.errorMessage &&
             successMessage == other.successMessage &&
             recoveryMessage == other.recoveryMessage
@@ -80,6 +82,7 @@ data class MainUiState(
         result = 31 * result + launchSavePicker.hashCode()
         result = 31 * result + showUpgradeDialog.hashCode()
         result = 31 * result + (upgradeReason?.hashCode() ?: 0)
+        result = 31 * result + (purchaseError?.hashCode() ?: 0)
         result = 31 * result + (errorMessage?.hashCode() ?: 0)
         result = 31 * result + (successMessage?.hashCode() ?: 0)
         result = 31 * result + (recoveryMessage?.hashCode() ?: 0)
@@ -105,21 +108,6 @@ class MainViewModel @Inject constructor(
     init {
         observeSegments()
         observeRecoveryMessages()
-        observePurchaseFailures()
-    }
-
-    /**
-     * A hand-off to Play that never reaches the purchase sheet is otherwise invisible: the
-     * upgrade dialog has already closed, so the screen simply goes back to what it was.
-     */
-    private fun observePurchaseFailures() {
-        viewModelScope.launch {
-            billingRepository.purchaseFailures.collect { failure ->
-                _uiState.value = _uiState.value.copy(
-                    errorMessage = context.getString(failure.messageRes())
-                )
-            }
-        }
     }
 
     private fun observeSegments() {
@@ -339,8 +327,25 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun launchPurchaseFlow(activity: Activity) {
-        billingRepository.launchPurchaseFlow(activity)
+    /**
+     * Hands off to Play and reports back on this screen only. [activity] is null when the screen
+     * could not resolve one, which is itself a failed hand-off - saying nothing would be the dead
+     * button again.
+     */
+    fun launchPurchaseFlow(activity: Activity?) {
+        if (activity == null) {
+            _uiState.value = _uiState.value.copy(purchaseError = PurchaseFailure.LAUNCH_FAILED)
+            return
+        }
+        viewModelScope.launch {
+            billingRepository.launchPurchaseFlow(activity)?.let { failure ->
+                _uiState.value = _uiState.value.copy(purchaseError = failure)
+            }
+        }
+    }
+
+    fun dismissPurchaseError() {
+        _uiState.value = _uiState.value.copy(purchaseError = null)
     }
 
     fun dismissUpgradeDialog() {

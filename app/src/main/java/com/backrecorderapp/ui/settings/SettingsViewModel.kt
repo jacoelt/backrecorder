@@ -93,10 +93,7 @@ class SettingsViewModel @Inject constructor(
 
     private val _purchaseError = MutableStateFlow<PurchaseFailure?>(null)
 
-    /**
-     * The reason the last Upgrade tap never reached Play, or null. Without it the dialog just
-     * closes and the button looks dead.
-     */
+    /** Why the last Upgrade tap never reached Play, or null. */
     val purchaseError: StateFlow<PurchaseFailure?> = _purchaseError.asStateFlow()
 
     private val _driveError = MutableStateFlow<DriveError?>(null)
@@ -112,9 +109,6 @@ class SettingsViewModel @Inject constructor(
     val consentRequest: StateFlow<PendingIntent?> = _consentRequest.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            billingRepository.purchaseFailures.collect { _purchaseError.value = it }
-        }
         viewModelScope.launch {
             // Reflect the real grant rather than defaulting to "not connected": the grant may
             // already exist from a previous run, and this check never shows UI. It is skipped
@@ -247,8 +241,18 @@ class SettingsViewModel @Inject constructor(
         _driveError.value = null
     }
 
-    fun launchPurchaseFlow(activity: Activity) {
-        billingRepository.launchPurchaseFlow(activity)
+    /**
+     * Hands off to Play and reports back on this screen only. A null [activity] means the screen
+     * could not resolve one, which is itself a failed hand-off.
+     */
+    fun launchPurchaseFlow(activity: Activity?) {
+        if (activity == null) {
+            _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
+            return
+        }
+        viewModelScope.launch {
+            billingRepository.launchPurchaseFlow(activity)?.let { _purchaseError.value = it }
+        }
     }
 
     fun dismissPurchaseError() {
