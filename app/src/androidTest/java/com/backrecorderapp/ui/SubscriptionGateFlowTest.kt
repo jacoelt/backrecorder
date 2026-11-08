@@ -3,6 +3,9 @@ package com.backrecorderapp.ui
 import android.net.Uri
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.filterToOne
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -186,7 +189,12 @@ class SubscriptionGateFlowTest {
         composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
             .performScrollTo().performClick()
         awaitUpgradeDialog()
-        composeRule.onNodeWithText(string(R.string.upgrade_button)).performClick()
+        // The settings screen carries its own Upgrade button in the Subscription section, so
+        // once the dialog is up two nodes read "Upgrade to Premium". It is the dialog's one
+        // this test means.
+        composeRule.onAllNodesWithText(string(R.string.upgrade_button))
+            .filterToOne(hasAnyAncestor(isDialog()))
+            .performClick()
 
         composeRule.waitUntil(timeoutMillis = 10_000) {
             composeRule.onAllNodesWithText(string(R.string.upgrade_error_title))
