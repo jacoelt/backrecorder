@@ -1,8 +1,11 @@
 package com.backrecorderapp.data.billing
 
 import android.app.Activity
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,6 +30,15 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     private val _statusResolved = MutableStateFlow(false)
     override val statusResolved: StateFlow<Boolean> = _statusResolved.asStateFlow()
+
+    private val _purchaseFailures = MutableSharedFlow<PurchaseFailure>(extraBufferCapacity = 1)
+    override val purchaseFailures: Flow<PurchaseFailure> = _purchaseFailures.asSharedFlow()
+
+    /**
+     * Makes the next hand-off fail the way Play does when the product is not purchasable, so a
+     * test can drive the "nothing happens" path that this fake otherwise always succeeds on.
+     */
+    var nextLaunchFails: PurchaseFailure? = null
 
     /** Set by [launchPurchaseFlow], so a test can tell the screen handed off to Play. */
     var purchaseFlowLaunches: Int = 0
@@ -54,6 +66,10 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     override fun launchPurchaseFlow(activity: Activity) {
         purchaseFlowLaunches++
+        nextLaunchFails?.let { failure ->
+            nextLaunchFails = null
+            _purchaseFailures.tryEmit(failure)
+        }
     }
 
     override suspend fun getSubscriptionStatus(): SubscriptionStatus = _subscriptionStatus.value

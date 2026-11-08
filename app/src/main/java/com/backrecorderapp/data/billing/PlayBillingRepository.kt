@@ -2,6 +2,9 @@ package com.backrecorderapp.data.billing
 
 import android.app.Activity
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
@@ -12,17 +15,31 @@ import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val TAG = "PlayBilling"
 
 /** The real [BillingRepository], backed by the Play Billing client. */
 @Singleton
 class PlayBillingRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) : BillingRepository, PurchasesUpdatedListener {
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * `extraBufferCapacity = 1` with no replay, so [reportFailure] can emit from the billing
+     * client's own callback thread without suspending and without a scope of its own.
+     */
+    private val _purchaseFailures = MutableSharedFlow<PurchaseFailure>(extraBufferCapacity = 1)
+    override val purchaseFailures: Flow<PurchaseFailure> = _purchaseFailures.asSharedFlow()
 
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
     override val subscriptionStatus: StateFlow<SubscriptionStatus> =
@@ -93,13 +110,27 @@ class PlayBillingRepository @Inject constructor(
                 override fun onBillingSetupFinished(result: BillingResult) {
                     if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                         queryAndLaunchPurchase(activity)
+                    } else {
+                        reportFailure(
+                            PurchaseFailure.BILLING_UNAVAILABLE,
+                            "billing setup failed: ${result.responseCode} ${result.debugMessage}"
+                        )
                     }
                 }
-                override fun onBillingServiceDisconnected() {}
+
+                override fun onBillingServiceDisconnected() {
+                    // Only reached after a connection that had succeeded; the setup callback
+                    // above covers the failure this purchase was waiting on.
+                }
             })
         } else {
             queryAndLaunchPurchase(activity)
         }
+    }
+
+    private fun reportFailure(failure: PurchaseFailure, detail: String) {
+        Log.w(TAG, "Upgrade hand-off failed ($failure): $detail")
+        _purchaseFailures.tryEmit(failure)
     }
 
     private fun queryAndLaunchPurchase(activity: Activity) {
@@ -115,27 +146,63 @@ class PlayBillingRepository @Inject constructor(
 
         billingClient.queryProductDetailsAsync(params) { billingResult, productDetailsResult ->
             val productDetailsList = productDetailsResult.productDetailsList
-            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK &&
-                productDetailsList.isNotEmpty()
-            ) {
-                val productDetails = productDetailsList[0]
-                val offerToken = productDetails.subscriptionOfferDetails
-                    ?.firstOrNull()?.offerToken ?: return@queryProductDetailsAsync
+            if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
+                reportFailure(
+                    PurchaseFailure.BILLING_UNAVAILABLE,
+                    "queryProductDetails: ${billingResult.responseCode} " +
+                        billingResult.debugMessage
+                )
+                return@queryProductDetailsAsync
+            }
+            if (productDetailsList.isEmpty()) {
+                // Play has no such product for this account/build: the product id does not exist
+                // in the Play Console, is not active, or this build is not on a track the test
+                // account can buy from. Nothing the app can do, but the user must be told.
+                reportFailure(
+                    PurchaseFailure.PRODUCT_UNAVAILABLE,
+                    "no product details for ${BillingRepository.PREMIUM_SUBSCRIPTION_ID}"
+                )
+                return@queryProductDetailsAsync
+            }
 
-                val flowParams = BillingFlowParams.newBuilder()
-                    .setProductDetailsParamsList(
-                        listOf(
-                            BillingFlowParams.ProductDetailsParams.newBuilder()
-                                .setProductDetails(productDetails)
-                                .setOfferToken(offerToken)
-                                .build()
-                        )
+            val productDetails = productDetailsList[0]
+            val offerToken = productDetails.subscriptionOfferDetails?.firstOrNull()?.offerToken
+            if (offerToken == null) {
+                reportFailure(
+                    PurchaseFailure.PRODUCT_UNAVAILABLE,
+                    "no subscription offer on ${productDetails.productId}"
+                )
+                return@queryProductDetailsAsync
+            }
+
+            val flowParams = BillingFlowParams.newBuilder()
+                .setProductDetailsParamsList(
+                    listOf(
+                        BillingFlowParams.ProductDetailsParams.newBuilder()
+                            .setProductDetails(productDetails)
+                            .setOfferToken(offerToken)
+                            .build()
                     )
-                    .build()
+                )
+                .build()
 
-                billingClient.launchBillingFlow(activity, flowParams)
+            // launchBillingFlow must run on the main thread, and this callback carries no such
+            // guarantee - off it, Play answers DEVELOPER_ERROR and no sheet is ever shown.
+            runOnMainThread {
+                val launchResult = billingClient.launchBillingFlow(activity, flowParams)
+                if (launchResult.responseCode != BillingClient.BillingResponseCode.OK) {
+                    reportFailure(
+                        PurchaseFailure.LAUNCH_FAILED,
+                        "launchBillingFlow: ${launchResult.responseCode} " +
+                            launchResult.debugMessage
+                    )
+                }
             }
         }
+    }
+
+    private fun runOnMainThread(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
     }
 
     override suspend fun getSubscriptionStatus(): SubscriptionStatus = _subscriptionStatus.value

@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
@@ -90,6 +91,14 @@ class SettingsViewModel @Inject constructor(
     private val _showUpgradeDialog = MutableStateFlow(false)
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
 
+    private val _purchaseError = MutableStateFlow<PurchaseFailure?>(null)
+
+    /**
+     * The reason the last Upgrade tap never reached Play, or null. Without it the dialog just
+     * closes and the button looks dead.
+     */
+    val purchaseError: StateFlow<PurchaseFailure?> = _purchaseError.asStateFlow()
+
     private val _driveError = MutableStateFlow<DriveError?>(null)
 
     /** The Drive problem to show, or null. */
@@ -103,6 +112,9 @@ class SettingsViewModel @Inject constructor(
     val consentRequest: StateFlow<PendingIntent?> = _consentRequest.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            billingRepository.purchaseFailures.collect { _purchaseError.value = it }
+        }
         viewModelScope.launch {
             // Reflect the real grant rather than defaulting to "not connected": the grant may
             // already exist from a previous run, and this check never shows UI. It is skipped
@@ -237,6 +249,10 @@ class SettingsViewModel @Inject constructor(
 
     fun launchPurchaseFlow(activity: Activity) {
         billingRepository.launchPurchaseFlow(activity)
+    }
+
+    fun dismissPurchaseError() {
+        _purchaseError.value = null
     }
 
     fun dismissUpgradeDialog() {

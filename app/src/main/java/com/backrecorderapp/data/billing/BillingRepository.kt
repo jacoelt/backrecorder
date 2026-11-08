@@ -1,10 +1,33 @@
 package com.backrecorderapp.data.billing
 
 import android.app.Activity
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
 enum class SubscriptionStatus {
     FREE, TRIAL, ACTIVE, EXPIRED
+}
+
+/**
+ * Why a hand-off to Play never reached the purchase sheet.
+ *
+ * Each of these used to be a silent `return`: the upgrade dialog closed and nothing else
+ * happened, which from the outside is a dead button. They are reported so the user sees
+ * something, and so a tester can tell a Play Console misconfiguration (no such product, no offer
+ * on the base plan, the account not on a track that can buy) from a connection problem.
+ */
+enum class PurchaseFailure {
+    /** The billing client could not connect, or this device/account cannot buy at all. */
+    BILLING_UNAVAILABLE,
+
+    /**
+     * Play answered but has no purchasable offer for [BillingRepository.PREMIUM_SUBSCRIPTION_ID]
+     * - the usual cause of a dead Upgrade button on a fresh internal-test build.
+     */
+    PRODUCT_UNAVAILABLE,
+
+    /** Play refused to show the purchase sheet. */
+    LAUNCH_FAILED
 }
 
 /**
@@ -33,6 +56,13 @@ interface BillingRepository {
     fun connect()
 
     fun queryPurchases()
+
+    /**
+     * Emitted when [launchPurchaseFlow] could not put the user in front of the Play purchase
+     * sheet. A failure is an event, not a state to clear, so this is a hot stream with no
+     * replay: a screen that is not listening at the time simply misses it.
+     */
+    val purchaseFailures: Flow<PurchaseFailure>
 
     fun launchPurchaseFlow(activity: Activity)
 

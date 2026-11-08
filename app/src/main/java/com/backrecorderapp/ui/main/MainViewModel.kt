@@ -18,6 +18,7 @@ import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SaveResult
 import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.service.RecordingService
+import com.backrecorderapp.ui.util.messageRes
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,6 +105,21 @@ class MainViewModel @Inject constructor(
     init {
         observeSegments()
         observeRecoveryMessages()
+        observePurchaseFailures()
+    }
+
+    /**
+     * A hand-off to Play that never reaches the purchase sheet is otherwise invisible: the
+     * upgrade dialog has already closed, so the screen simply goes back to what it was.
+     */
+    private fun observePurchaseFailures() {
+        viewModelScope.launch {
+            billingRepository.purchaseFailures.collect { failure ->
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = context.getString(failure.messageRes())
+                )
+            }
+        }
     }
 
     private fun observeSegments() {

@@ -1,7 +1,6 @@
 package com.backrecorderapp.ui.main
 
 import android.Manifest
-import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -65,6 +64,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.ui.components.WaveformView
+import com.backrecorderapp.ui.util.findActivity
 import com.backrecorderapp.util.TimeUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -343,7 +343,7 @@ fun MainScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    (context as? Activity)?.let { viewModel.launchPurchaseFlow(it) }
+                    context.findActivity()?.let { viewModel.launchPurchaseFlow(it) }
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }

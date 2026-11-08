@@ -1,6 +1,5 @@
 package com.backrecorderapp.ui.settings
 
-import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +47,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.ui.util.findActivity
+import com.backrecorderapp.ui.util.messageRes
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +60,7 @@ fun SettingsScreen(
     val state by viewModel.uiState.collectAsState()
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
     val driveError by viewModel.driveError.collectAsState()
+    val purchaseError by viewModel.purchaseError.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
 
@@ -133,7 +135,7 @@ fun SettingsScreen(
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(onClick = {
-                            (context as? Activity)?.let { viewModel.launchPurchaseFlow(it) }
+                            context.findActivity()?.let { viewModel.launchPurchaseFlow(it) }
                         }) {
                             Text(stringResource(R.string.upgrade_button))
                         }
@@ -216,7 +218,7 @@ fun SettingsScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    (context as? Activity)?.let { viewModel.launchPurchaseFlow(it) }
+                    context.findActivity()?.let { viewModel.launchPurchaseFlow(it) }
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }
@@ -224,6 +226,20 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpgradeDialog() }) {
                     Text(stringResource(R.string.cancel))
+                }
+            }
+        )
+    }
+
+    // The upgrade hand-off never reached Play. Without this the dialog above just closes.
+    purchaseError?.let { failure ->
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissPurchaseError() },
+            title = { Text(stringResource(R.string.upgrade_error_title)) },
+            text = { Text(stringResource(failure.messageRes())) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissPurchaseError() }) {
+                    Text(stringResource(android.R.string.ok))
                 }
             }
         )
