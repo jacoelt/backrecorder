@@ -125,9 +125,26 @@ class PlayBillingRepositoryTest {
         }
     }
 
-    private fun premiumOffer(offerToken: String? = "offer-token"): ProductDetails {
+    /**
+     * One purchasable offer, named as the Play Console actually names them: the subscription
+     * carries a `monthly` and a `yearly` base plan, each with a free-trial offer.
+     *
+     * Only one offer is stubbed here because the hand-off can only send one - it takes whatever
+     * Play returns first. That is issue #74, along with the product id: `productId` below reads
+     * the production constant rather than a literal, so it reports `premium` until #74 corrects
+     * it to `main_subscription`, which is the mismatch that makes the real button refuse.
+     */
+    private fun premiumOffer(
+        offerToken: String? = "monthly-free-trial-token",
+        basePlanId: String = "monthly",
+        offerId: String = "monthly-free-trial"
+    ): ProductDetails {
         val offer: ProductDetails.SubscriptionOfferDetails? = offerToken?.let {
-            mockk(relaxed = true) { every { this@mockk.offerToken } returns it }
+            mockk(relaxed = true) {
+                every { this@mockk.offerToken } returns it
+                every { this@mockk.basePlanId } returns basePlanId
+                every { this@mockk.offerId } returns offerId
+            }
         }
         return mockk(relaxed = true) {
             every { productId } returns BillingRepository.PREMIUM_SUBSCRIPTION_ID
