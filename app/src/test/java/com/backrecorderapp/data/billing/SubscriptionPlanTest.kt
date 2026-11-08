@@ -52,9 +52,11 @@ class SubscriptionPlanTest {
     private fun plan(
         period: BillingPeriod,
         micros: Long,
-        currency: String = "USD"
+        currency: String = "USD",
+        offerId: String? = null
     ) = SubscriptionPlan(
         period = period,
+        offerId = offerId,
         formattedPrice = "formatted",
         priceAmountMicros = micros,
         priceCurrencyCode = currency,
@@ -226,6 +228,126 @@ class SubscriptionPlanTest {
         assertEquals(0, freeTrialDays("not-a-period"))
         assertEquals(0, freeTrialDays(""))
         assertEquals(0, freeTrialDays(null))
+    }
+
+    /**
+     * The badge is a percentage, so a saving too small to round to 1% is as meaningless as no
+     * saving at all - and "Save ~0%" is exactly the misleading badge the spec said to suppress.
+     */
+    @Test
+    fun `a saving too small to show a whole percent shows no badge`() {
+        val plans = SubscriptionPlans(
+            listOf(
+                // Twelve months = 13.08; yearly 12.99 saves 0.09, which is 0 percent truncated.
+                plan(BillingPeriod.MONTHLY, 1_090_000L),
+                plan(BillingPeriod.YEARLY, 12_990_000L)
+            )
+        )
+
+        assertNull(plans.yearlySavingsPercent)
+    }
+
+    @Test
+    fun `a yearly plan priced at exactly twelve months shows no saving`() {
+        val plans = SubscriptionPlans(
+            listOf(
+                plan(BillingPeriod.MONTHLY, 2_990_000L),
+                plan(BillingPeriod.YEARLY, 2_990_000L * 12)
+            )
+        )
+
+        assertNull(plans.yearlySavingsPercent)
+    }
+
+    // ---- Re-resolving the offer the chooser priced ----
+
+    /**
+     * A base plan can carry several eligible offers. The purchase must ask for the one the
+     * chooser's figures came from rather than re-running the preference rule over a newer list,
+     * which is the same unguaranteed ordering this file refuses to rely on elsewhere.
+     */
+    @Test
+    fun `the chosen plan's own offer wins over the preferred one`() {
+        val promo = offer(
+            "monthly",
+            token = "promo",
+            offerId = "monthly-promo",
+            phases = listOf(phase(0L, period = "P1M"), phase(2_990_000L))
+        )
+        val trial = offer(
+            "monthly",
+            token = "trial",
+            offerId = "monthly-free-trial",
+            phases = listOf(phase(0L, period = "P1W"), phase(2_990_000L))
+        )
+        val details = product(promo, trial)
+
+        val chosen = plan(BillingPeriod.MONTHLY, 2_990_000L, offerId = "monthly-free-trial")
+
+        assertEquals("trial", details.offerForChosenPlan(chosen)?.offerToken)
+    }
+
+    /** When that exact offer is gone, the preference rule is the fallback - not a refusal. */
+    @Test
+    fun `an offer that has gone falls back to the best remaining one`() {
+        val details = product(
+            offer(
+                "monthly",
+                token = "plain",
+                offerId = null,
+                phases = listOf(phase(2_990_000L))
+            )
+        )
+
+        val chosen = plan(BillingPeriod.MONTHLY, 2_990_000L, offerId = "monthly-free-trial")
+
+        assertEquals("plain", details.offerForChosenPlan(chosen)?.offerToken)
+    }
+
+    /** A base plan that has gone entirely fails closed rather than moving the user to the other. */
+    @Test
+    fun `a chosen plan whose base plan has gone resolves to nothing`() {
+        val details = product(offer("yearly"))
+
+        val chosen = plan(BillingPeriod.MONTHLY, 2_990_000L, offerId = "monthly-free-trial")
+
+        assertNull(details.offerForChosenPlan(chosen))
+    }
+
+    /** A trial offer that cannot be bought must not shadow a plain one that can. */
+    @Test
+    fun `an unbuyable trial offer does not hide a usable plain offer`() {
+        val brokenTrial = offer(
+            "monthly",
+            token = "",
+            offerId = "monthly-free-trial",
+            phases = listOf(phase(0L, period = "P1W"), phase(2_990_000L))
+        )
+        val plain = offer("monthly", token = "plain", phases = listOf(phase(2_990_000L)))
+
+        assertEquals(
+            "plain",
+            product(brokenTrial, plain).purchasableOfferFor(BillingPeriod.MONTHLY)?.offerToken
+        )
+    }
+
+    /** An intro price is not the price the user keeps paying. */
+    @Test
+    fun `an introductory price does not become the plan's price`() {
+        val details = product(
+            offer(
+                "yearly",
+                phases = listOf(
+                    phase(0L, period = "P1W"),
+                    phase(9_900_000L, formatted = "intro"),
+                    phase(29_900_000L, formatted = "recurring")
+                )
+            )
+        )
+
+        val yearly = details.toSubscriptionPlans()?.yearly
+        assertEquals("recurring", yearly?.formattedPrice)
+        assertEquals(29_900_000L, yearly?.priceAmountMicros)
     }
 
     @Test

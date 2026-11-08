@@ -54,6 +54,7 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
         listOf(
             SubscriptionPlan(
                 period = BillingPeriod.MONTHLY,
+                offerId = "monthly-free-trial",
                 formattedPrice = "$2.99",
                 priceAmountMicros = 2_990_000L,
                 priceCurrencyCode = "USD",
@@ -61,6 +62,7 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
             ),
             SubscriptionPlan(
                 period = BillingPeriod.YEARLY,
+                offerId = "yearly-free-trial",
                 formattedPrice = "$29.90",
                 priceAmountMicros = 29_900_000L,
                 priceCurrencyCode = "USD",

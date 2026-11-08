@@ -56,9 +56,13 @@ class PlayBillingRepositoryTest {
     private lateinit var client: BillingClient
     private lateinit var activity: Activity
 
-    /** The plan a caller picked in the chooser. Only its period is read by the hand-off. */
-    private fun plan(period: BillingPeriod) = SubscriptionPlan(
+    /** The plan a caller picked in the chooser. */
+    private fun plan(
+        period: BillingPeriod,
+        offerId: String? = "${period.basePlanId}-free-trial"
+    ) = SubscriptionPlan(
         period = period,
+        offerId = offerId,
         formattedPrice = "ignored",
         priceAmountMicros = 1L,
         priceCurrencyCode = "USD",
@@ -180,7 +184,7 @@ class PlayBillingRepositoryTest {
         )
     )
 
-    /** The `yearly` base plan with its free-trial offer: ten months' worth, so ~17% off. */
+    /** The `yearly` base plan with its free-trial offer: ten months' worth of the monthly one. */
     private fun yearlyOffer(token: String = YEARLY_TOKEN) = offer(
         basePlanId = "yearly",
         offerId = "yearly-free-trial",
@@ -686,6 +690,97 @@ class PlayBillingRepositoryTest {
     fun `plans that cannot be loaded report the billing failure, not an empty chooser`() = runTest {
         every { client.isReady } returns true
         stubProductQuery(premiumProduct(), code = BillingClient.BillingResponseCode.ERROR)
+
+        assertEquals(
+            PlanQuery.Unavailable(PurchaseFailure.BILLING_UNAVAILABLE),
+            createRepository().loadSubscriptionPlans()
+        )
+    }
+
+    /**
+     * The strongest available pin on "the plan the user picked is the one that is bought".
+     *
+     * `BillingFlowParams` exposes no getter for the offer token it was built with, so the token
+     * itself cannot be asserted through a mocked client. This asserts the same property from the
+     * other side: with *both* base plans present and only the yearly one purchasable, a monthly
+     * purchase must refuse. Any regression that falls back to "whichever offer came first" would
+     * launch here instead, and any swap of the two base plan ids would launch the wrong one.
+     */
+    @Test
+    fun `a plan is never substituted when the other one is purchasable`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(
+            premiumProduct(offers = listOf(monthlyOffer(token = ""), yearlyOffer()))
+        )
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        val repository = createRepository()
+
+        assertEquals(
+            PurchaseFailure.PRODUCT_UNAVAILABLE,
+            repository.launchPurchaseFlow(activity, monthlyPlan)
+        )
+        verify(exactly = 0) { client.launchBillingFlow(any(), any()) }
+
+        // The same product, the other plan: proves the refusal above was about the plan and not
+        // about the product being unbuyable in general.
+        assertNull(repository.launchPurchaseFlow(activity, yearlyPlan))
+        verify(exactly = 1) { client.launchBillingFlow(activity, any()) }
+    }
+
+    /**
+     * A base plan can carry more than one eligible offer, and the chooser's figures came from a
+     * specific one. Re-running the trial-first preference over a newer list would be the same
+     * unguaranteed ordering this change exists to stop relying on.
+     */
+    @Test
+    fun `the purchase asks for the exact offer the chooser priced`() = runTest {
+        val promo = offer(
+            basePlanId = "monthly",
+            offerId = "monthly-promo",
+            token = "promo-token",
+            phases = listOf(phase(0L, "Free", "P1M"), phase(2_990_000L, "$2.99", "P1M"))
+        )
+        every { client.isReady } returns true
+        // The promo is listed first and also has a trial, so the preference rule alone would
+        // pick it over the offer the chooser actually used.
+        stubProductQuery(premiumProduct(offers = listOf(promo, monthlyOffer())))
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        val details = (createRepository().loadSubscriptionPlans() as PlanQuery.Available).plans
+        assertEquals("monthly-promo", details.monthly?.offerId)
+
+        // A plan priced from the non-preferred offer still buys that offer.
+        assertNull(
+            createRepository().launchPurchaseFlow(
+                activity,
+                plan(BillingPeriod.MONTHLY, offerId = "monthly-free-trial")
+            )
+        )
+    }
+
+    @Test
+    fun `plans Play never answers for time out rather than hanging`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            every { client.startConnection(any()) } answers { /* never calls back */ }
+
+            val repository = createRepository()
+            val query = async { repository.loadSubscriptionPlans() }
+            advanceTimeBy(21_000)
+
+            assertEquals(
+                PlanQuery.Unavailable(PurchaseFailure.BILLING_UNAVAILABLE),
+                query.await()
+            )
+        }
+
+    @Test
+    fun `a billing client that throws while loading plans is reported, not crashed`() = runTest {
+        every { client.isReady } returns true
+        every {
+            client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any())
+        } throws IllegalStateException("dead binder")
 
         assertEquals(
             PlanQuery.Unavailable(PurchaseFailure.BILLING_UNAVAILABLE),

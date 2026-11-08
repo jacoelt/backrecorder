@@ -83,6 +83,7 @@ class MainViewModelPurchaseTest {
     /** A plan as the chooser would have handed it over. */
     private val monthlyPlan = SubscriptionPlan(
         period = BillingPeriod.MONTHLY,
+        offerId = "monthly-free-trial",
         formattedPrice = "$2.99",
         priceAmountMicros = 2_990_000L,
         priceCurrencyCode = "USD",

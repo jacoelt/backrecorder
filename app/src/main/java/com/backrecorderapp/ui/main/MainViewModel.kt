@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
@@ -110,6 +111,12 @@ class MainViewModel @Inject constructor(
     private val billingRepository: BillingRepository,
     private val subscriptionGate: SubscriptionGate
 ) : ViewModel() {
+
+    /** The plan load in flight, so leaving the screen can drop it. See [cancelPendingPlanLoad]. */
+    private var planLoadJob: Job? = null
+
+    /** True from the moment a purchase is handed to Play until it answers. */
+    private var purchaseInFlight = false
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -337,25 +344,52 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Asks Play what the user can buy and opens the chooser, reporting on this screen only.
-     *
-     * A refusal here is shown exactly like a refused hand-off: the plans cannot be loaded for the
-     * same reasons the sheet cannot be opened, and the user is owed the same sentence either way.
+     * Loads the plans and opens the chooser. A refusal is reported like a refused hand-off, on
+     * this screen only.
      */
     fun showPlanChooser() {
-        if (_uiState.value.plansLoading) return
+        // A purchase already on its way to Play would otherwise be joined by a second chooser
+        // opening behind Play's sheet.
+        if (_uiState.value.plansLoading || purchaseInFlight) return
         _uiState.value = _uiState.value.copy(plansLoading = true)
-        viewModelScope.launch {
+        planLoadJob = viewModelScope.launch {
             try {
                 _uiState.value = when (val query = billingRepository.loadSubscriptionPlans()) {
-                    is PlanQuery.Available -> _uiState.value.copy(subscriptionPlans = query.plans)
-                    is PlanQuery.Unavailable -> _uiState.value.copy(purchaseError = query.failure)
+                    // The upgrade dialog stays up until there is something to replace it with,
+                    // so the tap is never answered by an empty screen.
+                    is PlanQuery.Available -> _uiState.value.copy(
+                        showUpgradeDialog = false,
+                        upgradeReason = null,
+                        subscriptionPlans = query.plans
+                    )
+                    is PlanQuery.Unavailable -> _uiState.value.copy(
+                        showUpgradeDialog = false,
+                        upgradeReason = null,
+                        purchaseError = query.failure
+                    )
                 }
             } finally {
                 // Cleared whatever happened: a flag left set would refuse every later tap, which
                 // is the dead button again.
                 _uiState.value = _uiState.value.copy(plansLoading = false)
             }
+        }
+    }
+
+    /**
+     * Drops a plan load the user has navigated away from.
+     *
+     * This view model outlives the screen - settings sits on top of it in the back stack - so a
+     * load left running would land its chooser, or its error, in state that is rendered the next
+     * time the user comes back: a dialog appearing with no tap behind it, minutes later. That
+     * cross-screen latching is the defect #72 removed, and it must not return through the
+     * chooser. An open chooser is deliberately left alone, so a rotation does not close it.
+     */
+    fun cancelPendingPlanLoad() {
+        planLoadJob?.cancel()
+        planLoadJob = null
+        if (_uiState.value.plansLoading) {
+            _uiState.value = _uiState.value.copy(plansLoading = false)
         }
     }
 
@@ -374,9 +408,14 @@ class MainViewModel @Inject constructor(
             _uiState.value = _uiState.value.copy(purchaseError = PurchaseFailure.LAUNCH_FAILED)
             return
         }
+        purchaseInFlight = true
         viewModelScope.launch {
-            billingRepository.launchPurchaseFlow(activity, plan)?.let { failure ->
-                _uiState.value = _uiState.value.copy(purchaseError = failure)
+            try {
+                billingRepository.launchPurchaseFlow(activity, plan)?.let { failure ->
+                    _uiState.value = _uiState.value.copy(purchaseError = failure)
+                }
+            } finally {
+                purchaseInFlight = false
             }
         }
     }

@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -141,6 +144,14 @@ fun SettingsScreen(
                             onClick = { viewModel.showPlanChooser() },
                             enabled = !plansLoading
                         ) {
+                            if (plansLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
                             Text(stringResource(R.string.upgrade_button))
                         }
                     }
@@ -220,10 +231,20 @@ fun SettingsScreen(
             title = { Text(stringResource(R.string.upgrade_cloud_title)) },
             text = { Text(stringResource(R.string.upgrade_cloud_message)) },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.dismissUpgradeDialog()
-                    viewModel.showPlanChooser()
-                }) {
+                // The dialog stays up, with the button busy, until the plans arrive: asking Play
+                // can take seconds, and closing onto a blank screen is the dead button again.
+                Button(
+                    onClick = { viewModel.showPlanChooser() },
+                    enabled = !plansLoading
+                ) {
+                    if (plansLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
                     Text(stringResource(R.string.upgrade_button))
                 }
             },
@@ -235,8 +256,6 @@ fun SettingsScreen(
         )
     }
 
-    // The plan is chosen here rather than guessed: the subscription has a monthly and a yearly
-    // base plan, and only one offer token can be sent to Play.
     subscriptionPlans?.let { plans ->
         PlanChooserDialog(
             plans = plans,

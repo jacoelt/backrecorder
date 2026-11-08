@@ -120,6 +120,8 @@ class SubscriptionGateFlowTest {
 
     private fun string(id: Int) = composeRule.activity.getString(id)
 
+    private fun string(id: Int, vararg args: Any) = composeRule.activity.getString(id, *args)
+
     private fun openSettings() {
         composeRule.waitUntil(timeoutMillis = 30_000) {
             composeRule.onAllNodesWithContentDescription("Settings")
@@ -241,15 +243,45 @@ class SubscriptionGateFlowTest {
         awaitPlanChooser()
 
         // Play's own prices, and the saving computed from them rather than written into the app.
-        composeRule.onNodeWithText("$2.99 per month").assertIsDisplayed()
-        composeRule.onNodeWithText("$29.90 per year").assertIsDisplayed()
-        composeRule.onNodeWithText("Save ~16%").assertIsDisplayed()
+        // Built from the resources and the fake's own figures, so the assertions do not depend
+        // on the device's locale.
+        val monthly = billing.plans.monthly!!
+        val yearly = billing.plans.yearly!!
+        composeRule.onNodeWithText(
+            string(R.string.plan_price_per_month, monthly.formattedPrice)
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            string(R.string.plan_price_per_year, yearly.formattedPrice)
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            string(R.string.plan_savings_badge, billing.plans.yearlySavingsPercent!!)
+        ).assertIsDisplayed()
 
         composeRule.onNodeWithText(string(R.string.plan_period_monthly)).performClick()
         composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
 
         composeRule.waitUntil(timeoutMillis = 10_000) { billing.purchaseFlowLaunches == 1 }
         assertEquals(BillingPeriod.MONTHLY, billing.lastPurchasedPlan?.period)
+    }
+
+    /**
+     * The other half of the same guarantee: leaving the selection alone buys the default, and
+     * the default is the one the chooser visibly marks as the better value.
+     */
+    @Test
+    fun theChooserDefaultsToTheYearlyPlanItRecommends() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        tapUpgradeInDialog()
+        awaitPlanChooser()
+        composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) { billing.purchaseFlowLaunches == 1 }
+        assertEquals(BillingPeriod.YEARLY, billing.lastPurchasedPlan?.period)
     }
 
     /** Plans Play will not name cannot be chosen between, so the refusal is shown instead. */

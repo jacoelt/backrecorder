@@ -17,7 +17,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,12 +48,18 @@ fun PlanChooserDialog(
 ) {
     // Yearly is the better value when there is a saving to show, so it starts selected; with one
     // plan there is nothing to choose and it is simply the one.
-    var selected by remember(plans) {
-        mutableStateOf(
-            if (plans.yearlySavingsPercent != null) plans.yearly ?: plans.plans.first()
-            else plans.plans.first()
-        )
+    val default = if (plans.yearlySavingsPercent != null) {
+        plans.yearly ?: plans.plans.first()
+    } else {
+        plans.plans.first()
     }
+
+    // rememberSaveable, and the period rather than the plan: orientation cannot be restricted at
+    // this target on large screens, so a rotation here would otherwise silently put the selection
+    // back to the default - and someone who picked monthly, rotated, then tapped Continue would
+    // be sent to Play for a *year*. That is the exact harm this dialog exists to prevent.
+    var selectedPeriod by rememberSaveable(plans) { mutableStateOf(default.period) }
+    val selected = plans.plans.firstOrNull { it.period == selectedPeriod } ?: default
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -68,8 +74,8 @@ fun PlanChooserDialog(
                         plan = plan,
                         savingsPercent = plans.yearlySavingsPercent
                             ?.takeIf { plan.period == BillingPeriod.YEARLY },
-                        selected = plan == selected,
-                        onSelect = { selected = plan }
+                        selected = plan.period == selected.period,
+                        onSelect = { selectedPeriod = plan.period }
                     )
                 }
             }

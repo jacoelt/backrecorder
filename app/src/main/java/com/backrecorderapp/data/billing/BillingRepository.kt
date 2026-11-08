@@ -65,12 +65,7 @@ interface BillingRepository {
 
     /**
      * Asks Play what this account can buy, so the chooser can show real prices before any sheet
-     * opens.
-     *
-     * Separate from [launchPurchaseFlow] because the plan is the user's choice: the subscription
-     * carries a monthly and a yearly base plan, and an earlier version sent whichever offer Play
-     * happened to return first - an ordering Play does not contract, so one tap could have
-     * committed someone to a year they never picked.
+     * opens. Separate from [launchPurchaseFlow] because the plan is the user's to choose.
      */
     suspend fun loadSubscriptionPlans(): PlanQuery
 

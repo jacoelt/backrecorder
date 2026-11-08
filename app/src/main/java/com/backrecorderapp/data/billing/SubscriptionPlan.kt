@@ -31,6 +31,12 @@ enum class BillingPeriod(val basePlanId: String) {
  */
 data class SubscriptionPlan(
     val period: BillingPeriod,
+    /**
+     * The offer this plan's figures came from, so the purchase can ask for that same offer again
+     * rather than re-running the preference rule over a newer list. Null when the base plan's own
+     * offer (which has no id) is the one that was chosen.
+     */
+    val offerId: String?,
     val formattedPrice: String,
     val priceAmountMicros: Long,
     val priceCurrencyCode: String,
@@ -71,52 +77,83 @@ data class SubscriptionPlans(val plans: List<SubscriptionPlan>) {
             if (twelveMonths <= 0L) return null
             val saved = twelveMonths - perYear.priceAmountMicros
             if (saved <= 0L) return null
-            return ((saved * 100) / twelveMonths).toInt()
+            // The percent, not the micros, is what the badge shows: a real but tiny saving
+            // truncates to 0 and would render "Save ~0%", which is the meaningless badge this
+            // whole property exists to suppress.
+            return ((saved * 100) / twelveMonths).toInt().takeIf { it > 0 }
         }
 }
 
-/** What asking Play for the plans produced. */
 sealed interface PlanQuery {
     data class Available(val plans: SubscriptionPlans) : PlanQuery
     data class Unavailable(val failure: PurchaseFailure) : PlanQuery
 }
 
-/** The phases of an offer, cheapest-first as Play orders them. */
+/**
+ * The phases of an offer, in the order Play applies them over time.
+ *
+ * Unlike the *offer* list, this order is meaningful and documented - a trial or intro phase comes
+ * before the phase it discounts - which is what makes "the last charged phase" the steady-state
+ * price below.
+ */
 private fun ProductDetails.SubscriptionOfferDetails.phases():
     List<ProductDetails.PricingPhase> = pricingPhases?.pricingPhaseList.orEmpty()
 
 /**
- * The phase the user actually keeps paying, which is the last charged one - an offer with a trial
- * puts a free phase in front of it.
+ * The phase the user actually keeps paying: the last charged one, so a trial (free) or an
+ * introductory (cheaper) phase in front of it is not mistaken for the real price.
  */
 internal fun ProductDetails.SubscriptionOfferDetails.recurringPhase(): ProductDetails.PricingPhase? =
     phases().lastOrNull { it.priceAmountMicros > 0L }
 
-/** The free phase of an offer, if it has one. */
 internal fun ProductDetails.SubscriptionOfferDetails.freeTrialPhase(): ProductDetails.PricingPhase? =
     phases().firstOrNull { it.priceAmountMicros == 0L }
 
 /**
- * The offer to buy [period] on, or null when this account has none.
+ * Every offer this account could buy [period] on.
  *
  * Offers are matched by `basePlanId` and never by position: Play does not contract the order of
  * `subscriptionOfferDetails`, so indexing into it - which is what the hand-off used to do - picks
  * an arbitrary plan, and could commit someone to a year they never chose.
  *
  * `queryProductDetailsAsync` returns only the offers this account is eligible for, so no further
- * eligibility check is needed; within the chosen plan the trial offer is preferred when there is
- * one. An offer with no charged phase is skipped - there would be no price to show.
+ * eligibility check is needed. An offer with no token cannot be bought, and one with no charged
+ * phase has no price to show, so neither is a candidate.
  */
-internal fun ProductDetails.purchasableOfferFor(
+private fun ProductDetails.purchasableOffersFor(
     period: BillingPeriod
-): ProductDetails.SubscriptionOfferDetails? {
-    val forPlan = subscriptionOfferDetails.orEmpty().filter { offer ->
+): List<ProductDetails.SubscriptionOfferDetails> =
+    subscriptionOfferDetails.orEmpty().filter { offer ->
         offer.basePlanId == period.basePlanId &&
             !offer.offerToken.isNullOrEmpty() &&
             offer.recurringPhase() != null
     }
-    return forPlan.firstOrNull { it.freeTrialPhase() != null } ?: forPlan.firstOrNull()
+
+/** The best offer to show for [period]: the one with a trial, where this account has one. */
+internal fun ProductDetails.purchasableOfferFor(
+    period: BillingPeriod
+): ProductDetails.SubscriptionOfferDetails? = purchasableOffersFor(period).bestOffer()
+
+/**
+ * The offer to actually buy [plan] on, re-resolved against a newer product query.
+ *
+ * It asks for the same `offerId` the chooser's figures came from, rather than re-running the
+ * preference rule: a base plan can carry more than one eligible offer, and "whichever of them
+ * comes first" is the same unguaranteed ordering this file refuses to rely on anywhere else. The
+ * preference rule is only the fallback, for when that exact offer is gone by the time the user
+ * has chosen - and if the whole base plan has gone, this is null and the purchase fails closed
+ * rather than quietly moving the user to the other plan.
+ */
+internal fun ProductDetails.offerForChosenPlan(
+    plan: SubscriptionPlan
+): ProductDetails.SubscriptionOfferDetails? {
+    val forPlan = purchasableOffersFor(plan.period)
+    return forPlan.firstOrNull { it.offerId == plan.offerId } ?: forPlan.bestOffer()
 }
+
+private fun List<ProductDetails.SubscriptionOfferDetails>.bestOffer():
+    ProductDetails.SubscriptionOfferDetails? =
+    firstOrNull { it.freeTrialPhase() != null } ?: firstOrNull()
 
 /** The plans this account can buy, or null when there is nothing purchasable at all. */
 internal fun ProductDetails.toSubscriptionPlans(): SubscriptionPlans? {
@@ -125,6 +162,7 @@ internal fun ProductDetails.toSubscriptionPlans(): SubscriptionPlans? {
         val recurring = offer.recurringPhase() ?: return@mapNotNull null
         SubscriptionPlan(
             period = period,
+            offerId = offer.offerId,
             formattedPrice = recurring.formattedPrice,
             priceAmountMicros = recurring.priceAmountMicros,
             priceCurrencyCode = recurring.priceCurrencyCode,

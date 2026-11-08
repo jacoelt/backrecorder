@@ -94,6 +94,9 @@ class SettingsViewModel @Inject constructor(
     private val _showUpgradeDialog = MutableStateFlow(false)
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
 
+    /** True from the moment a purchase is handed to Play until it answers. */
+    private var purchaseInFlight = false
+
     private val _plansLoading = MutableStateFlow(false)
 
     /** True while Play is being asked for the plans, so the Upgrade button can show progress. */
@@ -255,13 +258,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Asks Play what the user can buy and opens the chooser, reporting on this screen only.
-     *
-     * A refusal is shown exactly like a refused hand-off: the plans cannot be loaded for the same
-     * reasons the sheet cannot be opened, and the user is owed the same sentence either way.
+     * Loads the plans and opens the chooser. A refusal is reported like a refused hand-off, on
+     * this screen only.
      */
     fun showPlanChooser() {
-        if (_plansLoading.value) return
+        // A purchase already on its way to Play would otherwise be joined by a second chooser
+        // opening behind Play's sheet.
+        if (_plansLoading.value || purchaseInFlight) return
         _plansLoading.value = true
         viewModelScope.launch {
             try {
@@ -269,6 +272,9 @@ class SettingsViewModel @Inject constructor(
                     is PlanQuery.Available -> _subscriptionPlans.value = query.plans
                     is PlanQuery.Unavailable -> _purchaseError.value = query.failure
                 }
+                // Closed only once there is something to replace it with, so the tap is never
+                // answered by an empty screen.
+                _showUpgradeDialog.value = false
             } finally {
                 _plansLoading.value = false
             }
@@ -289,8 +295,14 @@ class SettingsViewModel @Inject constructor(
             _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
             return
         }
+        purchaseInFlight = true
         viewModelScope.launch {
-            billingRepository.launchPurchaseFlow(activity, plan)?.let { _purchaseError.value = it }
+            try {
+                billingRepository.launchPurchaseFlow(activity, plan)
+                    ?.let { _purchaseError.value = it }
+            } finally {
+                purchaseInFlight = false
+            }
         }
     }
 

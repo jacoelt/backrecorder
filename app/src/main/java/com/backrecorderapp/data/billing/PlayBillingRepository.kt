@@ -250,11 +250,14 @@ class PlayBillingRepository @Inject constructor(
         }
     }
 
-    override suspend fun loadSubscriptionPlans(): PlanQuery = purchaseMutex.withLock {
+    override suspend fun loadSubscriptionPlans(): PlanQuery =
         try {
-            // Held under the same lock as the hand-off: both connect, and two concurrent
-            // startConnection calls on the one client are answered with an error.
-            withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePlans() }
+            // The timeout wraps the lock as well as the work. Both screens are alive at once, so
+            // a load can queue behind another hand-off, and a lock wait outside the budget would
+            // add a second full timeout to a user who is staring at a spinner. Bounding the whole
+            // thing is safe *here* precisely because nothing user-visible has been launched -
+            // which is why launchPurchaseFlow below must not do the same.
+            withTimeoutOrNull(PREPARE_TIMEOUT_MS) { purchaseMutex.withLock { preparePlans() } }
                 ?: PlanQuery.Unavailable(
                     reportFailure(
                         PurchaseFailure.BILLING_UNAVAILABLE,
@@ -270,7 +273,6 @@ class PlayBillingRepository @Inject constructor(
                 reportFailure(PurchaseFailure.BILLING_UNAVAILABLE, "billing threw: $e")
             )
         }
-    }
 
     private suspend fun preparePlans(): PlanQuery {
         val details = when (val query = connectAndQueryOffer()) {
@@ -329,9 +331,10 @@ class PlayBillingRepository @Inject constructor(
      * chooser.
      *
      * The token and the [ProductDetails] handed to `launchBillingFlow` have to come from the same
-     * response, and the chooser's details may be minutes old by the time the user has chosen. The
-     * base plan the user picked is what is carried across; the offer on it is resolved here, the
-     * same way the chooser resolved it, so the sheet opens on the plan they chose.
+     * response, and the chooser's may be minutes old by the time the user has chosen - a stale
+     * pair is refused by Play, which is the dead button again. So what is carried across is the
+     * *identity* of what the user picked (its base plan and offer id, see [offerForChosenPlan]),
+     * not Play's own handles to it.
      */
     private suspend fun preparePurchase(plan: SubscriptionPlan): Prepared {
         val details = when (val query = connectAndQueryOffer()) {
@@ -339,7 +342,7 @@ class PlayBillingRepository @Inject constructor(
             is OfferQuery.Found -> query.details
         }
 
-        val offer = details.purchasableOfferFor(plan.period)
+        val offer = details.offerForChosenPlan(plan)
             ?: return Prepared.Unavailable(
                 reportFailure(
                     PurchaseFailure.PRODUCT_UNAVAILABLE,

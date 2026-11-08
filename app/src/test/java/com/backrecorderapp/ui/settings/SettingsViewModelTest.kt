@@ -290,6 +290,7 @@ class SettingsViewModelTest {
     /** A plan as the chooser would have handed it over. */
     private val monthlyPlan = SubscriptionPlan(
         period = BillingPeriod.MONTHLY,
+        offerId = "monthly-free-trial",
         formattedPrice = "$2.99",
         priceAmountMicros = 2_990_000L,
         priceCurrencyCode = "USD",
@@ -349,6 +350,34 @@ class SettingsViewModelTest {
 
         assertEquals(plans, viewModel.subscriptionPlans.value)
         assertEquals(false, viewModel.plansLoading.value)
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
+    }
+
+    @Test
+    fun `buying from settings closes the chooser and sends the plan that was picked`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns null
+
+        val viewModel = createViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+
+        assertNull(viewModel.subscriptionPlans.value)
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
+    }
+
+    @Test
+    fun `dismissing the chooser in settings buys nothing`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+
+        val viewModel = createViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.dismissPlanChooser()
+
+        assertNull(viewModel.subscriptionPlans.value)
         coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
     }
 

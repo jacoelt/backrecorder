@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -48,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,6 +79,13 @@ fun MainScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+
+    // This view model outlives the screen - settings sits on top of it in the back stack - so a
+    // plan load left running would land its chooser, or its error, in state that is rendered when
+    // the user next comes back: a dialog with no tap behind it, minutes later.
+    DisposableEffect(Unit) {
+        onDispose { viewModel.cancelPendingPlanLoad() }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
 
@@ -343,10 +352,20 @@ fun MainScreen(
             title = { Text(title) },
             text = { Text(message) },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.dismissUpgradeDialog()
-                    viewModel.showPlanChooser()
-                }) {
+                // The dialog stays up, with the button busy, until the plans arrive: asking Play
+                // can take seconds, and closing onto a blank screen is the dead button again.
+                Button(
+                    onClick = { viewModel.showPlanChooser() },
+                    enabled = !state.plansLoading
+                ) {
+                    if (state.plansLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                    }
                     Text(stringResource(R.string.upgrade_button))
                 }
             },
@@ -358,8 +377,6 @@ fun MainScreen(
         )
     }
 
-    // The plan is chosen here rather than guessed: the subscription has a monthly and a yearly
-    // base plan, and only one offer token can be sent to Play.
     state.subscriptionPlans?.let { plans ->
         PlanChooserDialog(
             plans = plans,
