@@ -49,10 +49,11 @@ fun BackRecorderTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            // No window.statusBarColor here. Edge-to-edge is enforced from API 36 (the
-            // windowOptOutEdgeToEdgeEnforcement attribute is ignored), the system bars are
-            // drawn behind the app, and Window.setStatusBarColor is deprecated and a no-op
-            // once the app targets 35+. Only the icon tint is still ours to set.
+            // No window.statusBarColor here. Edge-to-edge is enforced from API 36, where the
+            // setter is a deprecated no-op - but below API 35 it is still honoured, and this
+            // write was repainting the bar opaque over the transparent one enableEdgeToEdge()
+            // sets in MainActivity. Removing it is what makes 26-34 match 35+, not a no-op.
+            // Only the icon tint is still ours.
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
         }
     }

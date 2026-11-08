@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -119,10 +121,9 @@ fun MainScreen(
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
-        // Edge-to-edge is enforced from API 36, and orientation restrictions are ignored on
-        // sw600dp displays, so landscape on a cutout device is no longer avoidable. The
-        // Scaffold default covers only the system bars; safeDrawing also keeps content clear
-        // of the display cutout.
+        // Scaffold.s default covers the system bars only; safeDrawing also clears the display
+        // cutout, which landscape reaches now that API 36 ignores orientation restrictions on
+        // sw600dp displays.
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
@@ -132,6 +133,10 @@ fun MainScreen(
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
+                // TopAppBarDefaults.windowInsets is system-bars-only, so the bar would still
+                // sit under a landscape cutout while the body above clears it.
+                windowInsets = WindowInsets.safeDrawing
+                    .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
                 scrollBehavior = scrollBehavior
             )
         },

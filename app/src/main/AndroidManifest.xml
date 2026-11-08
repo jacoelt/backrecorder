@@ -20,12 +20,9 @@
         android:theme="@style/Theme.BackRecorder"
         tools:targetApi="36">
 
-        <!-- Targeting API 36 means the system stops calling onBackPressed() and stops
-             dispatching KEYCODE_BACK; back is delivered through OnBackInvokedCallback,
-             which is what AndroidX's OnBackPressedDispatcher - and so Navigation Compose -
-             registers when this flag is on. It already defaults to true at targetSdk 35+,
-             but that default is the only thing keeping back navigation working here, so it
-             is declared rather than assumed. -->
+        <!-- At targetSdk 36 back arrives only through OnBackInvokedCallback, which AndroidX's
+             OnBackPressedDispatcher registers only with this flag on. It defaults to true at
+             35+, but back navigation depends on it, so it is declared rather than assumed. -->
         <activity
             android:name=".MainActivity"
             android:enableOnBackInvokedCallback="true"
