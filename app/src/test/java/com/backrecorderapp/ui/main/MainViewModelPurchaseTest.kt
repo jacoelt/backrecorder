@@ -375,6 +375,30 @@ class MainViewModelPurchaseTest {
         assertEquals(false, viewModel.uiState.value.purchaseInFlight)
     }
 
+    /**
+     * Dismissing the offer must not reach into a purchase it did not start. The gate can raise
+     * the offer again while a hand-off is still running, and Cancel there used to throw away
+     * that purchase's answer and free the guard that stops a second one.
+     */
+    @Test
+    fun `dismissing the offer leaves a purchase in flight alone`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+        viewModel.dismissUpgradeDialog()
+
+        assertEquals("the hand-off is still running", true, viewModel.uiState.value.purchaseInFlight)
+
+        parked.complete(PurchaseFailure.PRODUCT_UNAVAILABLE)
+        advanceUntilIdle()
+
+        assertEquals(PurchaseFailure.PRODUCT_UNAVAILABLE, viewModel.uiState.value.purchaseError)
+        assertEquals(false, viewModel.uiState.value.purchaseInFlight)
+    }
+
     /** Two Continue taps must not start two hand-offs. */
     @Test
     fun `a double tap on Continue hands off once`() = runTest {

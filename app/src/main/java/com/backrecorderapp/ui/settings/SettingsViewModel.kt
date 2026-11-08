@@ -95,12 +95,16 @@ class SettingsViewModel @Inject constructor(
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
 
     /**
-     * Bumped whenever the user abandons an upgrade they started. See
-     * [com.backrecorderapp.ui.main.MainViewModel] for why an answer in flight is discarded
-     * rather than cancelled: the call shares one Play connection attempt with every other
-     * caller, and a cancelled caller's cleanup answers all of them with a refusal.
+     * Bumped whenever the user abandons something they started, counted separately for the plan
+     * load and the hand-off. See [com.backrecorderapp.ui.main.MainViewModel] for both halves of
+     * the reasoning: why an answer in flight is discarded rather than cancelled (the call shares
+     * one Play connection attempt with every other caller, and a cancelled caller's cleanup
+     * answers all of them with a refusal), and why dismissing the offer must not touch a
+     * purchase that is already on its way.
      */
-    private var upgradeGeneration = 0
+    private var planLoadGeneration = 0
+
+    private var purchaseGeneration = 0
 
     private val _purchaseInFlight = MutableStateFlow(false)
 
@@ -281,12 +285,12 @@ class SettingsViewModel @Inject constructor(
         // A purchase already on its way to Play would otherwise be joined by a second chooser
         // opening behind Play's sheet.
         if (_plansLoading.value || _purchaseInFlight.value) return
-        val issued = upgradeGeneration
+        val issued = planLoadGeneration
         _plansLoading.value = true
         viewModelScope.launch {
             try {
                 val query = billingRepository.loadSubscriptionPlans()
-                if (issued != upgradeGeneration) return@launch
+                if (issued != planLoadGeneration) return@launch
                 when (query) {
                     is PlanQuery.Available -> _subscriptionPlans.value = query.plans
                     is PlanQuery.Unavailable -> _purchaseError.value = query.failure
@@ -295,7 +299,7 @@ class SettingsViewModel @Inject constructor(
                 // answered by an empty screen.
                 _showUpgradeDialog.value = false
             } finally {
-                if (issued == upgradeGeneration) _plansLoading.value = false
+                if (issued == planLoadGeneration) _plansLoading.value = false
             }
         }
     }
@@ -318,27 +322,27 @@ class SettingsViewModel @Inject constructor(
             _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
             return
         }
-        val issued = upgradeGeneration
+        val issued = purchaseGeneration
         _purchaseInFlight.value = true
         viewModelScope.launch {
             try {
                 val failure = billingRepository.launchPurchaseFlow(activity, plan)
-                if (issued != upgradeGeneration) return@launch
+                if (issued != purchaseGeneration) return@launch
                 failure?.let { _purchaseError.value = it }
             } finally {
-                if (issued == upgradeGeneration) _purchaseInFlight.value = false
+                if (issued == purchaseGeneration) _purchaseInFlight.value = false
             }
         }
     }
 
     /**
-     * Stops listening to an upgrade the user has walked away from, so its chooser or its error
-     * does not arrive with no tap behind it. See [upgradeGeneration].
+     * Stops listening to a plan load the user has walked away from, so its chooser or its error
+     * does not arrive with no tap behind it. A purchase in flight is deliberately untouched: it
+     * is not what the dismissed offer started. See [planLoadGeneration].
      */
-    private fun abandonPendingUpgrade() {
-        upgradeGeneration++
+    private fun abandonPendingPlanLoad() {
+        planLoadGeneration++
         _plansLoading.value = false
-        _purchaseInFlight.value = false
     }
 
     /**
@@ -349,7 +353,11 @@ class SettingsViewModel @Inject constructor(
      * to be rendered again on the way back.
      */
     fun onScreenLeft() {
-        abandonPendingUpgrade()
+        abandonPendingPlanLoad()
+        // Leaving abandons the purchase too, unlike dismissing the offer: its answer would
+        // otherwise raise a failure dialog over this screen on the way back.
+        purchaseGeneration++
+        _purchaseInFlight.value = false
         _subscriptionPlans.value = null
         _purchaseError.value = null
     }
@@ -359,9 +367,10 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun dismissUpgradeDialog() {
-        // Whatever that dialog's Upgrade button started goes with it: a load left running would
-        // raise the chooser, or an error, seconds after the user dismissed the offer.
-        abandonPendingUpgrade()
+        // The load that dialog's Upgrade button started goes with it: an answer still on its way
+        // would raise the chooser, or an error, seconds after the user dismissed the offer. A
+        // purchase already handed to Play is left alone - this dialog did not start it.
+        abandonPendingPlanLoad()
         _showUpgradeDialog.value = false
     }
 }
