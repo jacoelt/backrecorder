@@ -17,7 +17,10 @@ import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SaveResult
 import com.backrecorderapp.domain.SubscriptionGate
+import com.backrecorderapp.data.billing.PlanQuery
 import com.backrecorderapp.data.billing.PurchaseFailure
+import com.backrecorderapp.data.billing.SubscriptionPlan
+import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.service.RecordingService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -45,6 +48,8 @@ data class MainUiState(
     val launchSavePicker: Boolean = false,
     val showUpgradeDialog: Boolean = false,
     val upgradeReason: BlockReason? = null,
+    val plansLoading: Boolean = false,
+    val subscriptionPlans: SubscriptionPlans? = null,
     val purchaseError: PurchaseFailure? = null,
     val errorMessage: String? = null,
     val successMessage: String? = null,
@@ -64,6 +69,8 @@ data class MainUiState(
             launchSavePicker == other.launchSavePicker &&
             showUpgradeDialog == other.showUpgradeDialog &&
             upgradeReason == other.upgradeReason &&
+            plansLoading == other.plansLoading &&
+            subscriptionPlans == other.subscriptionPlans &&
             purchaseError == other.purchaseError &&
             errorMessage == other.errorMessage &&
             successMessage == other.successMessage &&
@@ -82,6 +89,8 @@ data class MainUiState(
         result = 31 * result + launchSavePicker.hashCode()
         result = 31 * result + showUpgradeDialog.hashCode()
         result = 31 * result + (upgradeReason?.hashCode() ?: 0)
+        result = 31 * result + plansLoading.hashCode()
+        result = 31 * result + (subscriptionPlans?.hashCode() ?: 0)
         result = 31 * result + (purchaseError?.hashCode() ?: 0)
         result = 31 * result + (errorMessage?.hashCode() ?: 0)
         result = 31 * result + (successMessage?.hashCode() ?: 0)
@@ -328,17 +337,45 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Hands off to Play and reports back on this screen only. [activity] is null when the screen
-     * could not resolve one, which is itself a failed hand-off - saying nothing would be the dead
-     * button again.
+     * Asks Play what the user can buy and opens the chooser, reporting on this screen only.
+     *
+     * A refusal here is shown exactly like a refused hand-off: the plans cannot be loaded for the
+     * same reasons the sheet cannot be opened, and the user is owed the same sentence either way.
      */
-    fun launchPurchaseFlow(activity: Activity?) {
+    fun showPlanChooser() {
+        if (_uiState.value.plansLoading) return
+        _uiState.value = _uiState.value.copy(plansLoading = true)
+        viewModelScope.launch {
+            try {
+                _uiState.value = when (val query = billingRepository.loadSubscriptionPlans()) {
+                    is PlanQuery.Available -> _uiState.value.copy(subscriptionPlans = query.plans)
+                    is PlanQuery.Unavailable -> _uiState.value.copy(purchaseError = query.failure)
+                }
+            } finally {
+                // Cleared whatever happened: a flag left set would refuse every later tap, which
+                // is the dead button again.
+                _uiState.value = _uiState.value.copy(plansLoading = false)
+            }
+        }
+    }
+
+    fun dismissPlanChooser() {
+        _uiState.value = _uiState.value.copy(subscriptionPlans = null)
+    }
+
+    /**
+     * Hands off to Play for the plan the user picked, and reports back on this screen only.
+     * [activity] is null when the screen could not resolve one, which is itself a failed
+     * hand-off - saying nothing would be the dead button again.
+     */
+    fun launchPurchaseFlow(activity: Activity?, plan: SubscriptionPlan) {
+        _uiState.value = _uiState.value.copy(subscriptionPlans = null)
         if (activity == null) {
             _uiState.value = _uiState.value.copy(purchaseError = PurchaseFailure.LAUNCH_FAILED)
             return
         }
         viewModelScope.launch {
-            billingRepository.launchPurchaseFlow(activity)?.let { failure ->
+            billingRepository.launchPurchaseFlow(activity, plan)?.let { failure ->
                 _uiState.value = _uiState.value.copy(purchaseError = failure)
             }
         }

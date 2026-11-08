@@ -3,8 +3,12 @@ package com.backrecorderapp.ui.main
 import android.app.Activity
 import android.content.ContentResolver
 import android.content.Context
+import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PlanQuery
 import com.backrecorderapp.data.billing.PurchaseFailure
+import com.backrecorderapp.data.billing.SubscriptionPlan
+import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
@@ -76,6 +80,17 @@ class MainViewModelPurchaseTest {
         Dispatchers.resetMain()
     }
 
+    /** A plan as the chooser would have handed it over. */
+    private val monthlyPlan = SubscriptionPlan(
+        period = BillingPeriod.MONTHLY,
+        formattedPrice = "$2.99",
+        priceAmountMicros = 2_990_000L,
+        priceCurrencyCode = "USD",
+        freeTrialDays = 7
+    )
+
+    private val plans = SubscriptionPlans(listOf(monthlyPlan))
+
     private fun buildViewModel(): MainViewModel = MainViewModel(
         context,
         segmentManager,
@@ -89,11 +104,11 @@ class MainViewModelPurchaseTest {
 
     @Test
     fun `a refused hand-off is reported on this screen`() = runTest {
-        coEvery { billingRepository.launchPurchaseFlow(any()) } returns
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns
             PurchaseFailure.PRODUCT_UNAVAILABLE
 
         val viewModel = buildViewModel()
-        viewModel.launchPurchaseFlow(mockk<Activity>())
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
         advanceUntilIdle()
 
         assertEquals(PurchaseFailure.PRODUCT_UNAVAILABLE, viewModel.uiState.value.purchaseError)
@@ -102,10 +117,10 @@ class MainViewModelPurchaseTest {
     @Test
     fun `each failure reaches the state unchanged`() = runTest {
         PurchaseFailure.entries.forEach { failure ->
-            coEvery { billingRepository.launchPurchaseFlow(any()) } returns failure
+            coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns failure
 
             val viewModel = buildViewModel()
-            viewModel.launchPurchaseFlow(mockk<Activity>())
+            viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
             advanceUntilIdle()
 
             assertEquals(failure, viewModel.uiState.value.purchaseError)
@@ -114,10 +129,10 @@ class MainViewModelPurchaseTest {
 
     @Test
     fun `a hand-off that reached Play reports nothing`() = runTest {
-        coEvery { billingRepository.launchPurchaseFlow(any()) } returns null
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns null
 
         val viewModel = buildViewModel()
-        viewModel.launchPurchaseFlow(mockk<Activity>())
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
         advanceUntilIdle()
 
         assertNull(viewModel.uiState.value.purchaseError)
@@ -130,20 +145,20 @@ class MainViewModelPurchaseTest {
     @Test
     fun `no activity is reported rather than ignored`() = runTest {
         val viewModel = buildViewModel()
-        viewModel.launchPurchaseFlow(null)
+        viewModel.launchPurchaseFlow(null, monthlyPlan)
         advanceUntilIdle()
 
         assertEquals(PurchaseFailure.LAUNCH_FAILED, viewModel.uiState.value.purchaseError)
-        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any()) }
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
     }
 
     @Test
     fun `dismissing clears the failure`() = runTest {
-        coEvery { billingRepository.launchPurchaseFlow(any()) } returns
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns
             PurchaseFailure.BILLING_UNAVAILABLE
 
         val viewModel = buildViewModel()
-        viewModel.launchPurchaseFlow(mockk<Activity>())
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
         advanceUntilIdle()
         viewModel.dismissPurchaseError()
 
@@ -158,7 +173,7 @@ class MainViewModelPurchaseTest {
     fun `reporting a failure leaves a pending save error intact`() = runTest {
         // A save error first, so the assertion below is about survival rather than emptiness.
         coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns emptyList()
-        coEvery { billingRepository.launchPurchaseFlow(any()) } returns
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns
             PurchaseFailure.LAUNCH_FAILED
 
         val viewModel = buildViewModel()
@@ -167,7 +182,7 @@ class MainViewModelPurchaseTest {
         val saveError = viewModel.uiState.value.errorMessage
         assertNotNull("precondition: the save must have reported an error", saveError)
 
-        viewModel.launchPurchaseFlow(mockk<Activity>())
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
         advanceUntilIdle()
 
         assertEquals(saveError, viewModel.uiState.value.errorMessage)
@@ -175,5 +190,67 @@ class MainViewModelPurchaseTest {
 
         viewModel.dismissPurchaseError()
         assertEquals(saveError, viewModel.uiState.value.errorMessage)
+    }
+
+    // ---- The plan chooser (#74) ----
+
+    @Test
+    fun `the chooser opens with the plans Play offered`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        assertEquals(plans, viewModel.uiState.value.subscriptionPlans)
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+        // Nothing is bought until the user picks.
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
+    }
+
+    /**
+     * Plans that cannot be loaded are the dead button in a new place: the chooser never opens, so
+     * the refusal has to be shown rather than leaving the dialog to close onto nothing.
+     */
+    @Test
+    fun `plans that cannot be loaded are reported, not swallowed`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns
+            PlanQuery.Unavailable(PurchaseFailure.PRODUCT_UNAVAILABLE)
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.subscriptionPlans)
+        assertEquals(PurchaseFailure.PRODUCT_UNAVAILABLE, viewModel.uiState.value.purchaseError)
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+    }
+
+    @Test
+    fun `buying closes the chooser and sends the plan that was picked`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns null
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+
+        assertNull(viewModel.uiState.value.subscriptionPlans)
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
+    }
+
+    @Test
+    fun `dismissing the chooser buys nothing`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.dismissPlanChooser()
+
+        assertNull(viewModel.uiState.value.subscriptionPlans)
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
     }
 }

@@ -47,6 +47,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.ui.components.PlanChooserDialog
 import com.backrecorderapp.util.findActivity
 import com.backrecorderapp.util.messageRes
 
@@ -61,6 +62,8 @@ fun SettingsScreen(
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
     val driveError by viewModel.driveError.collectAsState()
     val purchaseError by viewModel.purchaseError.collectAsState()
+    val plansLoading by viewModel.plansLoading.collectAsState()
+    val subscriptionPlans by viewModel.subscriptionPlans.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
 
@@ -134,9 +137,10 @@ fun SettingsScreen(
                         state.subscriptionStatus == SubscriptionStatus.EXPIRED
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Button(onClick = {
-                            viewModel.launchPurchaseFlow(context.findActivity())
-                        }) {
+                        Button(
+                            onClick = { viewModel.showPlanChooser() },
+                            enabled = !plansLoading
+                        ) {
                             Text(stringResource(R.string.upgrade_button))
                         }
                     }
@@ -218,7 +222,7 @@ fun SettingsScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    viewModel.launchPurchaseFlow(context.findActivity())
+                    viewModel.showPlanChooser()
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }
@@ -228,6 +232,18 @@ fun SettingsScreen(
                     Text(stringResource(R.string.cancel))
                 }
             }
+        )
+    }
+
+    // The plan is chosen here rather than guessed: the subscription has a monthly and a yearly
+    // base plan, and only one offer token can be sent to Play.
+    subscriptionPlans?.let { plans ->
+        PlanChooserDialog(
+            plans = plans,
+            onPlanSelected = { plan ->
+                viewModel.launchPurchaseFlow(context.findActivity(), plan)
+            },
+            onDismiss = { viewModel.dismissPlanChooser() }
         )
     }
 

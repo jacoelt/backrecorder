@@ -63,6 +63,7 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.domain.BlockReason
+import com.backrecorderapp.ui.components.PlanChooserDialog
 import com.backrecorderapp.ui.components.WaveformView
 import com.backrecorderapp.util.TimeUtils
 import com.backrecorderapp.util.findActivity
@@ -344,7 +345,7 @@ fun MainScreen(
             confirmButton = {
                 Button(onClick = {
                     viewModel.dismissUpgradeDialog()
-                    viewModel.launchPurchaseFlow(context.findActivity())
+                    viewModel.showPlanChooser()
                 }) {
                     Text(stringResource(R.string.upgrade_button))
                 }
@@ -354,6 +355,18 @@ fun MainScreen(
                     Text(stringResource(R.string.cancel))
                 }
             }
+        )
+    }
+
+    // The plan is chosen here rather than guessed: the subscription has a monthly and a yearly
+    // base plan, and only one offer token can be sent to Play.
+    state.subscriptionPlans?.let { plans ->
+        PlanChooserDialog(
+            plans = plans,
+            onPlanSelected = { plan ->
+                viewModel.launchPurchaseFlow(context.findActivity(), plan)
+            },
+            onDismiss = { viewModel.dismissPlanChooser() }
         )
     }
 

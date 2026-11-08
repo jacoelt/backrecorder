@@ -66,6 +66,14 @@
     <string name="upgrade_cloud_title">Upgrade to Enable Cloud Storage</string>
     <string name="upgrade_cloud_message">Cloud storage is a premium feature. Upgrade to automatically back up your recordings to Google Drive for safekeeping.</string>
     <string name="upgrade_button">Upgrade to Premium</string>
+    <string name="plan_chooser_title">Choose your plan</string>
+    <string name="plan_period_monthly">Monthly</string>
+    <string name="plan_period_yearly">Yearly</string>
+    <string name="plan_price_per_month">%1$s per month</string>
+    <string name="plan_price_per_year">%1$s per year</string>
+    <string name="plan_free_trial">Starts with a %1$d-day free trial</string>
+    <string name="plan_savings_badge">Save ~%1$d%%</string>
+    <string name="plan_chooser_continue">Continue</string>
     <string name="upgrade_error_title">Upgrade Unavailable</string>
     <string name="upgrade_error_billing_unavailable">Google Play billing isn\'t available right now. Check your connection and that you\'re signed in to the Play Store, then try again.</string>
     <string name="upgrade_error_product_unavailable">The Premium subscription isn\'t available for this account right now. Please try again later.</string>

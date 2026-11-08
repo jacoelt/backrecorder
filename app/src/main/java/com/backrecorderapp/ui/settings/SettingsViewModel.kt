@@ -7,7 +7,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PlanQuery
 import com.backrecorderapp.data.billing.PurchaseFailure
+import com.backrecorderapp.data.billing.SubscriptionPlan
+import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
@@ -90,6 +93,16 @@ class SettingsViewModel @Inject constructor(
 
     private val _showUpgradeDialog = MutableStateFlow(false)
     val showUpgradeDialog: StateFlow<Boolean> = _showUpgradeDialog.asStateFlow()
+
+    private val _plansLoading = MutableStateFlow(false)
+
+    /** True while Play is being asked for the plans, so the Upgrade button can show progress. */
+    val plansLoading: StateFlow<Boolean> = _plansLoading.asStateFlow()
+
+    private val _subscriptionPlans = MutableStateFlow<SubscriptionPlans?>(null)
+
+    /** The plans to choose between, or null when the chooser is not up. */
+    val subscriptionPlans: StateFlow<SubscriptionPlans?> = _subscriptionPlans.asStateFlow()
 
     private val _purchaseError = MutableStateFlow<PurchaseFailure?>(null)
 
@@ -242,16 +255,42 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Hands off to Play and reports back on this screen only. A null [activity] means the screen
-     * could not resolve one, which is itself a failed hand-off.
+     * Asks Play what the user can buy and opens the chooser, reporting on this screen only.
+     *
+     * A refusal is shown exactly like a refused hand-off: the plans cannot be loaded for the same
+     * reasons the sheet cannot be opened, and the user is owed the same sentence either way.
      */
-    fun launchPurchaseFlow(activity: Activity?) {
+    fun showPlanChooser() {
+        if (_plansLoading.value) return
+        _plansLoading.value = true
+        viewModelScope.launch {
+            try {
+                when (val query = billingRepository.loadSubscriptionPlans()) {
+                    is PlanQuery.Available -> _subscriptionPlans.value = query.plans
+                    is PlanQuery.Unavailable -> _purchaseError.value = query.failure
+                }
+            } finally {
+                _plansLoading.value = false
+            }
+        }
+    }
+
+    fun dismissPlanChooser() {
+        _subscriptionPlans.value = null
+    }
+
+    /**
+     * Hands off to Play for the plan the user picked, and reports back on this screen only. A
+     * null [activity] means the screen could not resolve one, which is itself a failed hand-off.
+     */
+    fun launchPurchaseFlow(activity: Activity?, plan: SubscriptionPlan) {
+        _subscriptionPlans.value = null
         if (activity == null) {
             _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
             return
         }
         viewModelScope.launch {
-            billingRepository.launchPurchaseFlow(activity)?.let { _purchaseError.value = it }
+            billingRepository.launchPurchaseFlow(activity, plan)?.let { _purchaseError.value = it }
         }
     }
 

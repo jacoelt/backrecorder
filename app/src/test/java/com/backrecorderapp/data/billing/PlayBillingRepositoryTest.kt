@@ -48,8 +48,25 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlayBillingRepositoryTest {
 
+    private companion object {
+        const val MONTHLY_TOKEN = "monthly-free-trial-token"
+        const val YEARLY_TOKEN = "yearly-free-trial-token"
+    }
+
     private lateinit var client: BillingClient
     private lateinit var activity: Activity
+
+    /** The plan a caller picked in the chooser. Only its period is read by the hand-off. */
+    private fun plan(period: BillingPeriod) = SubscriptionPlan(
+        period = period,
+        formattedPrice = "ignored",
+        priceAmountMicros = 1L,
+        priceCurrencyCode = "USD",
+        freeTrialDays = 0
+    )
+
+    private val monthlyPlan get() = plan(BillingPeriod.MONTHLY)
+    private val yearlyPlan get() = plan(BillingPeriod.YEARLY)
 
     private fun okResult() = result(BillingClient.BillingResponseCode.OK)
 
@@ -125,31 +142,69 @@ class PlayBillingRepositoryTest {
         }
     }
 
+    /** One phase of an offer. A trial phase is simply one that costs nothing. */
+    private fun phase(
+        micros: Long,
+        formatted: String,
+        period: String,
+        currency: String = "USD"
+    ): ProductDetails.PricingPhase = mockk(relaxed = true) {
+        every { priceAmountMicros } returns micros
+        every { formattedPrice } returns formatted
+        every { priceCurrencyCode } returns currency
+        every { billingPeriod } returns period
+    }
+
+    private fun offer(
+        basePlanId: String,
+        offerId: String?,
+        token: String,
+        phases: List<ProductDetails.PricingPhase>
+    ): ProductDetails.SubscriptionOfferDetails = mockk(relaxed = true) {
+        every { this@mockk.basePlanId } returns basePlanId
+        every { this@mockk.offerId } returns offerId
+        every { offerToken } returns token
+        every { pricingPhases } returns mockk(relaxed = true) {
+            every { pricingPhaseList } returns phases
+        }
+    }
+
+    /** The `monthly` base plan with its free-trial offer, as the Play Console has it. */
+    private fun monthlyOffer(token: String = MONTHLY_TOKEN) = offer(
+        basePlanId = "monthly",
+        offerId = "monthly-free-trial",
+        token = token,
+        phases = listOf(
+            phase(0L, "Free", "P1W"),
+            phase(2_990_000L, "$2.99", "P1M")
+        )
+    )
+
+    /** The `yearly` base plan with its free-trial offer: ten months' worth, so ~17% off. */
+    private fun yearlyOffer(token: String = YEARLY_TOKEN) = offer(
+        basePlanId = "yearly",
+        offerId = "yearly-free-trial",
+        token = token,
+        phases = listOf(
+            phase(0L, "Free", "P1W"),
+            phase(29_900_000L, "$29.90", "P1Y")
+        )
+    )
+
     /**
-     * One purchasable offer, named as the Play Console actually names them: the subscription
-     * carries a `monthly` and a `yearly` base plan, each with a free-trial offer.
+     * The subscription as the Play Console actually has it: two base plans, each with a
+     * free-trial offer.
      *
-     * Only one offer is stubbed here because the hand-off can only send one - it takes whatever
-     * Play returns first. That is issue #74, along with the product id: `productId` below reads
-     * the production constant rather than a literal, so it reports `premium` until #74 corrects
-     * it to `main_subscription`, which is the mismatch that makes the real button refuse.
+     * `productId` reads the production constant rather than a literal, so the fixture cannot
+     * quietly disagree with what the app asks Play for - the disagreement that made the real
+     * button refuse every tap until #74.
      */
-    private fun premiumOffer(
-        offerToken: String? = "monthly-free-trial-token",
-        basePlanId: String = "monthly",
-        offerId: String = "monthly-free-trial"
-    ): ProductDetails {
-        val offer: ProductDetails.SubscriptionOfferDetails? = offerToken?.let {
-            mockk(relaxed = true) {
-                every { this@mockk.offerToken } returns it
-                every { this@mockk.basePlanId } returns basePlanId
-                every { this@mockk.offerId } returns offerId
-            }
-        }
-        return mockk(relaxed = true) {
-            every { productId } returns BillingRepository.PREMIUM_SUBSCRIPTION_ID
-            every { subscriptionOfferDetails } returns offer?.let { listOf(it) }
-        }
+    private fun premiumProduct(
+        offers: List<ProductDetails.SubscriptionOfferDetails>? =
+            listOf(monthlyOffer(), yearlyOffer())
+    ): ProductDetails = mockk(relaxed = true) {
+        every { productId } returns BillingRepository.PREMIUM_SUBSCRIPTION_ID
+        every { subscriptionOfferDetails } returns offers
     }
 
     /**
@@ -160,10 +215,10 @@ class PlayBillingRepositoryTest {
     @Test
     fun `a hand-off that reaches Play reports no failure`() = runTest {
         every { client.isReady } returns true
-        stubProductQuery(premiumOffer())
+        stubProductQuery(premiumProduct())
         every { client.launchBillingFlow(any(), any()) } returns okResult()
 
-        val failure = createRepository().launchPurchaseFlow(activity)
+        val failure = createRepository().launchPurchaseFlow(activity, monthlyPlan)
 
         assertNull("a sheet that opened must not be reported as a failure", failure)
         verify(exactly = 1) { client.launchBillingFlow(activity, any()) }
@@ -176,7 +231,7 @@ class PlayBillingRepositoryTest {
 
         assertEquals(
             PurchaseFailure.PRODUCT_UNAVAILABLE,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
         verify(exactly = 0) { client.launchBillingFlow(any(), any()) }
     }
@@ -184,11 +239,11 @@ class PlayBillingRepositoryTest {
     @Test
     fun `a product with no purchasable offer is a product problem`() = runTest {
         every { client.isReady } returns true
-        stubProductQuery(premiumOffer(offerToken = null))
+        stubProductQuery(premiumProduct(offers = null))
 
         assertEquals(
             PurchaseFailure.PRODUCT_UNAVAILABLE,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
     }
 
@@ -199,24 +254,24 @@ class PlayBillingRepositoryTest {
     @Test
     fun `a failed query is a billing problem, not a product one`() = runTest {
         every { client.isReady } returns true
-        stubProductQuery(premiumOffer(), code = BillingClient.BillingResponseCode.SERVICE_DISCONNECTED)
+        stubProductQuery(premiumProduct(), code = BillingClient.BillingResponseCode.SERVICE_DISCONNECTED)
 
         assertEquals(
             PurchaseFailure.BILLING_UNAVAILABLE,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
     }
 
     @Test
     fun `Play refusing the sheet is reported`() = runTest {
         every { client.isReady } returns true
-        stubProductQuery(premiumOffer())
+        stubProductQuery(premiumProduct())
         every { client.launchBillingFlow(any(), any()) } returns
             result(BillingClient.BillingResponseCode.DEVELOPER_ERROR)
 
         assertEquals(
             PurchaseFailure.LAUNCH_FAILED,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
     }
 
@@ -224,11 +279,11 @@ class PlayBillingRepositoryTest {
     fun `a screen that went away before the sheet is reported, not launched over`() = runTest {
         every { client.isReady } returns true
         every { activity.isDestroyed } returns true
-        stubProductQuery(premiumOffer())
+        stubProductQuery(premiumProduct())
 
         assertEquals(
             PurchaseFailure.LAUNCH_FAILED,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
         verify(exactly = 0) { client.launchBillingFlow(any(), any()) }
     }
@@ -245,7 +300,7 @@ class PlayBillingRepositoryTest {
 
         assertEquals(
             PurchaseFailure.BILLING_UNAVAILABLE,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
     }
 
@@ -264,7 +319,7 @@ class PlayBillingRepositoryTest {
 
         assertEquals(
             PurchaseFailure.BILLING_UNAVAILABLE,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
     }
 
@@ -275,7 +330,7 @@ class PlayBillingRepositoryTest {
         every { client.startConnection(any()) } answers { /* never calls back */ }
 
         val repository = createRepository()
-        val failure = async { repository.launchPurchaseFlow(activity) }
+        val failure = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
         advanceTimeBy(21_000)
 
         assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, failure.await())
@@ -296,12 +351,12 @@ class PlayBillingRepositoryTest {
             val listener = slot<BillingClientStateListener>()
             // Captured and left hanging, so both hand-offs are genuinely in flight at once.
             every { client.startConnection(capture(listener)) } answers { }
-            stubProductQuery(premiumOffer())
+            stubProductQuery(premiumProduct())
             every { client.launchBillingFlow(any(), any()) } returns okResult()
 
             val repository = createRepository()
-            val first = async { repository.launchPurchaseFlow(activity) }
-            val second = async { repository.launchPurchaseFlow(activity) }
+            val first = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            val second = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
             runCurrent()
 
             verify(exactly = 1) { client.startConnection(any()) }
@@ -327,7 +382,7 @@ class PlayBillingRepositoryTest {
             every { client.isReady } returns false
             val listener = slot<BillingClientStateListener>()
             every { client.startConnection(capture(listener)) } answers { }
-            stubProductQuery(premiumOffer())
+            stubProductQuery(premiumProduct())
             stubQueryPurchases()
             every { client.launchBillingFlow(any(), any()) } returns okResult()
 
@@ -336,7 +391,7 @@ class PlayBillingRepositoryTest {
             runCurrent()
             verify(exactly = 1) { client.startConnection(any()) }
 
-            val tap = async { repository.launchPurchaseFlow(activity) }
+            val tap = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
             runCurrent()
             // Joined the attempt already in flight - no second connection on the one client.
             verify(exactly = 1) { client.startConnection(any()) }
@@ -393,7 +448,7 @@ class PlayBillingRepositoryTest {
             client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), capture(productListener))
         } answers {
             val response: QueryProductDetailsResult = mockk(relaxed = true) {
-                every { productDetailsList } returns listOf(premiumOffer())
+                every { productDetailsList } returns listOf(premiumProduct())
             }
             val code = if (++queries == 1) {
                 BillingClient.BillingResponseCode.SERVICE_DISCONNECTED
@@ -404,7 +459,7 @@ class PlayBillingRepositoryTest {
         }
         every { client.launchBillingFlow(any(), any()) } returns okResult()
 
-        assertNull(createRepository().launchPurchaseFlow(activity))
+        assertNull(createRepository().launchPurchaseFlow(activity, monthlyPlan))
         verify(exactly = 2) { client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any()) }
     }
 
@@ -416,7 +471,7 @@ class PlayBillingRepositoryTest {
 
         assertEquals(
             PurchaseFailure.PRODUCT_UNAVAILABLE,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
         verify(exactly = 1) { client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any()) }
     }
@@ -433,12 +488,12 @@ class PlayBillingRepositoryTest {
             every { client.startConnection(capture(listener)) } answers { }
 
             val repository = createRepository()
-            val abandoned = async { repository.launchPurchaseFlow(activity) }
+            val abandoned = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
             runCurrent()
             advanceTimeBy(21_000)
             assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, abandoned.await())
 
-            val retry = async { repository.launchPurchaseFlow(activity) }
+            val retry = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
             runCurrent()
 
             verify(exactly = 2) { client.startConnection(any()) }
@@ -553,12 +608,101 @@ class PlayBillingRepositoryTest {
     @Test
     fun `a billing client that throws is reported rather than crashing the caller`() = runTest {
         every { client.isReady } returns true
-        stubProductQuery(premiumOffer())
+        stubProductQuery(premiumProduct())
         every { client.launchBillingFlow(any(), any()) } throws IllegalStateException("dead binder")
 
         assertEquals(
             PurchaseFailure.LAUNCH_FAILED,
-            createRepository().launchPurchaseFlow(activity)
+            createRepository().launchPurchaseFlow(activity, monthlyPlan)
         )
+    }
+
+    // ---- The plan the user picked (#74) ----
+
+    @Test
+    fun `the plans offered are both base plans, priced from Play`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct())
+
+        val query = createRepository().loadSubscriptionPlans()
+
+        val plans = (query as PlanQuery.Available).plans
+        assertEquals(listOf(BillingPeriod.MONTHLY, BillingPeriod.YEARLY), plans.plans.map { it.period })
+        assertEquals("$2.99", plans.monthly?.formattedPrice)
+        assertEquals("$29.90", plans.yearly?.formattedPrice)
+        // The trial is read from the free phase, not assumed.
+        assertEquals(7, plans.monthly?.freeTrialDays)
+        // Ten months' worth of the monthly price.
+        assertEquals(16, plans.yearlySavingsPercent)
+    }
+
+    /**
+     * The whole of #74's second half: buying must use the base plan the user chose, not whichever
+     * offer Play returned first. With only the monthly plan on offer, a yearly purchase has to
+     * refuse - if it fell back to the first offer it would charge a month the user did not pick,
+     * and the same bug in reverse would charge a year.
+     */
+    @Test
+    fun `a plan with no offer is refused rather than silently swapped for another`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct(offers = listOf(monthlyOffer())))
+
+        assertEquals(
+            PurchaseFailure.PRODUCT_UNAVAILABLE,
+            createRepository().launchPurchaseFlow(activity, yearlyPlan)
+        )
+        verify(exactly = 0) { client.launchBillingFlow(any(), any()) }
+    }
+
+    @Test
+    fun `either plan can be bought when Play offers both`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct())
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        val repository = createRepository()
+
+        assertNull(repository.launchPurchaseFlow(activity, yearlyPlan))
+        assertNull(repository.launchPurchaseFlow(activity, monthlyPlan))
+        verify(exactly = 2) { client.launchBillingFlow(activity, any()) }
+    }
+
+    /**
+     * Play answering with a product that has no purchasable plan is a Console problem, and must
+     * stay distinguishable from a connection one.
+     */
+    @Test
+    fun `a product with no purchasable plan has no chooser to show`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct(offers = null))
+
+        assertEquals(
+            PlanQuery.Unavailable(PurchaseFailure.PRODUCT_UNAVAILABLE),
+            createRepository().loadSubscriptionPlans()
+        )
+    }
+
+    @Test
+    fun `plans that cannot be loaded report the billing failure, not an empty chooser`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct(), code = BillingClient.BillingResponseCode.ERROR)
+
+        assertEquals(
+            PlanQuery.Unavailable(PurchaseFailure.BILLING_UNAVAILABLE),
+            createRepository().loadSubscriptionPlans()
+        )
+    }
+
+    /** An offer with no token cannot be bought, so the plan it belongs to is not on offer. */
+    @Test
+    fun `a base plan whose offer carries no token is not offered`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct(offers = listOf(monthlyOffer(token = ""), yearlyOffer())))
+
+        val plans = (createRepository().loadSubscriptionPlans() as PlanQuery.Available).plans
+
+        assertEquals(listOf(BillingPeriod.YEARLY), plans.plans.map { it.period })
+        // One plan on its own has nothing to be cheaper than, so no badge.
+        assertNull(plans.yearlySavingsPercent)
     }
 }

@@ -3,8 +3,12 @@ package com.backrecorderapp.ui.settings
 import android.app.Activity
 import android.app.PendingIntent
 import app.cash.turbine.test
+import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.BillingRepository
+import com.backrecorderapp.data.billing.PlanQuery
 import com.backrecorderapp.data.billing.PurchaseFailure
+import com.backrecorderapp.data.billing.SubscriptionPlan
+import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
@@ -283,6 +287,17 @@ class SettingsViewModelTest {
         }
     }
 
+    /** A plan as the chooser would have handed it over. */
+    private val monthlyPlan = SubscriptionPlan(
+        period = BillingPeriod.MONTHLY,
+        formattedPrice = "$2.99",
+        priceAmountMicros = 2_990_000L,
+        priceCurrencyCode = "USD",
+        freeTrialDays = 7
+    )
+
+    private val plans = SubscriptionPlans(listOf(monthlyPlan))
+
     /**
      * Settings is the second upgrade entry point (issue #72). A refusal has to be reported here
      * too, and only here - the main screen's view model is alive behind this one, so a failure
@@ -290,11 +305,11 @@ class SettingsViewModelTest {
      */
     @Test
     fun `a refused upgrade hand-off is reported and clears on dismiss`() = runTest {
-        coEvery { billingRepository.launchPurchaseFlow(any()) } returns
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns
             PurchaseFailure.PRODUCT_UNAVAILABLE
 
         val viewModel = createViewModel()
-        viewModel.launchPurchaseFlow(mockk<Activity>())
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
         advanceUntilIdle()
 
         assertEquals(PurchaseFailure.PRODUCT_UNAVAILABLE, viewModel.purchaseError.value)
@@ -305,10 +320,10 @@ class SettingsViewModelTest {
 
     @Test
     fun `a hand-off that reached Play reports nothing`() = runTest {
-        coEvery { billingRepository.launchPurchaseFlow(any()) } returns null
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } returns null
 
         val viewModel = createViewModel()
-        viewModel.launchPurchaseFlow(mockk<Activity>())
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
         advanceUntilIdle()
 
         assertNull(viewModel.purchaseError.value)
@@ -317,11 +332,39 @@ class SettingsViewModelTest {
     @Test
     fun `no activity to launch over is reported rather than ignored`() = runTest {
         val viewModel = createViewModel()
-        viewModel.launchPurchaseFlow(null)
+        viewModel.launchPurchaseFlow(null, monthlyPlan)
         advanceUntilIdle()
 
         assertEquals(PurchaseFailure.LAUNCH_FAILED, viewModel.purchaseError.value)
-        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any()) }
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
+    }
+
+    @Test
+    fun `the chooser opens here too, with the plans Play offered`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+
+        val viewModel = createViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        assertEquals(plans, viewModel.subscriptionPlans.value)
+        assertEquals(false, viewModel.plansLoading.value)
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
+    }
+
+    /** The same refusal the hand-off would report, in the step before it (#74). */
+    @Test
+    fun `plans that cannot be loaded are reported here too`() = runTest {
+        coEvery { billingRepository.loadSubscriptionPlans() } returns
+            PlanQuery.Unavailable(PurchaseFailure.BILLING_UNAVAILABLE)
+
+        val viewModel = createViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+
+        assertNull(viewModel.subscriptionPlans.value)
+        assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, viewModel.purchaseError.value)
+        assertEquals(false, viewModel.plansLoading.value)
     }
 
     @Test
