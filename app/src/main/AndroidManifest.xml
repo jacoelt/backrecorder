@@ -20,9 +20,11 @@
         android:theme="@style/Theme.BackRecorder"
         tools:targetApi="36">
 
-        <!-- At targetSdk 36 back arrives only through OnBackInvokedCallback, which AndroidX's
-             OnBackPressedDispatcher registers only with this flag on. It defaults to true at
-             35+, but back navigation depends on it, so it is declared rather than assumed. -->
+        <!-- At targetSdk 36, on Android 16+ devices, back arrives only through
+             OnBackInvokedCallback: onBackPressed() is not called and KEYCODE_BACK is not
+             dispatched. AndroidX's OnBackPressedDispatcher registers for it only with this
+             flag on, and "false" is still a documented opt-out at this target - so it is
+             declared rather than left to a default. -->
         <activity
             android:name=".MainActivity"
             android:enableOnBackInvokedCallback="true"
