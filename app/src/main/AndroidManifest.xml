@@ -18,10 +18,16 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.BackRecorder"
-        tools:targetApi="34">
+        tools:targetApi="36">
 
+        <!-- At targetSdk 36, on Android 16+ devices, back arrives only through
+             OnBackInvokedCallback: onBackPressed() is not called and KEYCODE_BACK is not
+             dispatched. AndroidX's OnBackPressedDispatcher registers for it only with this
+             flag on, and "false" is still a documented opt-out at this target - so it is
+             declared rather than left to a default. -->
         <activity
             android:name=".MainActivity"
+            android:enableOnBackInvokedCallback="true"
             android:exported="true"
             android:theme="@style/Theme.BackRecorder">
             <intent-filter>
