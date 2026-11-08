@@ -121,9 +121,7 @@ fun MainScreen(
 
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
-        // Scaffold.s default covers the system bars only; safeDrawing also clears the display
-        // cutout, which landscape reaches now that API 36 ignores orientation restrictions on
-        // sw600dp displays.
+        // safeDrawing, not the system-bars default, so display cutouts are cleared too.
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
@@ -134,7 +132,7 @@ fun MainScreen(
                     }
                 },
                 // TopAppBarDefaults.windowInsets is system-bars-only, so the bar would still
-                // sit under a landscape cutout while the body above clears it.
+                // sit under a landscape cutout while the body below it cleared one.
                 windowInsets = WindowInsets.safeDrawing
                     .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
                 scrollBehavior = scrollBehavior
