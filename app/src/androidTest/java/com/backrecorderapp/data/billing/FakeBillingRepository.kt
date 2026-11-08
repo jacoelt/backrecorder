@@ -29,8 +29,8 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
     override val statusResolved: StateFlow<Boolean> = _statusResolved.asStateFlow()
 
     /**
-     * Makes the next hand-off fail the way Play does when the product is not purchasable, so a
-     * test can drive the "nothing happens" path that this fake otherwise always succeeds on.
+     * Refuses the next hand-off with this failure, so a test can drive the "nothing happens" path
+     * that this fake otherwise always succeeds on.
      */
     var nextLaunchFails: PurchaseFailure? = null
 

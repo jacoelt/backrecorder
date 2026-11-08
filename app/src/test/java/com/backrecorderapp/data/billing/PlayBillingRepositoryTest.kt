@@ -8,28 +8,32 @@ import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.ProductDetailsResponseListener
-import com.android.billingclient.api.QueryProductDetailsResult
+import com.android.billingclient.api.Purchase
+import com.android.billingclient.api.PurchasesResponseListener
 import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.QueryProductDetailsParams
+import com.android.billingclient.api.QueryProductDetailsResult
+import com.android.billingclient.api.QueryPurchasesParams
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
-import io.mockk.unmockkStatic
 import io.mockk.slot
+import io.mockk.unmockkStatic
 import io.mockk.verify
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.test.resetMain
-import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
@@ -98,6 +102,26 @@ class PlayBillingRepositoryTest {
                 every { productDetailsList } returns listOfNotNull(details)
             }
             listener.captured.onProductDetailsResponse(result(code), response)
+        }
+    }
+
+    private fun purchase(
+        acknowledged: Boolean,
+        state: Int = Purchase.PurchaseState.PURCHASED,
+        token: String = "purchase-token"
+    ): Purchase = mockk(relaxed = true) {
+        every { purchaseState } returns state
+        every { isAcknowledged } returns acknowledged
+        every { purchaseToken } returns token
+    }
+
+    /** Makes the client's entitlement query answer with [purchases]. */
+    private fun stubQueryPurchases(vararg purchases: Purchase) {
+        val listener = slot<PurchasesResponseListener>()
+        every {
+            client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener))
+        } answers {
+            listener.captured.onQueryPurchasesResponse(okResult(), purchases.toList())
         }
     }
 
@@ -242,24 +266,110 @@ class PlayBillingRepositoryTest {
 
     /**
      * Two taps must not open two connections on the one client: Play answers the second with an
-     * error, which used to surface as "unavailable" over a purchase that was working.
+     * error, which surfaced as "unavailable" over a purchase that was working. Both still have
+     * to reach Play - a tap that is merely dropped leaves the other screen with nothing to show.
      */
     @Test
-    fun `overlapping hand-offs share one connection attempt`() = runTest {
-        every { client.isReady } returns false
-        val listener = slot<BillingClientStateListener>()
-        every { client.startConnection(capture(listener)) } answers {
+    fun `overlapping hand-offs share one connection attempt`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            // Captured and left hanging, so both hand-offs are genuinely in flight at once.
+            every { client.startConnection(capture(listener)) } answers { }
+            stubProductQuery(premiumOffer())
+            every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+            val repository = createRepository()
+            val first = async { repository.launchPurchaseFlow(activity) }
+            val second = async { repository.launchPurchaseFlow(activity) }
+            runCurrent()
+
+            verify(exactly = 1) { client.startConnection(any()) }
+
+            every { client.isReady } returns true
             listener.captured.onBillingSetupFinished(okResult())
+
+            assertNull(first.await())
+            assertNull(second.await())
+            verify(exactly = 2) { client.launchBillingFlow(activity, any()) }
+            verify(exactly = 1) { client.startConnection(any()) }
         }
-        stubProductQuery(premiumOffer())
-        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+    /**
+     * A connection nobody is waiting on any more must not be left in place: the next tap would
+     * join a deferred that no callback will ever complete, and no reconnect would be tried.
+     */
+    @Test
+    fun `a tap after an abandoned connection starts a fresh one`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            every { client.startConnection(capture(listener)) } answers { }
+
+            val repository = createRepository()
+            val abandoned = async { repository.launchPurchaseFlow(activity) }
+            runCurrent()
+            advanceTimeBy(21_000)
+            assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, abandoned.await())
+
+            val retry = async { repository.launchPurchaseFlow(activity) }
+            runCurrent()
+
+            verify(exactly = 2) { client.startConnection(any()) }
+            retry.cancel()
+        }
+
+    /**
+     * Play refunds a subscription that is never acknowledged within three days. Nothing in the
+     * app acknowledged until the Upgrade button started reaching Play at all.
+     */
+    @Test
+    fun `a new purchase is acknowledged exactly once`() = runTest {
+        val purchase = purchase(acknowledged = false)
+        stubQueryPurchases(purchase)
 
         val repository = createRepository()
-        assertNull(repository.launchPurchaseFlow(activity))
-        assertNull(repository.launchPurchaseFlow(activity))
+        repository.onPurchasesUpdated(okResult(), listOf(purchase))
 
-        // Both hand-offs reached Play, and neither was dropped with a false "nothing happened".
-        verify(exactly = 2) { client.launchBillingFlow(activity, any()) }
+        verify(exactly = 1) { client.acknowledgePurchase(any(), any()) }
+        assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+    }
+
+    @Test
+    fun `an already acknowledged purchase is left alone`() = runTest {
+        val purchase = purchase(acknowledged = true)
+        stubQueryPurchases(purchase)
+
+        createRepository().onPurchasesUpdated(okResult(), listOf(purchase))
+
+        verify(exactly = 0) { client.acknowledgePurchase(any(), any()) }
+    }
+
+    @Test
+    fun `a purchase still pending is not acknowledged`() = runTest {
+        val purchase = purchase(acknowledged = false, state = Purchase.PurchaseState.PENDING)
+        stubQueryPurchases(purchase)
+
+        val repository = createRepository()
+        repository.onPurchasesUpdated(okResult(), listOf(purchase))
+
+        verify(exactly = 0) { client.acknowledgePurchase(any(), any()) }
+        assertEquals(SubscriptionStatus.FREE, repository.subscriptionStatus.value)
+    }
+
+    /**
+     * Play hands `onPurchasesUpdated` only the purchases from that flow, which is not an
+     * entitlement snapshot - taking it as one would downgrade a subscriber mid-session.
+     */
+    @Test
+    fun `status comes from a fresh query, not the callback's partial list`() = runTest {
+        stubQueryPurchases(purchase(acknowledged = true))
+
+        val repository = createRepository()
+        repository.onPurchasesUpdated(okResult(), emptyList())
+
+        verify(exactly = 1) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
+        assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
     }
 
     @Test

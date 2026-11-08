@@ -68,7 +68,7 @@
     <string name="upgrade_button">Upgrade to Premium</string>
     <string name="upgrade_error_title">Upgrade Unavailable</string>
     <string name="upgrade_error_billing_unavailable">Google Play billing isn\'t available right now. Check your connection and that you\'re signed in to the Play Store, then try again.</string>
-    <string name="upgrade_error_product_unavailable">The Premium subscription isn\'t available for this account yet. If you just joined the test, it can take a few hours before Play offers it.</string>
+    <string name="upgrade_error_product_unavailable">The Premium subscription isn\'t available for this account right now. Please try again later.</string>
     <string name="upgrade_error_launch_failed">Google Play couldn\'t open the purchase screen. Please try again.</string>
     <string name="trial_active">Trial active — %d days remaining</string>
     <string name="cancel">Cancel</string>

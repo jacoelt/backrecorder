@@ -26,6 +26,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -71,22 +73,33 @@ class PlayBillingRepository @Inject constructor(
      */
     private val purchaseMutex = Mutex()
 
-    /** Guards [connection], which is the one in-flight connection every caller shares. */
-    private val connectionMutex = Mutex()
-
     /**
      * The connection attempt in progress, so a purchase started while the app-launch [connect] is
      * still connecting waits for that one. Play answers a second concurrent `startConnection`
      * with an error, which would surface as "billing unavailable" seconds before the first
      * connection succeeds.
      */
-    private var connection: CompletableDeferred<PurchaseFailure?>? = null
+    private val connection = AtomicReference<CompletableDeferred<PurchaseFailure?>?>(null)
+
+    /** Purchase tokens with an acknowledgement already on its way to Play. */
+    private val acknowledging: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
     override fun connect() {
         appScope.launch {
-            if (ensureConnected() == null) queryPurchases()
+            // Bounded like the purchase path, and for a sharper reason: if Play never answers,
+            // statusResolved stays false for the whole session, and every premium gate that
+            // waits on it - cloud sync above all - would lock out a paying subscriber.
+            val outcome = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { Connection(ensureConnected()) }
+            if (outcome == null) {
+                Log.w(TAG, "billing connect got no answer within ${PREPARE_TIMEOUT_MS}ms")
+                return@launch
+            }
+            if (outcome.failure == null) queryPurchases()
         }
     }
+
+    /** Wraps a nullable failure so a timeout stays distinguishable from success. */
+    private class Connection(val failure: PurchaseFailure?)
 
     override fun queryPurchases() {
         val params = QueryPurchasesParams.newBuilder()
@@ -123,10 +136,16 @@ class PlayBillingRepository @Inject constructor(
     private fun acknowledge(purchases: List<Purchase>) {
         purchases.filter { it.purchaseState == Purchase.PurchaseState.PURCHASED && !it.isAcknowledged }
             .forEach { purchase ->
+                // `isAcknowledged` is a snapshot, and the same purchase reaches us from both the
+                // purchase callback and the query that follows it, so without this the second
+                // one acknowledges a token already in flight and Play rejects it.
+                if (!acknowledging.add(purchase.purchaseToken)) return@forEach
+
                 val params = AcknowledgePurchaseParams.newBuilder()
                     .setPurchaseToken(purchase.purchaseToken)
                     .build()
                 billingClient.acknowledgePurchase(params) { result ->
+                    acknowledging.remove(purchase.purchaseToken)
                     if (result.responseCode != BillingClient.BillingResponseCode.OK) {
                         Log.w(
                             TAG,
@@ -139,7 +158,11 @@ class PlayBillingRepository @Inject constructor(
 
     override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
         if (result.responseCode == BillingClient.BillingResponseCode.OK && purchases != null) {
-            updateSubscriptionStatus(purchases)
+            acknowledge(purchases)
+            // Play delivers only the purchases from this flow, which is not an entitlement
+            // snapshot: handing that list to updateSubscriptionStatus would read FREE - and
+            // downgrade a subscriber mid-session - whenever it holds nothing PURCHASED.
+            queryPurchases()
         }
     }
 
@@ -200,16 +223,31 @@ class PlayBillingRepository @Inject constructor(
     private suspend fun ensureConnected(): PurchaseFailure? {
         if (billingClient.isReady) return null
 
-        val (pending, isOwner) = connectionMutex.withLock {
-            val existing = connection
-            if (existing != null && !existing.isCompleted) {
-                existing to false
-            } else {
-                CompletableDeferred<PurchaseFailure?>().also { connection = it } to true
+        while (true) {
+            val existing = connection.get()
+            if (existing != null && !existing.isCompleted) return existing.await()
+
+            val attempt = CompletableDeferred<PurchaseFailure?>()
+            if (!connection.compareAndSet(existing, attempt)) continue
+
+            startConnection(attempt)
+            try {
+                return attempt.await()
+            } finally {
+                // An attempt whose owner gave up - timed out, or its screen went away - must not
+                // be left in place: every later tap would wait on a deferred nobody completes,
+                // and no reconnect would ever be tried.
+                if (!attempt.isCompleted) {
+                    attempt.complete(
+                        reportFailure(
+                            PurchaseFailure.BILLING_UNAVAILABLE,
+                            "connection attempt abandoned before Play answered"
+                        )
+                    )
+                }
+                connection.compareAndSet(attempt, null)
             }
         }
-        if (isOwner) startConnection(pending)
-        return pending.await()
     }
 
     private fun startConnection(pending: CompletableDeferred<PurchaseFailure?>) {
@@ -230,8 +268,9 @@ class PlayBillingRepository @Inject constructor(
             override fun onBillingServiceDisconnected() {
                 // The service can die while setup is still pending, in which case the callback
                 // above never arrives. Answer whoever is waiting rather than let them time out.
-                // `complete` on an already-completed deferred is a no-op, so a disconnect after a
-                // successful connection changes nothing here.
+                // This listener outlives the attempt, so an ordinary later disconnect lands here
+                // too - that one answers nobody and must not be logged as a hand-off failure.
+                if (pending.isCompleted) return
                 pending.complete(
                     reportFailure(
                         PurchaseFailure.BILLING_UNAVAILABLE,
