@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +28,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -52,6 +54,20 @@ class PlayBillingRepository @Inject constructor(
          * purchase that is going ahead.
          */
         private const val PREPARE_TIMEOUT_MS = 20_000L
+
+        /**
+         * How long one acknowledgement may stay in flight before its token is freed for a later
+         * attempt. Play's callback is not guaranteed to arrive, and a token left in flight
+         * forever is never retried by any later query - which ends in Play refunding a
+         * subscription the user is still paying for.
+         */
+        private const val ACKNOWLEDGE_TIMEOUT_MS = 60_000L
+
+        /** Launch-time attempts to resolve entitlement before giving up for this session. */
+        private const val RESOLVE_ATTEMPTS = 5
+
+        /** Delay before the second resolve attempt; doubled each time after that. */
+        private const val RESOLVE_BACKOFF_START_MS = 2_000L
     }
 
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
@@ -84,33 +100,76 @@ class PlayBillingRepository @Inject constructor(
     /** Purchase tokens with an acknowledgement already on its way to Play. */
     private val acknowledging: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
+    /** True while the launch-time resolve ladder is running. */
+    private val resolving = AtomicBoolean(false)
+
     override fun connect() {
+        // One ladder of retries at a time. connect() is called once at launch today, but a
+        // second caller must not start a competing one - two ladders would race each other's
+        // connection attempts for no gain.
+        if (!resolving.compareAndSet(false, true)) return
+
         appScope.launch {
-            // Bounded like the purchase path, so a silent Play never holds the connection slot
-            // open. Note what this does *not* fix: statusResolved is only set by a successful
-            // purchase query, so after a timeout it stays false until something triggers
-            // another connect, and every gate that waits on it keeps refusing. Making the
-            // launch-time connection recover on its own is its own change.
-            val outcome = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { Connection(ensureConnected()) }
-            if (outcome == null) {
-                Log.w(TAG, "billing connect got no answer within ${PREPARE_TIMEOUT_MS}ms")
-                return@launch
+            try {
+                var backoff = RESOLVE_BACKOFF_START_MS
+                repeat(RESOLVE_ATTEMPTS) { attempt ->
+                    // A purchase completing resolves entitlement on its own; nothing left to do.
+                    if (_statusResolved.value || resolveEntitlement()) return@launch
+                    if (attempt < RESOLVE_ATTEMPTS - 1) {
+                        delay(backoff)
+                        backoff *= 2
+                    }
+                }
+                Log.w(TAG, "entitlement unresolved after $RESOLVE_ATTEMPTS attempts")
+            } finally {
+                resolving.set(false)
             }
-            if (outcome.failure == null) queryPurchases()
         }
+    }
+
+    /**
+     * One connect-and-query attempt, true once entitlement is known.
+     *
+     * This retries because `statusResolved` is what every gate waiting on billing keys off, and
+     * it is only ever set by a query Play actually answered. A single launch-time attempt that
+     * timed out left it false for the whole session - so a paying subscriber was refused cloud
+     * sync until they restarted the app, which is the opposite of what the gate is for.
+     */
+    private suspend fun resolveEntitlement(): Boolean {
+        val outcome = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { Connection(ensureConnected()) }
+        if (outcome == null) {
+            Log.w(TAG, "billing connect got no answer within ${PREPARE_TIMEOUT_MS}ms")
+            return false
+        }
+        if (outcome.failure != null) return false
+        return queryPurchasesResolving()
     }
 
     /** Wraps a nullable failure so a timeout stays distinguishable from success. */
     private class Connection(val failure: PurchaseFailure?)
 
-    override fun queryPurchases() {
-        val params = QueryPurchasesParams.newBuilder()
-            .setProductType(BillingClient.ProductType.SUBS)
-            .build()
+    private fun purchasesParams(): QueryPurchasesParams = QueryPurchasesParams.newBuilder()
+        .setProductType(BillingClient.ProductType.SUBS)
+        .build()
 
-        billingClient.queryPurchasesAsync(params) { result, purchasesList ->
+    override fun queryPurchases() {
+        billingClient.queryPurchasesAsync(purchasesParams()) { result, purchasesList ->
             if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                 updateSubscriptionStatus(purchasesList)
+            }
+        }
+    }
+
+    /** The same query, awaited: true when Play answered and entitlement is now resolved. */
+    private suspend fun queryPurchasesResolving(): Boolean = suspendCancellableCoroutine { cont ->
+        billingClient.queryPurchasesAsync(purchasesParams()) { result, purchasesList ->
+            if (!cont.isActive) return@queryPurchasesAsync
+            if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+                updateSubscriptionStatus(purchasesList)
+                cont.resume(true)
+            } else {
+                Log.w(TAG, "queryPurchases: ${result.responseCode} ${result.debugMessage}")
+                cont.resume(false)
             }
         }
     }
@@ -143,19 +202,35 @@ class PlayBillingRepository @Inject constructor(
                 // one acknowledges a token already in flight and Play rejects it.
                 if (!acknowledging.add(purchase.purchaseToken)) return@forEach
 
-                val params = AcknowledgePurchaseParams.newBuilder()
-                    .setPurchaseToken(purchase.purchaseToken)
-                    .build()
-                billingClient.acknowledgePurchase(params) { result ->
-                    acknowledging.remove(purchase.purchaseToken)
-                    if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                        Log.w(
-                            TAG,
-                            "acknowledgePurchase: ${result.responseCode} ${result.debugMessage}"
-                        )
+                appScope.launch {
+                    try {
+                        val code = withTimeoutOrNull(ACKNOWLEDGE_TIMEOUT_MS) {
+                            acknowledgeNow(purchase.purchaseToken)
+                        }
+                        if (code == null) {
+                            Log.w(TAG, "acknowledgePurchase: no answer within ${ACKNOWLEDGE_TIMEOUT_MS}ms")
+                        } else if (code != BillingClient.BillingResponseCode.OK) {
+                            Log.w(TAG, "acknowledgePurchase: $code")
+                        }
+                    } finally {
+                        // Freed whatever happened, including a callback that never arrives.
+                        // A token stuck in flight is never retried by any later query, and Play
+                        // refunds a subscription left unacknowledged for three days - so the
+                        // failure mode of keeping it is a user who paid and silently lost it.
+                        acknowledging.remove(purchase.purchaseToken)
                     }
                 }
             }
+    }
+
+    /** Resumes with Play's response code for acknowledging [token]. */
+    private suspend fun acknowledgeNow(token: String): Int = suspendCancellableCoroutine { cont ->
+        val params = AcknowledgePurchaseParams.newBuilder()
+            .setPurchaseToken(token)
+            .build()
+        billingClient.acknowledgePurchase(params) { result ->
+            if (cont.isActive) cont.resume(result.responseCode)
+        }
     }
 
     override fun onPurchasesUpdated(result: BillingResult, purchases: List<Purchase>?) {
@@ -210,7 +285,18 @@ class PlayBillingRepository @Inject constructor(
             ensureConnected()?.let { return Prepared.Unavailable(it) }
         }
 
-        val details = when (val query = queryPremiumOffer()) {
+        var query = queryPremiumOffer()
+        if (query is OfferQuery.Failed && query.retryable) {
+            // The binding can drop between the isReady check above and this query - the client
+            // reports ready right up to the moment it dies, so there is no check that closes the
+            // window. Reconnect and ask once more rather than make the user tap through a
+            // "billing unavailable" for a service that is back a second later.
+            val reconnect = ensureConnected()
+            if (reconnect != null) return Prepared.Unavailable(query.failure)
+            query = queryPremiumOffer()
+        }
+
+        val details = when (query) {
             is OfferQuery.Failed -> return Prepared.Unavailable(query.failure)
             is OfferQuery.Found -> query.details
         }
@@ -295,7 +381,8 @@ class PlayBillingRepository @Inject constructor(
 
     private sealed interface OfferQuery {
         data class Found(val details: ProductDetails) : OfferQuery
-        data class Failed(val failure: PurchaseFailure) : OfferQuery
+        /** [retryable] when Play's answer was "the service is not there", not "no such item". */
+        data class Failed(val failure: PurchaseFailure, val retryable: Boolean = false) : OfferQuery
     }
 
     private suspend fun queryPremiumOffer(): OfferQuery = suspendCancellableCoroutine { cont ->
@@ -322,9 +409,12 @@ class PlayBillingRepository @Inject constructor(
                 } else {
                     PurchaseFailure.BILLING_UNAVAILABLE
                 }
+                val retryable = code == BillingClient.BillingResponseCode.SERVICE_DISCONNECTED ||
+                    code == BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE
                 cont.resume(
                     OfferQuery.Failed(
-                        reportFailure(failure, "queryProductDetails: $code ${billingResult.debugMessage}")
+                        reportFailure(failure, "queryProductDetails: $code ${billingResult.debugMessage}"),
+                        retryable = retryable
                     )
                 )
                 return@queryProductDetailsAsync

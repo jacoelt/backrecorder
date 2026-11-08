@@ -270,8 +270,7 @@ class PlayBillingRepositoryTest {
      *
      * Note what this does **not** cover: the two calls serialize on `purchaseMutex`, so the
      * second never races the first into `ensureConnected`. The shared-connection deferred is
-     * exercised by `connect()` racing a purchase, which is not pinned by a test - see the PR
-     * description.
+     * exercised by `connect()` racing a purchase - the test below it.
      */
     @Test
     fun `a second tap is served rather than dropped`() =
@@ -298,6 +297,112 @@ class PlayBillingRepositoryTest {
             verify(exactly = 2) { client.launchBillingFlow(activity, any()) }
             verify(exactly = 1) { client.startConnection(any()) }
         }
+
+    /**
+     * The shared-connection deferred, which the test above cannot reach. An Upgrade tap in the
+     * first seconds after launch lands while `connect()` is still connecting: it must wait on
+     * that attempt rather than issue a second `startConnection`, which Play answers with an
+     * error seconds before the first connection succeeds.
+     */
+    @Test
+    fun `a tap during the launch connect joins it instead of opening a second`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            every { client.startConnection(capture(listener)) } answers { }
+            stubProductQuery(premiumOffer())
+            stubQueryPurchases()
+            every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+            val repository = createRepository()
+            repository.connect()
+            runCurrent()
+            verify(exactly = 1) { client.startConnection(any()) }
+
+            val tap = async { repository.launchPurchaseFlow(activity) }
+            runCurrent()
+            // Joined the attempt already in flight - no second connection on the one client.
+            verify(exactly = 1) { client.startConnection(any()) }
+
+            every { client.isReady } returns true
+            listener.captured.onBillingSetupFinished(okResult())
+            runCurrent()
+
+            assertNull(tap.await())
+            verify(exactly = 1) { client.startConnection(any()) }
+            verify(exactly = 1) { client.launchBillingFlow(activity, any()) }
+        }
+
+    /**
+     * `statusResolved` is what every gate waiting on billing keys off, and only a query Play
+     * answered sets it. A single launch-time attempt that timed out left it false for the whole
+     * session, so a paying subscriber was refused cloud sync until they restarted the app.
+     */
+    @Test
+    fun `a launch connect that times out is retried until entitlement resolves`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            // First attempt is left hanging; later ones connect.
+            var attempts = 0
+            every { client.startConnection(capture(listener)) } answers {
+                if (++attempts > 1) listener.captured.onBillingSetupFinished(okResult())
+            }
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            repository.connect()
+            runCurrent()
+            assertEquals(false, repository.statusResolved.value)
+
+            // Past the prepare timeout and the first backoff.
+            advanceTimeBy(25_000)
+            runCurrent()
+
+            assertEquals(true, repository.statusResolved.value)
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        }
+
+    /**
+     * The binding can drop between the `isReady` check and the product query - the client
+     * reports ready right up to the moment it dies, so no check closes that window.
+     */
+    @Test
+    fun `a service that drops mid-query is reconnected and asked again`() = runTest {
+        every { client.isReady } returns true
+        val productListener = slot<ProductDetailsResponseListener>()
+        var queries = 0
+        every {
+            client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), capture(productListener))
+        } answers {
+            val response: QueryProductDetailsResult = mockk(relaxed = true) {
+                every { productDetailsList } returns listOf(premiumOffer())
+            }
+            val code = if (++queries == 1) {
+                BillingClient.BillingResponseCode.SERVICE_DISCONNECTED
+            } else {
+                BillingClient.BillingResponseCode.OK
+            }
+            productListener.captured.onProductDetailsResponse(result(code), response)
+        }
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        assertNull(createRepository().launchPurchaseFlow(activity))
+        verify(exactly = 2) { client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any()) }
+    }
+
+    /** A product Play genuinely does not have is not retried - that is not a transient error. */
+    @Test
+    fun `an unavailable product is not retried`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(null, code = BillingClient.BillingResponseCode.ITEM_UNAVAILABLE)
+
+        assertEquals(
+            PurchaseFailure.PRODUCT_UNAVAILABLE,
+            createRepository().launchPurchaseFlow(activity)
+        )
+        verify(exactly = 1) { client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any()) }
+    }
 
     /**
      * A connection nobody is waiting on any more must not be left in place: the next tap would
@@ -334,10 +439,41 @@ class PlayBillingRepositoryTest {
 
         val repository = createRepository()
         repository.onPurchasesUpdated(okResult(), listOf(purchase))
+        runCurrent()
 
         verify(exactly = 1) { client.acknowledgePurchase(any(), any()) }
         assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
     }
+
+    /**
+     * Play's acknowledgement callback is not guaranteed to arrive. A token held in flight
+     * forever is never retried by any later query, and an unacknowledged subscription is
+     * refunded after three days - so the token must be freed even when nothing comes back.
+     */
+    @Test
+    fun `an acknowledgement Play never answers is retried later`() =
+        runTest(StandardTestDispatcher()) {
+            val purchase = purchase(acknowledged = false)
+            stubQueryPurchases(purchase)
+            // Relaxed mock: acknowledgePurchase is recorded and its callback never fires.
+
+            val repository = createRepository()
+            repository.onPurchasesUpdated(okResult(), listOf(purchase))
+            runCurrent()
+            verify(exactly = 1) { client.acknowledgePurchase(any(), any()) }
+
+            // Still in flight: a second pass must not send a duplicate.
+            repository.onPurchasesUpdated(okResult(), listOf(purchase))
+            runCurrent()
+            verify(exactly = 1) { client.acknowledgePurchase(any(), any()) }
+
+            advanceTimeBy(61_000)
+            runCurrent()
+
+            repository.onPurchasesUpdated(okResult(), listOf(purchase))
+            runCurrent()
+            verify(exactly = 2) { client.acknowledgePurchase(any(), any()) }
+        }
 
     @Test
     fun `an already acknowledged purchase is left alone`() = runTest {
