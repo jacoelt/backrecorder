@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -42,7 +42,12 @@ fun BusyButton(
             CircularProgressIndicator(
                 modifier = Modifier.size(16.dp),
                 strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary
+                // The button is disabled while busy, so it is drawing its *disabled* content
+                // colour - `onSurface` at 38%, not `onPrimary`. Naming `onPrimary` here put a
+                // near-white spinner on the pale disabled container, leaving a greyed-out button
+                // with no visible sign anything was happening: the dead button again, which is
+                // the one thing this component exists to prevent. Follow the content colour.
+                color = LocalContentColor.current
             )
             Spacer(modifier = Modifier.width(8.dp))
         }

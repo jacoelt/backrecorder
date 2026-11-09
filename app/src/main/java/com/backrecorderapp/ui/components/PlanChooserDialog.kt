@@ -1,5 +1,7 @@
 package com.backrecorderapp.ui.components
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -67,7 +69,14 @@ fun PlanChooserDialog(
         title = { Text(stringResource(R.string.plan_chooser_title)) },
         text = {
             Column(
-                modifier = Modifier.selectableGroup(),
+                // Scrollable because `AlertDialog`'s text slot is not. In landscape, or at a
+                // large font scale, or with a long localised trial line, the second row can fall
+                // outside the dialog - and since yearly is preselected whenever it carries a
+                // saving, the row that becomes unreachable is monthly. An unreachable option is
+                // the wrong-plan charge this dialog exists to prevent.
+                modifier = Modifier
+                    .selectableGroup()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 plans.plans.forEach { plan ->
@@ -133,7 +142,11 @@ private fun PlanRow(
                             BillingPeriod.YEARLY -> R.string.plan_period_yearly
                         }
                     ),
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    // Yields its space to the badge instead of measuring first and squeezing it:
+                    // the row is narrow once the dialog padding and the radio button are taken
+                    // out, and a longer localised plan name would otherwise crush the badge.
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 if (savingsPercent != null) {
                     SavingsBadge(

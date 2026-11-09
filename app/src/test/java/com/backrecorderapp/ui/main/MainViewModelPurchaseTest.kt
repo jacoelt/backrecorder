@@ -490,6 +490,9 @@ class MainViewModelPurchaseTest {
         viewModel.launchPurchaseFlow(mockk<Activity>(), yearlyPlan)
         advanceUntilIdle()
         coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), yearlyPlan) }
+        // Pinned by count as well as by plan: the second tap must be discarded whatever it
+        // carries, not merely resolved to the same plan as the first.
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), any()) }
 
         parked.complete(PurchaseFailure.BILLING_UNAVAILABLE)
         advanceUntilIdle()
@@ -521,14 +524,14 @@ class MainViewModelPurchaseTest {
             viewModel.uiState.value.plansLoading
         )
 
-        viewModel.showPlanChooser()
-        advanceUntilIdle()
-        coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+        // No second tap here: adopting a load is a separate behaviour with its own test. What
+        // this one pins is that the guard survived the dismissal.
 
         parked.complete(PlanQuery.Available(plans))
         advanceUntilIdle()
 
-        assertNull("the abandoned load publishes nothing", viewModel.uiState.value.subscriptionPlans)
+        coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+        assertNull("nobody asked again, so it publishes nothing", viewModel.uiState.value.subscriptionPlans)
         assertEquals(false, viewModel.uiState.value.plansLoading)
     }
 
@@ -560,4 +563,95 @@ class MainViewModelPurchaseTest {
 
         assertNull("and goes once Play has the sheet", viewModel.uiState.value.subscriptionPlans)
     }
+
+    /**
+     * A save that overlaps an upgrade must not resurrect the busy flag.
+     *
+     * `requestSave` reads the whole state, suspends on the segment query, then writes back. It
+     * used to write `state.copy(...)` from the pre-suspension snapshot, which restored every
+     * field as of that moment - so an upgrade's `finally` clearing `plansLoading` in the gap was
+     * simply undone. Nothing else clears that flag, so the Upgrade button stayed a disabled
+     * spinner for the life of the view model: the dead button this issue exists to remove,
+     * rebuilt out of the guard meant to prevent it.
+     *
+     * The ordering is forced here rather than raced: the load is released while the save's
+     * segment query is parked, so the stale write lands after the flag was cleared.
+     */
+    @Test
+    fun `a save running across an upgrade does not strand the busy flag`() = runTest {
+        val load = CompletableDeferred<PlanQuery>()
+        val segmentQuery = CompletableDeferred<List<Any>>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { load.await() }
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } coAnswers {
+            @Suppress("UNCHECKED_CAST")
+            segmentQuery.await() as List<Nothing>
+        }
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns
+            GateResult.Blocked(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+
+        val viewModel = buildViewModel()
+
+        // An upgrade is in flight, so the flag is set...
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        assertEquals(true, viewModel.uiState.value.plansLoading)
+
+        // ...and a save starts, taking its snapshot of that state before suspending.
+        viewModel.requestSave()
+        advanceUntilIdle()
+
+        // The upgrade finishes while the save is still parked: its `finally` clears the flag.
+        load.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+
+        // Now the save resumes and writes. The stale snapshot must not come back with it.
+        segmentQuery.complete(listOf(mockk()))
+        advanceUntilIdle()
+
+        assertEquals(
+            "the save's write must not resurrect a flag the upgrade already released",
+            false,
+            viewModel.uiState.value.plansLoading
+        )
+        // ...and the save still does its own job.
+        assertEquals(true, viewModel.uiState.value.showUpgradeDialog)
+    }
+
+    /**
+     * A tap that lands on an abandoned load adopts it instead of being swallowed.
+     *
+     * The guard refuses a second load while one is running, which is right - a second would
+     * queue on the repository's mutex behind the first and spend its whole timeout there. But
+     * the running load's answer was still being discarded on the old generation, so the user
+     * tapped Upgrade, watched the spinner run to completion, and got nothing at all: a tap
+     * resolving to silence, which is the complaint this issue opens with.
+     */
+    @Test
+    fun `tapping again during an abandoned load adopts it rather than swallowing the tap`() =
+        runTest {
+            val parked = CompletableDeferred<PlanQuery>()
+            coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+            val viewModel = buildViewModel()
+            viewModel.showPlanChooser()
+            advanceUntilIdle()
+            viewModel.dismissUpgradeDialog()
+            advanceUntilIdle()
+
+            // The user changes their mind while the abandoned load is still running.
+            viewModel.showPlanChooser()
+            advanceUntilIdle()
+            coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+
+            parked.complete(PlanQuery.Available(plans))
+            advanceUntilIdle()
+
+            assertEquals(
+                "the adopted load must answer the second tap",
+                plans,
+                viewModel.uiState.value.subscriptionPlans
+            )
+            assertEquals(false, viewModel.uiState.value.plansLoading)
+        }
 }

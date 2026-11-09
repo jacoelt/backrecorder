@@ -548,6 +548,9 @@ class SettingsViewModelTest {
         viewModel.launchPurchaseFlow(mockk<Activity>(), yearlyPlan)
         advanceUntilIdle()
         coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), yearlyPlan) }
+        // Pinned by count as well as by plan: the second tap must be discarded whatever it
+        // carries, not merely resolved to the same plan as the first.
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), any()) }
 
         parked.complete(PurchaseFailure.BILLING_UNAVAILABLE)
         advanceUntilIdle()
@@ -575,14 +578,13 @@ class SettingsViewModelTest {
 
         assertTrue("the load is still running", viewModel.upgradeBusy.value)
 
-        viewModel.showPlanChooser()
-        advanceUntilIdle()
-        coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+        // No second tap: adopting a live load is separate behaviour, tested on its own.
 
         parked.complete(PlanQuery.Available(plans))
         advanceUntilIdle()
 
         assertNull(viewModel.subscriptionPlans.value)
+        coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
         assertFalse(viewModel.upgradeBusy.value)
     }
 

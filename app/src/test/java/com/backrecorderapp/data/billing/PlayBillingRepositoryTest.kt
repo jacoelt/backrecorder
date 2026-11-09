@@ -115,11 +115,14 @@ class PlayBillingRepositoryTest {
         return PlayBillingRepository(factory, this)
     }
 
+    /** What the production code asked Play for, captured by [stubProductQuery]. */
+    private val queryParams = slot<QueryProductDetailsParams>()
+
     /** Makes the client answer a product query with [details], or with no product at all. */
     private fun stubProductQuery(details: ProductDetails?, code: Int = BillingClient.BillingResponseCode.OK) {
         val listener = slot<ProductDetailsResponseListener>()
         every {
-            client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), capture(listener))
+            client.queryProductDetailsAsync(capture(queryParams), capture(listener))
         } answers {
             val response: QueryProductDetailsResult = mockk(relaxed = true) {
                 every { productDetailsList } returns listOfNotNull(details)
@@ -801,6 +804,9 @@ class PlayBillingRepositoryTest {
      * reflection - a rename in a future Play Billing release breaks the build loudly instead of
      * passing silently. Worth that cost: nothing else can see *which* plan was bought, and "the
      * plan the user picked is the plan Play charges" is the guarantee this change exists to make.
+     *
+     * If this stops compiling after a Play Billing upgrade, re-find the accessors on
+     * `BillingFlowParams` and `ProductDetailsParams` with `javap` - do not delete the assertion.
      */
     private fun launchedOfferToken(): String {
         val params = slot<BillingFlowParams>()
@@ -885,14 +891,31 @@ class PlayBillingRepositoryTest {
      * It still cannot prove the Play Console agrees. Only a device on a real account can.
      */
     @Test
-    fun `the subscription asked for is the one the Play Console has`() {
+    fun `the subscription asked for is the one the Play Console has`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct())
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        createRepository().launchPurchaseFlow(activity, monthlyPlan)
+
+        // The id Play was actually asked for, read off the captured params rather than off the
+        // constant - the fixtures all read the constant, so they agree with it whatever it says.
+        assertEquals(listOf("main_subscription"), queriedProductIds())
         assertEquals("main_subscription", BillingRepository.PREMIUM_SUBSCRIPTION_ID)
     }
 
+    /** The product ids on the query the production code built. */
+    private fun queriedProductIds(): List<String?> =
+        (queryParams.captured.zza() as List<*>).map {
+            (it as QueryProductDetailsParams.Product).zza()
+        }
+
     /**
-     * Abandoning a hand-off never cancels it, so the sheet still opens; what must not happen is a
-     * *second* launch. The view models hold that guard, but the repository must not quietly add
-     * one of its own either - a dropped second tap is the dead button again (#72).
+     * A base plan that has vanished from Play fails closed.
+     *
+     * The purchase re-resolves against a fresh query, so the chooser's plan may no longer be
+     * there. Moving the user to the base plan that *is* there would be the arbitrary charge this
+     * issue exists to prevent, so nothing is launched at all and the refusal is reported.
      */
     @Test
     fun `a refused plan never reaches Play at all`() = runTest {

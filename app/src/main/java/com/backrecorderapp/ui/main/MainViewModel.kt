@@ -122,7 +122,16 @@ class MainViewModel @Inject constructor(
      * the call is still running, and that flag is the only thing stopping a second one from
      * starting alongside it. So abandoning leaves `plansLoading` / `purchaseInFlight` set and
      * each `finally` clears its own unconditionally - which also means two operations of the
-     * same kind can never be in flight at once, nor share an `issued` value.
+     * same kind can never be in flight at once *in this view model*, nor share an `issued` value.
+     *
+     * Only in this view model, though: settings holds its own flags over the same singleton
+     * repository, so a hand-off started here and one started there are **serialized** by the
+     * repository's mutex rather than prevented, and the user would see the second sheet behind
+     * the first. Closing that needs the in-flight state to live in the repository; issue #78.
+     *
+     * Nothing else may write these flags. Anything that reads the whole state, suspends, then
+     * writes `state.copy(...)` back puts a cleared flag to true again *permanently*, since the
+     * `finally` that owned it has already run - see [requestSave], which did exactly that.
      *
      * Plain `Int`s, read and written without synchronization, because every mutator here runs on
      * the main thread: each is called from a Compose lambda or from a `viewModelScope` body, and
@@ -145,6 +154,14 @@ class MainViewModel @Inject constructor(
     private var planLoadGeneration = 0
 
     private var purchaseGeneration = 0
+
+    /**
+     * The `issued` value of the plan load currently running, or null when none is.
+     *
+     * It is what lets a fresh tap re-adopt a load the user abandoned, instead of being refused by
+     * a guard it cannot see and answered by nothing at all.
+     */
+    private var liveLoadGeneration: Int? = null
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -272,6 +289,13 @@ class MainViewModel @Inject constructor(
 
     fun requestSave() {
         viewModelScope.launch {
+            // Read once for the *inputs* below, but never written back wholesale: the calls in
+            // this function suspend, and `state.copy(...)` would restore every field as of this
+            // line - undoing anything that changed meanwhile. That is how a billing flag got
+            // stuck: an upgrade's `finally` cleared `plansLoading` while this coroutine was in
+            // the segment query, and the write below put it back to true for the life of the
+            // view model, leaving the Upgrade button a permanently disabled spinner. Every write
+            // here goes through the *current* value instead.
             val state = _uiState.value
 
             // Preflight: never launch the SAF picker if the selection has no
@@ -285,7 +309,7 @@ class MainViewModel @Inject constructor(
             }
             val segments = segmentManager.getSegmentsInRange(state.selectionStartTime, endTime)
             if (segments.isEmpty()) {
-                _uiState.value = state.copy(
+                _uiState.value = _uiState.value.copy(
                     errorMessage = "No recorded data found for the selected time range"
                 )
                 return@launch
@@ -297,10 +321,10 @@ class MainViewModel @Inject constructor(
             )
             when (gateResult) {
                 is GateResult.Allowed -> {
-                    _uiState.value = state.copy(launchSavePicker = true)
+                    _uiState.value = _uiState.value.copy(launchSavePicker = true)
                 }
                 is GateResult.Blocked -> {
-                    _uiState.value = state.copy(
+                    _uiState.value = _uiState.value.copy(
                         showUpgradeDialog = true,
                         upgradeReason = gateResult.reason
                     )
@@ -379,8 +403,19 @@ class MainViewModel @Inject constructor(
         val current = _uiState.value
         // A purchase already on its way to Play would otherwise be joined by a second chooser
         // opening behind Play's sheet.
-        if (current.plansLoading || current.purchaseInFlight) return
+        if (current.purchaseInFlight) return
+        if (current.plansLoading) {
+            // A load is already running - possibly one the user abandoned a moment ago. Adopt it
+            // rather than refusing the tap: starting a second would queue inside the repository's
+            // mutex behind the first and burn its whole timeout on the lock, but simply returning
+            // meant the user watched a spinner run to completion and then saw *nothing*, because
+            // the answer was still being discarded on the old generation. A swallowed tap that
+            // resolves to silence is the dead button this issue is about.
+            liveLoadGeneration?.let { planLoadGeneration = it }
+            return
+        }
         val issued = planLoadGeneration
+        liveLoadGeneration = issued
         _uiState.value = current.copy(plansLoading = true)
         viewModelScope.launch {
             try {
@@ -405,6 +440,7 @@ class MainViewModel @Inject constructor(
                 // flight", not "someone is still listening". Abandonment deliberately leaves it
                 // set, so this is always the load that set it. A flag left set would refuse
                 // every later tap, which is the dead button again.
+                liveLoadGeneration = null
                 _uiState.value = _uiState.value.copy(plansLoading = false)
             }
         }
