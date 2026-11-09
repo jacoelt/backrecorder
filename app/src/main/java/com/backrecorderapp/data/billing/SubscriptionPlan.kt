@@ -13,12 +13,7 @@ import java.time.format.DateTimeParseException
  */
 enum class BillingPeriod(val basePlanId: String) {
     MONTHLY("monthly"),
-    YEARLY("yearly");
-
-    companion object {
-        fun forBasePlanId(basePlanId: String?): BillingPeriod? =
-            entries.firstOrNull { it.basePlanId == basePlanId }
-    }
+    YEARLY("yearly")
 }
 
 /**

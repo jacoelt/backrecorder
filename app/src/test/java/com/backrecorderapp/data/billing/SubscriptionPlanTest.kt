@@ -355,4 +355,32 @@ class SubscriptionPlanTest {
         val failed = runCatching { SubscriptionPlans(emptyList()) }
         assertEquals(true, failed.exceptionOrNull() is IllegalArgumentException)
     }
+
+    /**
+     * The chooser can price the base plan's own offer, which has no id. Re-resolving must then
+     * pick that same id-less offer and *not* the trial sitting beside it: matching on a null
+     * `offerId` is exactly the case where a sloppy fallback would silently move the user onto a
+     * different offer than the one whose figures they agreed to.
+     */
+    @Test
+    fun `a plan priced from the base plan's own offer does not drift onto the trial`() {
+        val plain = offer(
+            "monthly",
+            token = "plain",
+            offerId = null,
+            phases = listOf(phase(2_990_000L))
+        )
+        val trial = offer(
+            "monthly",
+            token = "trial",
+            offerId = "monthly-free-trial",
+            phases = listOf(phase(0L, period = "P1W"), phase(2_990_000L))
+        )
+        // Trial first, so the preference rule would reach for it.
+        val details = product(trial, plain)
+
+        val chosen = plan(BillingPeriod.MONTHLY, 2_990_000L, offerId = null)
+
+        assertEquals("plain", details.offerForChosenPlan(chosen)?.offerToken)
+    }
 }

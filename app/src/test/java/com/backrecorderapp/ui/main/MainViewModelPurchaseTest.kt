@@ -93,7 +93,17 @@ class MainViewModelPurchaseTest {
         freeTrialDays = 7
     )
 
-    private val plans = SubscriptionPlans(listOf(monthlyPlan))
+    /** The other plan, so a test can tell "the plan picked" from "the only plan there is". */
+    private val yearlyPlan = SubscriptionPlan(
+        period = BillingPeriod.YEARLY,
+        offerId = "yearly-free-trial",
+        formattedPrice = "$29.90",
+        priceAmountMicros = 29_900_000L,
+        priceCurrencyCode = "USD",
+        freeTrialDays = 7
+    )
+
+    private val plans = SubscriptionPlans(listOf(monthlyPlan, yearlyPlan))
 
     private fun buildViewModel(): MainViewModel = MainViewModel(
         context,
@@ -238,11 +248,14 @@ class MainViewModelPurchaseTest {
         val viewModel = buildViewModel()
         viewModel.showPlanChooser()
         advanceUntilIdle()
-        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        // Yearly, deliberately: it is not the first plan in the set, so "sends the plan that
+        // was picked" cannot pass by accident on a fixture holding only one plan.
+        viewModel.launchPurchaseFlow(mockk<Activity>(), yearlyPlan)
         advanceUntilIdle()
 
         assertNull(viewModel.uiState.value.subscriptionPlans)
-        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
+        coVerify(exactly = 1) { billingRepository.launchPurchaseFlow(any(), yearlyPlan) }
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), monthlyPlan) }
     }
 
     /**
@@ -447,5 +460,104 @@ class MainViewModelPurchaseTest {
 
         assertNull(viewModel.uiState.value.subscriptionPlans)
         coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), any()) }
+    }
+
+    /**
+     * Leaving must drop the *answer*, not the guard. The hand-off is deliberately never
+     * cancelled, so clearing `purchaseInFlight` on the way out let the user come back, pick the
+     * other plan and be handed to Play twice - the first sheet for the plan they had moved on
+     * from. That is the arbitrary-plan charge this issue exists to prevent, reached through the
+     * UI rather than through `firstOrNull()`.
+     */
+    @Test
+    fun `leaving the screen does not free the guard over a live hand-off`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), monthlyPlan)
+        advanceUntilIdle()
+        viewModel.onScreenLeft()
+        advanceUntilIdle()
+
+        assertEquals(
+            "the hand-off is still running, so the guard must still be up",
+            true,
+            viewModel.uiState.value.purchaseInFlight
+        )
+
+        // The second plan must not reach Play while the first hand-off is alive.
+        viewModel.launchPurchaseFlow(mockk<Activity>(), yearlyPlan)
+        advanceUntilIdle()
+        coVerify(exactly = 0) { billingRepository.launchPurchaseFlow(any(), yearlyPlan) }
+
+        parked.complete(PurchaseFailure.BILLING_UNAVAILABLE)
+        advanceUntilIdle()
+
+        // Abandoned, so the failure is dropped - but the flag is the call's own to clear.
+        assertNull(viewModel.uiState.value.purchaseError)
+        assertEquals(false, viewModel.uiState.value.purchaseInFlight)
+    }
+
+    /**
+     * The same rule for the load. Freeing `plansLoading` on dismissal let the next tap queue
+     * behind a load nobody was waiting for, inside the repository's purchase mutex - and spend
+     * its whole timeout on the lock, reporting BILLING_UNAVAILABLE over a working connection.
+     */
+    @Test
+    fun `dismissing the offer does not free the guard over a live load`() = runTest {
+        val parked = CompletableDeferred<PlanQuery>()
+        coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.dismissUpgradeDialog()
+        advanceUntilIdle()
+
+        assertEquals(
+            "the load is still running, so the button must still look busy",
+            true,
+            viewModel.uiState.value.plansLoading
+        )
+
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+
+        parked.complete(PlanQuery.Available(plans))
+        advanceUntilIdle()
+
+        assertNull("the abandoned load publishes nothing", viewModel.uiState.value.subscriptionPlans)
+        assertEquals(false, viewModel.uiState.value.plansLoading)
+    }
+
+    /**
+     * The chooser is the only thing on screen while Play is being asked for the sheet, so it has
+     * to stay up: closing it left the main screen with no dialog, no spinner and nothing
+     * disabled for as long as preparing took - the dead button again, with a charge at the end.
+     */
+    @Test
+    fun `the chooser stays up while the hand-off runs`() = runTest {
+        val parked = CompletableDeferred<PurchaseFailure?>()
+        coEvery { billingRepository.loadSubscriptionPlans() } returns PlanQuery.Available(plans)
+        coEvery { billingRepository.launchPurchaseFlow(any(), any()) } coAnswers { parked.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.showPlanChooser()
+        advanceUntilIdle()
+        viewModel.launchPurchaseFlow(mockk<Activity>(), yearlyPlan)
+        advanceUntilIdle()
+
+        assertNotNull(
+            "the chooser renders the busy Continue button",
+            viewModel.uiState.value.subscriptionPlans
+        )
+        assertEquals(true, viewModel.uiState.value.purchaseInFlight)
+
+        parked.complete(null)
+        advanceUntilIdle()
+
+        assertNull("and goes once Play has the sheet", viewModel.uiState.value.subscriptionPlans)
     }
 }

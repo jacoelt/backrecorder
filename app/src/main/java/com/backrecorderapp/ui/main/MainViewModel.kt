@@ -116,8 +116,19 @@ class MainViewModel @Inject constructor(
 
     /**
      * Bumped whenever the user abandons something they started; an answer carrying a stale value
-     * is dropped instead of written, and its `finally` leaves the busy flag to whoever owns it
-     * now.
+     * is dropped instead of written.
+     *
+     * A generation decides only whether an answer is **published**. It never frees a busy flag:
+     * the call is still running, and that flag is the only thing stopping a second one from
+     * starting alongside it. So abandoning leaves `plansLoading` / `purchaseInFlight` set and
+     * each `finally` clears its own unconditionally - which also means two operations of the
+     * same kind can never be in flight at once, nor share an `issued` value.
+     *
+     * Plain `Int`s, read and written without synchronization, because every mutator here runs on
+     * the main thread: each is called from a Compose lambda or from a `viewModelScope` body, and
+     * `viewModelScope` is `Dispatchers.Main.immediate`. The same confinement is what makes the
+     * `_uiState.value = _uiState.value.copy(...)` read-modify-writes below safe. Calling any of
+     * them from another dispatcher would break both at once.
      *
      * The load and the hand-off count **separately**, which is the point: dismissing the upgrade
      * offer abandons the load that offer started, but a purchase already on its way to Play is
@@ -390,12 +401,11 @@ class MainViewModel @Inject constructor(
                     )
                 }
             } finally {
-                // Cleared whatever happened: a flag left set would refuse every later tap, which
-                // is the dead button again. Skipped once abandoned, because the flag was already
-                // cleared then and a newer load may own it now.
-                if (issued == planLoadGeneration) {
-                    _uiState.value = _uiState.value.copy(plansLoading = false)
-                }
+                // Cleared whatever happened, and unconditionally: the flag means "a load is in
+                // flight", not "someone is still listening". Abandonment deliberately leaves it
+                // set, so this is always the load that set it. A flag left set would refuse
+                // every later tap, which is the dead button again.
+                _uiState.value = _uiState.value.copy(plansLoading = false)
             }
         }
     }
@@ -409,10 +419,14 @@ class MainViewModel @Inject constructor(
      * and it must not return through the chooser.
      *
      * A purchase in flight is deliberately untouched: it is not what the dismissed offer started.
+     *
+     * `plansLoading` stays **set** until the call itself returns. Clearing it here would free the
+     * guard in [showPlanChooser] over a load that still holds the repository's purchase mutex, so
+     * the next tap would queue behind a load nobody is waiting for and spend its whole timeout
+     * budget on the lock - reporting BILLING_UNAVAILABLE over a connection that is working.
      */
     private fun abandonPendingPlanLoad() {
         planLoadGeneration++
-        _uiState.value = _uiState.value.copy(plansLoading = false)
     }
 
     /**
@@ -427,9 +441,14 @@ class MainViewModel @Inject constructor(
         abandonPendingPlanLoad()
         // Leaving abandons the purchase too - unlike dismissing the offer, which has no business
         // with one. Its answer would otherwise raise a failure dialog on the way back.
+        //
+        // `purchaseInFlight` is left set for the same reason the load's flag is: it is the only
+        // thing stopping a second hand-off, and the first one has *not* been cancelled. Clearing
+        // it here let the user leave, come back (or reach settings' own Upgrade), pick the other
+        // plan, and be shown two Play sheets - the first for the plan they had moved on from.
+        // That is the arbitrary-plan hazard this issue exists to close, reached through the UI.
         purchaseGeneration++
         _uiState.value = _uiState.value.copy(
-            purchaseInFlight = false,
             subscriptionPlans = null,
             purchaseError = null
         )
@@ -449,12 +468,18 @@ class MainViewModel @Inject constructor(
         // two hand-offs; the second serializes behind the first and reports a failure over a
         // purchase that is going ahead.
         if (_uiState.value.purchaseInFlight) return
-        _uiState.value = _uiState.value.copy(subscriptionPlans = null)
         if (activity == null) {
-            _uiState.value = _uiState.value.copy(purchaseError = PurchaseFailure.LAUNCH_FAILED)
+            _uiState.value = _uiState.value.copy(
+                subscriptionPlans = null,
+                purchaseError = PurchaseFailure.LAUNCH_FAILED
+            )
             return
         }
         val issued = purchaseGeneration
+        // The chooser stays up, with Continue busy, until Play's sheet is in front of the user.
+        // Closing it here left this screen with no dialog, no spinner and nothing disabled for
+        // as long as preparing takes - the same silence as a dead button, with a charge at the
+        // end of it. The screens render `purchaseInFlight`; only this keeps it on screen.
         _uiState.value = _uiState.value.copy(purchaseInFlight = true)
         viewModelScope.launch {
             try {
@@ -464,9 +489,12 @@ class MainViewModel @Inject constructor(
                     _uiState.value = _uiState.value.copy(purchaseError = it)
                 }
             } finally {
-                if (issued == purchaseGeneration) {
-                    _uiState.value = _uiState.value.copy(purchaseInFlight = false)
-                }
+                // Unconditional, like the load's: nothing else clears this flag, so it is always
+                // this hand-off's to drop.
+                _uiState.value = _uiState.value.copy(
+                    purchaseInFlight = false,
+                    subscriptionPlans = null
+                )
             }
         }
     }

@@ -100,7 +100,8 @@ class SettingsViewModel @Inject constructor(
      * the reasoning: why an answer in flight is discarded rather than cancelled (the call shares
      * one Play connection attempt with every other caller, and a cancelled caller's cleanup
      * answers all of them with a refusal), and why dismissing the offer must not touch a
-     * purchase that is already on its way.
+     * purchase that is already on its way - including why abandoning leaves the busy flag set
+     * for the call itself to clear.
      */
     private var planLoadGeneration = 0
 
@@ -299,7 +300,8 @@ class SettingsViewModel @Inject constructor(
                 // answered by an empty screen.
                 _showUpgradeDialog.value = false
             } finally {
-                if (issued == planLoadGeneration) _plansLoading.value = false
+                // Unconditional: abandonment leaves this set, so it is always this load's to drop.
+                _plansLoading.value = false
             }
         }
     }
@@ -317,12 +319,15 @@ class SettingsViewModel @Inject constructor(
         // two hand-offs; the second serializes behind the first and reports a failure over a
         // purchase that is going ahead.
         if (_purchaseInFlight.value) return
-        _subscriptionPlans.value = null
         if (activity == null) {
+            _subscriptionPlans.value = null
             _purchaseError.value = PurchaseFailure.LAUNCH_FAILED
             return
         }
         val issued = purchaseGeneration
+        // The chooser stays up, with Continue busy, until Play's sheet is in front of the user:
+        // preparing takes seconds, and a dialog that vanishes onto an unchanged screen is the
+        // same silence as a dead button, with a charge at the end of it.
         _purchaseInFlight.value = true
         viewModelScope.launch {
             try {
@@ -330,7 +335,9 @@ class SettingsViewModel @Inject constructor(
                 if (issued != purchaseGeneration) return@launch
                 failure?.let { _purchaseError.value = it }
             } finally {
-                if (issued == purchaseGeneration) _purchaseInFlight.value = false
+                // Unconditional, like the load's: nothing else clears it.
+                _purchaseInFlight.value = false
+                _subscriptionPlans.value = null
             }
         }
     }
@@ -341,8 +348,10 @@ class SettingsViewModel @Inject constructor(
      * is not what the dismissed offer started. See [planLoadGeneration].
      */
     private fun abandonPendingPlanLoad() {
+        // The flag stays set until the call returns: clearing it here would free the guard over a
+        // load that still holds the repository's mutex, and the next tap would spend its whole
+        // timeout waiting for that lock and report BILLING_UNAVAILABLE over a working connection.
         planLoadGeneration++
-        _plansLoading.value = false
     }
 
     /**
@@ -356,8 +365,11 @@ class SettingsViewModel @Inject constructor(
         abandonPendingPlanLoad()
         // Leaving abandons the purchase too, unlike dismissing the offer: its answer would
         // otherwise raise a failure dialog over this screen on the way back.
+        // `_purchaseInFlight` is left set: it is the only thing stopping a second hand-off, and
+        // the first has not been cancelled. Clearing it let the user leave, pick the other plan
+        // from the main screen's Upgrade, and be shown two Play sheets - the first for the plan
+        // they had moved on from.
         purchaseGeneration++
-        _purchaseInFlight.value = false
         _subscriptionPlans.value = null
         _purchaseError.value = null
     }

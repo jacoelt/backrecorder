@@ -376,6 +376,7 @@ fun MainScreen(
     state.subscriptionPlans?.let { plans ->
         PlanChooserDialog(
             plans = plans,
+            busy = state.purchaseInFlight,
             onPlanSelected = { plan ->
                 viewModel.launchPurchaseFlow(context.findActivity(), plan)
             },

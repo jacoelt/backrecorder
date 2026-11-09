@@ -249,6 +249,7 @@ fun SettingsScreen(
     subscriptionPlans?.let { plans ->
         PlanChooserDialog(
             plans = plans,
+            busy = upgradeBusy,
             onPlanSelected = { plan ->
                 viewModel.launchPurchaseFlow(context.findActivity(), plan)
             },

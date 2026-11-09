@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
@@ -43,6 +42,7 @@ import com.backrecorderapp.data.billing.SubscriptionPlans
 @Composable
 fun PlanChooserDialog(
     plans: SubscriptionPlans,
+    busy: Boolean,
     onPlanSelected: (SubscriptionPlan) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -61,7 +61,9 @@ fun PlanChooserDialog(
     val selected = plans.plans.firstOrNull { it.period == selectedPeriod } ?: default
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        // Ignored while the hand-off runs: the dialog is the only thing on screen saying that a
+        // tap is being acted on, and tapping away from it would not stop the purchase anyway.
+        onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.plan_chooser_title)) },
         text = {
             Column(
@@ -74,18 +76,24 @@ fun PlanChooserDialog(
                         savingsPercent = plans.yearlySavingsPercent
                             ?.takeIf { plan.period == BillingPeriod.YEARLY },
                         selected = plan.period == selected.period,
+                        // Changing the selection once Play has been asked for the other plan
+                        // would show a choice that no longer decides anything.
+                        enabled = !busy,
                         onSelect = { selectedPeriod = plan.period }
                     )
                 }
             }
         },
         confirmButton = {
-            Button(onClick = { onPlanSelected(selected) }) {
-                Text(stringResource(R.string.plan_chooser_continue))
-            }
+            BusyButton(
+                busy = busy,
+                text = stringResource(R.string.plan_chooser_continue),
+                busyStateDescription = stringResource(R.string.plan_chooser_opening),
+                onClick = { onPlanSelected(selected) }
+            )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !busy) {
                 Text(stringResource(R.string.cancel))
             }
         }
@@ -97,6 +105,7 @@ private fun PlanRow(
     plan: SubscriptionPlan,
     savingsPercent: Int?,
     selected: Boolean,
+    enabled: Boolean,
     onSelect: () -> Unit
 ) {
     Row(
@@ -104,11 +113,16 @@ private fun PlanRow(
             .fillMaxWidth()
             // The whole row is the control, and the RadioButton itself is left unclickable so the
             // row is announced once rather than twice.
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .selectable(
+                selected = selected,
+                enabled = enabled,
+                role = Role.RadioButton,
+                onClick = onSelect
+            )
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        RadioButton(selected = selected, onClick = null)
+        RadioButton(selected = selected, onClick = null, enabled = enabled)
 
         Column(modifier = Modifier.padding(start = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

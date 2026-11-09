@@ -5,6 +5,7 @@ import android.text.TextUtils
 import android.util.Log
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.ProductDetailsResponseListener
@@ -34,6 +35,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -788,5 +790,120 @@ class PlayBillingRepositoryTest {
         assertEquals(listOf(BillingPeriod.YEARLY), plans.plans.map { it.period })
         // One plan on its own has nothing to be cheaper than, so no badge.
         assertNull(plans.yearlySavingsPercent)
+    }
+
+    /**
+     * The offer token the production code actually handed Play.
+     *
+     * `BillingFlowParams` publishes no named getter for what it was built with, so this goes
+     * through the two accessors Play's own client uses: `zzk()` is the `ProductDetailsParams`
+     * list and `zzb()` is that entry's offer token. Both are public methods, so this is not
+     * reflection - a rename in a future Play Billing release breaks the build loudly instead of
+     * passing silently. Worth that cost: nothing else can see *which* plan was bought, and "the
+     * plan the user picked is the plan Play charges" is the guarantee this change exists to make.
+     */
+    private fun launchedOfferToken(): String {
+        val params = slot<BillingFlowParams>()
+        verify(exactly = 1) { client.launchBillingFlow(activity, capture(params)) }
+        val productParams = params.captured.zzk().single() as BillingFlowParams.ProductDetailsParams
+        assertEquals(
+            "the product Play is asked to charge for",
+            BillingRepository.PREMIUM_SUBSCRIPTION_ID,
+            productParams.zza().productId
+        )
+        return productParams.zzb() ?: error("no offer token was set on the launched params")
+    }
+
+    /**
+     * The defect this issue is really about, pinned end to end: before #74 the hand-off took
+     * `subscriptionOfferDetails.firstOrNull()`, so the token that reached Play had nothing to do
+     * with what the user picked. Counting launches cannot catch that - only reading the token can.
+     */
+    @Test
+    fun `picking monthly sends Play the monthly offer token`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct())
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        assertNull(createRepository().launchPurchaseFlow(activity, monthlyPlan))
+
+        assertEquals(MONTHLY_TOKEN, launchedOfferToken())
+    }
+
+    /**
+     * The other direction, and the expensive one: yearly is listed *second* in the fixture, so a
+     * regression to taking the first offer passes the monthly test above and fails this one -
+     * which is exactly the charge-them-for-a-year mistake the issue asks to make impossible.
+     */
+    @Test
+    fun `picking yearly sends Play the yearly offer token`() = runTest {
+        every { client.isReady } returns true
+        stubProductQuery(premiumProduct())
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        assertNull(createRepository().launchPurchaseFlow(activity, yearlyPlan))
+
+        assertEquals(YEARLY_TOKEN, launchedOfferToken())
+    }
+
+    /**
+     * A base plan may carry several offers the account can take. The purchase re-resolves against
+     * a fresh query, so it has to re-find the offer the chooser priced - by `offerId`, not by the
+     * preference rule, which would pick a different one here.
+     *
+     * The promo is listed first *and* carries a trial, so "first offer" and "first offer with a
+     * trial" both resolve to it. Only honouring the recorded `offerId` gets this right.
+     */
+    @Test
+    fun `the offer the user was priced from beats the one the preference rule would pick`() =
+        runTest {
+            val promo = offer(
+                basePlanId = "monthly",
+                offerId = "monthly-promo",
+                token = "promo-token",
+                phases = listOf(phase(0L, "Free", "P1W"), phase(1_990_000L, "$1.99", "P1M"))
+            )
+            every { client.isReady } returns true
+            stubProductQuery(premiumProduct(offers = listOf(promo, monthlyOffer())))
+            every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+            assertNull(createRepository().launchPurchaseFlow(activity, monthlyPlan))
+
+            assertEquals(
+                "the recorded offer must win, not the first eligible one",
+                MONTHLY_TOKEN,
+                launchedOfferToken()
+            )
+        }
+
+    /**
+     * The one fact in this file that no fake can establish and no amount of mocking can check:
+     * the product id must be the one the Play Console actually has. Every fixture here reads the
+     * constant, so they agree with it whatever it says - including the `premium` that made every
+     * Upgrade tap come back ITEM_UNAVAILABLE. A literal is the only trip wire available.
+     *
+     * It still cannot prove the Play Console agrees. Only a device on a real account can.
+     */
+    @Test
+    fun `the subscription asked for is the one the Play Console has`() {
+        assertEquals("main_subscription", BillingRepository.PREMIUM_SUBSCRIPTION_ID)
+    }
+
+    /**
+     * Abandoning a hand-off never cancels it, so the sheet still opens; what must not happen is a
+     * *second* launch. The view models hold that guard, but the repository must not quietly add
+     * one of its own either - a dropped second tap is the dead button again (#72).
+     */
+    @Test
+    fun `a refused plan never reaches Play at all`() = runTest {
+        every { client.isReady } returns true
+        // Only the yearly base plan exists; the user picked monthly.
+        stubProductQuery(premiumProduct(offers = listOf(yearlyOffer())))
+        every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+        val failure = createRepository().launchPurchaseFlow(activity, monthlyPlan)
+
+        assertEquals(PurchaseFailure.PRODUCT_UNAVAILABLE, failure)
+        verify(exactly = 0) { client.launchBillingFlow(any(), any()) }
     }
 }

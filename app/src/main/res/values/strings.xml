@@ -75,6 +75,7 @@
     <string name="plan_savings_badge">Save ~%1$d%%</string>
     <string name="plan_chooser_continue">Continue</string>
     <string name="upgrade_loading_plans">Loading plans</string>
+    <string name="plan_chooser_opening">Opening Google Play</string>
     <string name="upgrade_error_title">Upgrade Unavailable</string>
     <string name="upgrade_error_billing_unavailable">Google Play billing isn\'t available right now. Check your connection and that you\'re signed in to the Play Store, then try again.</string>
     <string name="upgrade_error_product_unavailable">The Premium subscription isn\'t available for this account right now. Please try again later.</string>
