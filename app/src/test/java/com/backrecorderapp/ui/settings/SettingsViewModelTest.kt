@@ -578,7 +578,7 @@ class SettingsViewModelTest {
 
         assertTrue("the load is still running", viewModel.upgradeBusy.value)
 
-        // No second tap: adopting a live load is separate behaviour, tested on its own.
+        // No second tap: the Upgrade affordance is disabled while a load runs, so there is none.
 
         parked.complete(PlanQuery.Available(plans))
         advanceUntilIdle()
@@ -608,5 +608,21 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         assertNull(viewModel.subscriptionPlans.value)
+    }
+
+    /** The settings half: the cloud offer must not be waiting on the way back either. */
+    @Test
+    fun `leaving settings takes the unanswered upgrade offer with it`() = runTest {
+        coEvery { subscriptionGate.checkCloudAccess() } returns
+            GateResult.Blocked(BlockReason.CLOUD_STORAGE_PREMIUM_ONLY)
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+        assertTrue("precondition: the offer must be up", viewModel.showUpgradeDialog.value)
+
+        viewModel.onScreenLeft()
+
+        assertFalse(viewModel.showUpgradeDialog.value)
     }
 }

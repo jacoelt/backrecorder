@@ -107,9 +107,6 @@ class SettingsViewModel @Inject constructor(
 
     private var purchaseGeneration = 0
 
-    /** The `issued` value of the plan load currently running; lets a fresh tap re-adopt it. */
-    private var liveLoadGeneration: Int? = null
-
     private val _purchaseInFlight = MutableStateFlow(false)
 
     private val _plansLoading = MutableStateFlow(false)
@@ -288,16 +285,8 @@ class SettingsViewModel @Inject constructor(
     fun showPlanChooser() {
         // A purchase already on its way to Play would otherwise be joined by a second chooser
         // opening behind Play's sheet.
-        if (_purchaseInFlight.value) return
-        if (_plansLoading.value) {
-            // Adopt the load already running rather than refusing the tap - see MainViewModel:
-            // starting a second would queue on the repository mutex behind it, and refusing
-            // outright left the user watching a spinner that resolved to nothing.
-            liveLoadGeneration?.let { planLoadGeneration = it }
-            return
-        }
+        if (_plansLoading.value || _purchaseInFlight.value) return
         val issued = planLoadGeneration
-        liveLoadGeneration = issued
         _plansLoading.value = true
         viewModelScope.launch {
             try {
@@ -312,7 +301,6 @@ class SettingsViewModel @Inject constructor(
                 _showUpgradeDialog.value = false
             } finally {
                 // Unconditional: abandonment leaves this set, so it is always this load's to drop.
-                liveLoadGeneration = null
                 _plansLoading.value = false
             }
         }
@@ -382,6 +370,9 @@ class SettingsViewModel @Inject constructor(
         // from the main screen's Upgrade, and be shown two Play sheets - the first for the plan
         // they had moved on from.
         purchaseGeneration++
+        // The offer goes with them, like the chooser: it was raised by an action they never
+        // answered, and it would otherwise be waiting on the screen when they came back.
+        _showUpgradeDialog.value = false
         _subscriptionPlans.value = null
         _purchaseError.value = null
     }

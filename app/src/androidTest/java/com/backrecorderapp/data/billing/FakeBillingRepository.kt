@@ -37,11 +37,21 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
     /** Refuses the next plan load, which is the other half of a refused upgrade. */
     var nextLoadFails: PurchaseFailure? = null
 
-    /** Set by [launchPurchaseFlow], so a test can tell the screen handed off to Play. */
+    /**
+     * Set by [launchPurchaseFlow], so a test can tell the screen handed off to Play.
+     *
+     * `@Volatile`, and written *after* [lastPurchasedPlan], because the tests wait on this
+     * counter from the instrumentation thread while the app writes it on the main one, then read
+     * the plan. Without both the ordering and the visibility, a test could see the count reach 1
+     * while the plan it is about to assert on is still null - a rare failure in a check that is
+     * required on `main` with no bypass, which would block every PR in the repository.
+     */
+    @Volatile
     var purchaseFlowLaunches: Int = 0
         private set
 
     /** The plan the screen last handed off, so a test can pin *which* plan it bought. */
+    @Volatile
     var lastPurchasedPlan: SubscriptionPlan? = null
         private set
 
@@ -101,8 +111,9 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
         activity: Activity,
         plan: SubscriptionPlan
     ): PurchaseFailure? {
-        purchaseFlowLaunches++
+        // Plan first, count second: the count is what the tests wait on.
         lastPurchasedPlan = plan
+        purchaseFlowLaunches++
         return nextLaunchFails?.also { nextLaunchFails = null }
     }
 

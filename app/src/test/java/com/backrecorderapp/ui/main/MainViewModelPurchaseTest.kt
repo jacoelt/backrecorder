@@ -524,8 +524,8 @@ class MainViewModelPurchaseTest {
             viewModel.uiState.value.plansLoading
         )
 
-        // No second tap here: adopting a load is a separate behaviour with its own test. What
-        // this one pins is that the guard survived the dismissal.
+        // No second tap: every Upgrade affordance is disabled while `plansLoading` is set, so
+        // there is none to give. What this pins is that the guard survived the dismissal.
 
         parked.complete(PlanQuery.Available(plans))
         advanceUntilIdle()
@@ -619,39 +619,27 @@ class MainViewModelPurchaseTest {
     }
 
     /**
-     * A tap that lands on an abandoned load adopts it instead of being swallowed.
+     * Leaving takes the unanswered offer with it.
      *
-     * The guard refuses a second load while one is running, which is right - a second would
-     * queue on the repository's mutex behind the first and spend its whole timeout there. But
-     * the running load's answer was still being discarded on the old generation, so the user
-     * tapped Upgrade, watched the spinner run to completion, and got nothing at all: a tap
-     * resolving to silence, which is the complaint this issue opens with.
+     * The dialog is raised by a save the gate refused. It used to survive `onScreenLeft`, so it
+     * was sitting on the screen when the user navigated back - a dialog with no tap behind it,
+     * the same thing clearing the chooser prevents. The gate runs again on the next save, so
+     * nothing is lost by dropping it.
      */
     @Test
-    fun `tapping again during an abandoned load adopts it rather than swallowing the tap`() =
-        runTest {
-            val parked = CompletableDeferred<PlanQuery>()
-            coEvery { billingRepository.loadSubscriptionPlans() } coAnswers { parked.await() }
+    fun `leaving the screen takes the unanswered upgrade offer with it`() = runTest {
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk())
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns
+            GateResult.Blocked(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
 
-            val viewModel = buildViewModel()
-            viewModel.showPlanChooser()
-            advanceUntilIdle()
-            viewModel.dismissUpgradeDialog()
-            advanceUntilIdle()
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+        assertEquals("precondition: the offer must be up", true, viewModel.uiState.value.showUpgradeDialog)
 
-            // The user changes their mind while the abandoned load is still running.
-            viewModel.showPlanChooser()
-            advanceUntilIdle()
-            coVerify(exactly = 1) { billingRepository.loadSubscriptionPlans() }
+        viewModel.onScreenLeft()
 
-            parked.complete(PlanQuery.Available(plans))
-            advanceUntilIdle()
-
-            assertEquals(
-                "the adopted load must answer the second tap",
-                plans,
-                viewModel.uiState.value.subscriptionPlans
-            )
-            assertEquals(false, viewModel.uiState.value.plansLoading)
-        }
+        assertEquals(false, viewModel.uiState.value.showUpgradeDialog)
+        assertNull(viewModel.uiState.value.upgradeReason)
+    }
 }

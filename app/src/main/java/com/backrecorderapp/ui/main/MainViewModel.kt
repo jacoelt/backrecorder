@@ -155,14 +155,6 @@ class MainViewModel @Inject constructor(
 
     private var purchaseGeneration = 0
 
-    /**
-     * The `issued` value of the plan load currently running, or null when none is.
-     *
-     * It is what lets a fresh tap re-adopt a load the user abandoned, instead of being refused by
-     * a guard it cannot see and answered by nothing at all.
-     */
-    private var liveLoadGeneration: Int? = null
-
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -403,19 +395,8 @@ class MainViewModel @Inject constructor(
         val current = _uiState.value
         // A purchase already on its way to Play would otherwise be joined by a second chooser
         // opening behind Play's sheet.
-        if (current.purchaseInFlight) return
-        if (current.plansLoading) {
-            // A load is already running - possibly one the user abandoned a moment ago. Adopt it
-            // rather than refusing the tap: starting a second would queue inside the repository's
-            // mutex behind the first and burn its whole timeout on the lock, but simply returning
-            // meant the user watched a spinner run to completion and then saw *nothing*, because
-            // the answer was still being discarded on the old generation. A swallowed tap that
-            // resolves to silence is the dead button this issue is about.
-            liveLoadGeneration?.let { planLoadGeneration = it }
-            return
-        }
+        if (current.plansLoading || current.purchaseInFlight) return
         val issued = planLoadGeneration
-        liveLoadGeneration = issued
         _uiState.value = current.copy(plansLoading = true)
         viewModelScope.launch {
             try {
@@ -440,7 +421,6 @@ class MainViewModel @Inject constructor(
                 // flight", not "someone is still listening". Abandonment deliberately leaves it
                 // set, so this is always the load that set it. A flag left set would refuse
                 // every later tap, which is the dead button again.
-                liveLoadGeneration = null
                 _uiState.value = _uiState.value.copy(plansLoading = false)
             }
         }
@@ -455,6 +435,12 @@ class MainViewModel @Inject constructor(
      * and it must not return through the chooser.
      *
      * A purchase in flight is deliberately untouched: it is not what the dismissed offer started.
+     *
+     * The load is not re-adoptable, and deliberately so: every Upgrade affordance renders
+     * `plansLoading` and is disabled while it is set, so there is no tap to re-adopt it with. The
+     * user sees a spinning, disabled button until the abandoned load returns, then a live one
+     * whose next tap starts a fresh load that answers them. Publishing the abandoned load's
+     * answer instead would raise a chooser with no tap behind it, which is the #72 defect.
      *
      * `plansLoading` stays **set** until the call itself returns. Clearing it here would free the
      * guard in [showPlanChooser] over a load that still holds the repository's purchase mutex, so
@@ -485,6 +471,12 @@ class MainViewModel @Inject constructor(
         // That is the arbitrary-plan hazard this issue exists to close, reached through the UI.
         purchaseGeneration++
         _uiState.value = _uiState.value.copy(
+            // The offer goes too, for the same reason the chooser does: it was raised by a save
+            // the user never answered, and leaving it set meant it was waiting on the screen when
+            // they came back - a dialog with no tap behind it, which is the defect this whole
+            // area is about. The gate decides again on the next save anyway.
+            showUpgradeDialog = false,
+            upgradeReason = null,
             subscriptionPlans = null,
             purchaseError = null
         )

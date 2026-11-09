@@ -811,12 +811,10 @@ class PlayBillingRepositoryTest {
     private fun launchedOfferToken(): String {
         val params = slot<BillingFlowParams>()
         verify(exactly = 1) { client.launchBillingFlow(activity, capture(params)) }
+        // No assertion on `zza().productId` here: it would read back the fixture's own stubbed
+        // value, which is set from the same constant. `the subscription asked for is the one the
+        // Play Console has` pins that off the *query* instead, where it means something.
         val productParams = params.captured.zzk().single() as BillingFlowParams.ProductDetailsParams
-        assertEquals(
-            "the product Play is asked to charge for",
-            BillingRepository.PREMIUM_SUBSCRIPTION_ID,
-            productParams.zza().productId
-        )
         return productParams.zzb() ?: error("no offer token was set on the launched params")
     }
 
