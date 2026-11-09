@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
+import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.FakeBillingRepository
 import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
@@ -119,6 +120,8 @@ class SubscriptionGateFlowTest {
 
     private fun string(id: Int) = composeRule.activity.getString(id)
 
+    private fun string(id: Int, vararg args: Any) = composeRule.activity.getString(id, *args)
+
     private fun openSettings() {
         composeRule.waitUntil(timeoutMillis = 30_000) {
             composeRule.onAllNodesWithContentDescription("Settings")
@@ -137,6 +140,23 @@ class SubscriptionGateFlowTest {
                 .fetchSemanticsNodes().isNotEmpty()
         }
         composeRule.onNodeWithText(string(R.string.upgrade_cloud_title)).assertIsDisplayed()
+    }
+
+    /**
+     * The settings screen carries its own Upgrade button in the Subscription section, so once a
+     * dialog is up two nodes read "Upgrade to Premium". It is the dialog's one that is meant.
+     */
+    private fun tapUpgradeInDialog() {
+        composeRule.onAllNodesWithText(string(R.string.upgrade_button))
+            .filterToOne(hasAnyAncestor(isDialog()))
+            .performClick()
+    }
+
+    private fun awaitPlanChooser() {
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText(string(R.string.plan_chooser_title))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     private fun currentUploadMode(): CloudUploadMode =
@@ -189,12 +209,9 @@ class SubscriptionGateFlowTest {
         composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
             .performScrollTo().performClick()
         awaitUpgradeDialog()
-        // The settings screen carries its own Upgrade button in the Subscription section, so
-        // once the dialog is up two nodes read "Upgrade to Premium". It is the dialog's one
-        // this test means.
-        composeRule.onAllNodesWithText(string(R.string.upgrade_button))
-            .filterToOne(hasAnyAncestor(isDialog()))
-            .performClick()
+        tapUpgradeInDialog()
+        awaitPlanChooser()
+        composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
 
         composeRule.waitUntil(timeoutMillis = 10_000) {
             composeRule.onAllNodesWithText(string(R.string.upgrade_error_title))
@@ -204,6 +221,118 @@ class SubscriptionGateFlowTest {
             string(R.string.upgrade_error_product_unavailable)
         ).assertIsDisplayed()
         assertEquals(1, billing.purchaseFlowLaunches)
+    }
+
+    /**
+     * Issue #74, end to end: the user picks a plan and that plan is what reaches Play.
+     *
+     * The defect this replaces sent whichever offer Play happened to return first, so one tap
+     * could commit someone to a year they never chose. Monthly is selected deliberately here
+     * because the chooser *defaults* to yearly when there is a saving to show - picking the
+     * non-default is the only way to prove the selection is read rather than assumed.
+     */
+    @Test
+    fun theUpgradeHandsPlayTheExactPlanTheUserChose() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        tapUpgradeInDialog()
+        awaitPlanChooser()
+
+        // Play's own prices, and the saving computed from them rather than written into the app.
+        // Built from the resources and the fake's own figures, so the assertions do not depend
+        // on the device's locale.
+        val monthly = billing.plans.monthly!!
+        val yearly = billing.plans.yearly!!
+        composeRule.onNodeWithText(
+            string(R.string.plan_price_per_month, monthly.formattedPrice)
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            string(R.string.plan_price_per_year, yearly.formattedPrice)
+        ).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            string(R.string.plan_savings_badge, billing.plans.yearlySavingsPercent!!)
+        ).assertIsDisplayed()
+
+        composeRule.onNodeWithText(string(R.string.plan_period_monthly)).performClick()
+        composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) { billing.purchaseFlowLaunches == 1 }
+        assertEquals(BillingPeriod.MONTHLY, billing.lastPurchasedPlan?.period)
+    }
+
+    /**
+     * The selection has to survive an activity re-creation.
+     *
+     * Orientation cannot be restricted at this target on large screens, so a rotation mid-choice
+     * is unavoidable - and if it reset the selection to the default, someone who picked monthly
+     * would be sent to Play for a *year*. That is the exact harm the chooser exists to prevent,
+     * so it is worth an instrumented test rather than trust in a `rememberSaveable`.
+     */
+    @Test
+    fun theChosenPlanSurvivesTheScreenBeingRecreated() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        tapUpgradeInDialog()
+        awaitPlanChooser()
+
+        // Monthly is deliberately the non-default, so a reset would be visible as a yearly buy.
+        composeRule.onNodeWithText(string(R.string.plan_period_monthly)).performClick()
+
+        composeRule.activityRule.scenario.recreate()
+        awaitPlanChooser()
+        composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) { billing.purchaseFlowLaunches == 1 }
+        assertEquals(BillingPeriod.MONTHLY, billing.lastPurchasedPlan?.period)
+    }
+
+    /**
+     * The other half of the same guarantee: leaving the selection alone buys the default.
+     */
+    @Test
+    fun theChooserDefaultsToTheYearlyPlan() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        tapUpgradeInDialog()
+        awaitPlanChooser()
+        composeRule.onNodeWithText(string(R.string.plan_chooser_continue)).performClick()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) { billing.purchaseFlowLaunches == 1 }
+        assertEquals(BillingPeriod.YEARLY, billing.lastPurchasedPlan?.period)
+    }
+
+    /** Plans Play will not name cannot be chosen between, so the refusal is shown instead. */
+    @Test
+    fun anUpgradeWhosePlansPlayWillNotNameIsReported() {
+        billing.setStatus(SubscriptionStatus.FREE)
+        billing.nextLoadFails = PurchaseFailure.BILLING_UNAVAILABLE
+        openSettings()
+
+        composeRule.onNodeWithText(string(R.string.settings_cloud_wifi_only))
+            .performScrollTo().performClick()
+        awaitUpgradeDialog()
+        tapUpgradeInDialog()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText(string(R.string.upgrade_error_title))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        composeRule.onNodeWithText(
+            string(R.string.upgrade_error_billing_unavailable)
+        ).assertIsDisplayed()
+        assertEquals(0, billing.purchaseFlowLaunches)
     }
 
     @Test

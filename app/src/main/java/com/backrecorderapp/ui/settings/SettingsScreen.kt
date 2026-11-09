@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -47,6 +48,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.ui.components.PlanChooserDialog
+import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.util.findActivity
 import com.backrecorderapp.util.messageRes
 
@@ -61,8 +64,21 @@ fun SettingsScreen(
     val showUpgrade by viewModel.showUpgradeDialog.collectAsState()
     val driveError by viewModel.driveError.collectAsState()
     val purchaseError by viewModel.purchaseError.collectAsState()
+    val upgradeBusy by viewModel.upgradeBusy.collectAsState()
+    val subscriptionPlans by viewModel.subscriptionPlans.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
     val context = LocalContext.current
+
+    // This view model is not always torn down on the way out: settings navigates *forward* to
+    // the disclaimer, which keeps its back-stack entry alive, so an upgrade left in flight would
+    // raise its chooser over this screen on the way back. A configuration change disposes too
+    // and must not be mistaken for leaving - the screen is coming straight back.
+    val activity = context.findActivity()
+    DisposableEffect(activity) {
+        onDispose {
+            if (activity?.isChangingConfigurations != true) viewModel.onScreenLeft()
+        }
+    }
 
     val consentLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -134,11 +150,10 @@ fun SettingsScreen(
                         state.subscriptionStatus == SubscriptionStatus.EXPIRED
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Button(onClick = {
-                            viewModel.launchPurchaseFlow(context.findActivity())
-                        }) {
-                            Text(stringResource(R.string.upgrade_button))
-                        }
+                        UpgradeButton(
+                            busy = upgradeBusy,
+                            onClick = { viewModel.showPlanChooser() }
+                        )
                     }
                 }
             }
@@ -216,18 +231,29 @@ fun SettingsScreen(
             title = { Text(stringResource(R.string.upgrade_cloud_title)) },
             text = { Text(stringResource(R.string.upgrade_cloud_message)) },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.dismissUpgradeDialog()
-                    viewModel.launchPurchaseFlow(context.findActivity())
-                }) {
-                    Text(stringResource(R.string.upgrade_button))
-                }
+                // The dialog stays up, with the button busy, until the plans arrive: asking Play
+                // can take seconds, and closing onto a blank screen is the dead button again.
+                UpgradeButton(
+                    busy = upgradeBusy,
+                    onClick = { viewModel.showPlanChooser() }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpgradeDialog() }) {
                     Text(stringResource(R.string.cancel))
                 }
             }
+        )
+    }
+
+    subscriptionPlans?.let { plans ->
+        PlanChooserDialog(
+            plans = plans,
+            busy = upgradeBusy,
+            onPlanSelected = { plan ->
+                viewModel.launchPurchaseFlow(context.findActivity(), plan)
+            },
+            onDismiss = { viewModel.dismissPlanChooser() }
         )
     }
 

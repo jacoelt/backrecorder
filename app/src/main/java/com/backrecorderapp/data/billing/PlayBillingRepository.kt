@@ -250,13 +250,59 @@ class PlayBillingRepository @Inject constructor(
         }
     }
 
-    override suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure? =
+    override suspend fun loadSubscriptionPlans(): PlanQuery =
+        try {
+            // The timeout wraps the lock as well as the work. Both screens are alive at once, so
+            // a load can queue behind another hand-off, and a lock wait outside the budget would
+            // add a second full timeout to a user who is staring at a spinner. Bounding the whole
+            // thing is safe *here* precisely because nothing user-visible has been launched -
+            // which is why launchPurchaseFlow below must not do the same.
+            withTimeoutOrNull(PREPARE_TIMEOUT_MS) { purchaseMutex.withLock { preparePlans() } }
+                ?: PlanQuery.Unavailable(
+                    reportFailure(
+                        PurchaseFailure.BILLING_UNAVAILABLE,
+                        "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
+                    )
+                )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // BILLING_UNAVAILABLE rather than LAUNCH_FAILED: nothing was being launched, and
+            // telling a tester their product is misconfigured would send them to the wrong fix.
+            PlanQuery.Unavailable(
+                reportFailure(PurchaseFailure.BILLING_UNAVAILABLE, "billing threw: $e")
+            )
+        }
+
+    private suspend fun preparePlans(): PlanQuery {
+        val details = when (val query = connectAndQueryOffer()) {
+            is OfferQuery.Failed -> return PlanQuery.Unavailable(query.failure)
+            is OfferQuery.Found -> query.details
+        }
+
+        // Play knows the product but has nothing to buy it on: no active offer on either base
+        // plan, or none this account can take.
+        val plans = details.toSubscriptionPlans()
+            ?: return PlanQuery.Unavailable(
+                reportFailure(
+                    PurchaseFailure.PRODUCT_UNAVAILABLE,
+                    "no purchasable base plan on ${details.productId}"
+                )
+            )
+
+        return PlanQuery.Available(plans)
+    }
+
+    override suspend fun launchPurchaseFlow(
+        activity: Activity,
+        plan: SubscriptionPlan
+    ): PurchaseFailure? =
         purchaseMutex.withLock {
             try {
                 // Only the preparation is timed. A non-null Prepared keeps "the sheet was shown"
                 // (null) distinguishable from "nothing came back", which an earlier version
                 // conflated - reporting every successful purchase as a timeout.
-                val prepared = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePurchase() }
+                val prepared = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePurchase(plan) }
                     ?: return@withLock reportFailure(
                         PurchaseFailure.BILLING_UNAVAILABLE,
                         "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
@@ -280,38 +326,48 @@ class PlayBillingRepository @Inject constructor(
         data class Unavailable(val failure: PurchaseFailure) : Prepared
     }
 
-    private suspend fun preparePurchase(): Prepared {
-        if (!billingClient.isReady) {
-            ensureConnected()?.let { return Prepared.Unavailable(it) }
-        }
-
-        var query = queryPremiumOffer()
-        if (query is OfferQuery.Failed && query.retryable) {
-            // The binding can drop between the isReady check above and this query - the client
-            // reports ready right up to the moment it dies, so there is no check that closes the
-            // window. Reconnect and ask once more rather than make the user tap through a
-            // "billing unavailable" for a service that is back a second later.
-            val reconnect = ensureConnected()
-            if (reconnect != null) return Prepared.Unavailable(query.failure)
-            query = queryPremiumOffer()
-        }
-
-        val details = when (query) {
+    /**
+     * Re-resolves [plan] against a fresh product query rather than carrying a token from the
+     * chooser.
+     *
+     * The token and the [ProductDetails] handed to `launchBillingFlow` have to come from the same
+     * response, and the chooser's may be minutes old by the time the user has chosen - a stale
+     * pair is refused by Play, which is the dead button again. So what is carried across is the
+     * *identity* of what the user picked (its base plan and offer id, see [offerForChosenPlan]),
+     * not Play's own handles to it.
+     */
+    private suspend fun preparePurchase(plan: SubscriptionPlan): Prepared {
+        val details = when (val query = connectAndQueryOffer()) {
             is OfferQuery.Failed -> return Prepared.Unavailable(query.failure)
             is OfferQuery.Found -> query.details
         }
 
-        // Play knows the product but has no offer to buy it on: a base plan with no active
-        // offer, or none this account can take.
-        val offerToken = details.subscriptionOfferDetails?.firstOrNull()?.offerToken
+        val offer = details.offerForChosenPlan(plan)
             ?: return Prepared.Unavailable(
                 reportFailure(
                     PurchaseFailure.PRODUCT_UNAVAILABLE,
-                    "no subscription offer on ${details.productId}"
+                    "no purchasable offer on base plan ${plan.period.basePlanId}"
                 )
             )
 
-        return Prepared.Offer(details, offerToken)
+        return Prepared.Offer(details, offer.offerToken)
+    }
+
+    /** Connects if needed and asks Play for the product, retrying once over a dropped binding. */
+    private suspend fun connectAndQueryOffer(): OfferQuery {
+        if (!billingClient.isReady) {
+            ensureConnected()?.let { return OfferQuery.Failed(it) }
+        }
+
+        val query = queryPremiumOffer()
+        if (query !is OfferQuery.Failed || !query.retryable) return query
+
+        // The binding can drop between the isReady check above and this query - the client
+        // reports ready right up to the moment it dies, so there is no check that closes the
+        // window. Reconnect and ask once more rather than make the user tap through a
+        // "billing unavailable" for a service that is back a second later.
+        if (ensureConnected() != null) return query
+        return queryPremiumOffer()
     }
 
     /** Null once connected; otherwise the failure to report. */

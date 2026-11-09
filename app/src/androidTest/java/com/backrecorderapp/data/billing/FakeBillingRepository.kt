@@ -34,9 +34,52 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
      */
     var nextLaunchFails: PurchaseFailure? = null
 
-    /** Set by [launchPurchaseFlow], so a test can tell the screen handed off to Play. */
+    /** Refuses the next plan load, which is the other half of a refused upgrade. */
+    var nextLoadFails: PurchaseFailure? = null
+
+    /**
+     * Set by [launchPurchaseFlow], so a test can tell the screen handed off to Play.
+     *
+     * `@Volatile`, and written *after* [lastPurchasedPlan], because the tests wait on this
+     * counter from the instrumentation thread while the app writes it on the main one, then read
+     * the plan. Without both the ordering and the visibility, a test could see the count reach 1
+     * while the plan it is about to assert on is still null - a rare failure in a check that is
+     * required on `main` with no bypass, which would block every PR in the repository.
+     */
+    @Volatile
     var purchaseFlowLaunches: Int = 0
         private set
+
+    /** The plan the screen last handed off, so a test can pin *which* plan it bought. */
+    @Volatile
+    var lastPurchasedPlan: SubscriptionPlan? = null
+        private set
+
+    /**
+     * What [loadSubscriptionPlans] answers: a monthly and a yearly plan priced so the yearly one
+     * is ten months' worth, the same shape the Play Console is configured with. Prices are plain
+     * strings because nothing here formats them - the real ones come from Play already localised.
+     */
+    var plans: SubscriptionPlans = SubscriptionPlans(
+        listOf(
+            SubscriptionPlan(
+                period = BillingPeriod.MONTHLY,
+                offerId = "monthly-free-trial",
+                formattedPrice = "$2.99",
+                priceAmountMicros = 2_990_000L,
+                priceCurrencyCode = "USD",
+                freeTrialDays = 7
+            ),
+            SubscriptionPlan(
+                period = BillingPeriod.YEARLY,
+                offerId = "yearly-free-trial",
+                formattedPrice = "$29.90",
+                priceAmountMicros = 29_900_000L,
+                priceCurrencyCode = "USD",
+                freeTrialDays = 7
+            )
+        )
+    )
 
     /**
      * Reports [status], and reports billing as having answered. Tests that need the pre-answer
@@ -58,7 +101,18 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     override fun queryPurchases() = Unit
 
-    override suspend fun launchPurchaseFlow(activity: Activity): PurchaseFailure? {
+    override suspend fun loadSubscriptionPlans(): PlanQuery =
+        nextLoadFails?.let { failure ->
+            nextLoadFails = null
+            PlanQuery.Unavailable(failure)
+        } ?: PlanQuery.Available(plans)
+
+    override suspend fun launchPurchaseFlow(
+        activity: Activity,
+        plan: SubscriptionPlan
+    ): PurchaseFailure? {
+        // Plan first, count second: the count is what the tests wait on.
+        lastPurchasedPlan = plan
         purchaseFlowLaunches++
         return nextLaunchFails?.also { nextLaunchFails = null }
     }

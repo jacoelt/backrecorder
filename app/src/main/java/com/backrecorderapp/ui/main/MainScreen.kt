@@ -48,6 +48,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -63,6 +64,8 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.domain.BlockReason
+import com.backrecorderapp.ui.components.PlanChooserDialog
+import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.ui.components.WaveformView
 import com.backrecorderapp.util.TimeUtils
 import com.backrecorderapp.util.findActivity
@@ -76,6 +79,19 @@ fun MainScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+
+    // This view model outlives the screen - settings sits on top of it in the back stack - so a
+    // plan load left running, or a chooser left open, is rendered again when the user comes back:
+    // a dialog with no tap behind it, minutes later. A *configuration change* disposes too, and
+    // must not be mistaken for leaving: the screen is coming straight back, and discarding the
+    // chooser (or the load behind it) would make a rotation silently swallow the tap - which at
+    // this target cannot be avoided by locking the orientation on large screens.
+    val activity = context.findActivity()
+    DisposableEffect(activity) {
+        onDispose {
+            if (activity?.isChangingConfigurations != true) viewModel.onScreenLeft()
+        }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
 
@@ -342,18 +358,29 @@ fun MainScreen(
             title = { Text(title) },
             text = { Text(message) },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.dismissUpgradeDialog()
-                    viewModel.launchPurchaseFlow(context.findActivity())
-                }) {
-                    Text(stringResource(R.string.upgrade_button))
-                }
+                // The dialog stays up, with the button busy, until the plans arrive: asking Play
+                // can take seconds, and closing onto a blank screen is the dead button again.
+                UpgradeButton(
+                    busy = state.plansLoading || state.purchaseInFlight,
+                    onClick = { viewModel.showPlanChooser() }
+                )
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpgradeDialog() }) {
                     Text(stringResource(R.string.cancel))
                 }
             }
+        )
+    }
+
+    state.subscriptionPlans?.let { plans ->
+        PlanChooserDialog(
+            plans = plans,
+            busy = state.purchaseInFlight,
+            onPlanSelected = { plan ->
+                viewModel.launchPurchaseFlow(context.findActivity(), plan)
+            },
+            onDismiss = { viewModel.dismissPlanChooser() }
         )
     }
 
