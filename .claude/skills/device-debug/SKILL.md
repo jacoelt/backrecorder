@@ -1,5 +1,5 @@
 ---
-name: debug
+name: device-debug
 description: >-
   Diagnose a real defect on a real phone over wireless ADB, and report what is wrong — never fix it.
   Takes a GitHub issue number or a plain description of what to look for, connects to the device with
@@ -10,16 +10,18 @@ description: >-
   another agent that will implement the fix, so this skill stays available afterwards to answer
   follow-up questions from its captured logs. Runs either directly in a session or relayed, when
   `/work` Step 3b invokes it inside a subagent that has no user to talk to and must return each
-  question instead of asking it. Use when the user says "/debug 57", "/debug the upgrade
+  question instead of asking it. Use when the user says "/device-debug 57", "/device-debug the upgrade
   button does nothing", "debug this on my phone", "connect to my phone and find out why X", or when
   an agent asks for a device-level diagnosis of an issue. Do NOT use for fixing, for writing code, or
   for debugging that needs no device (static reading, CI failures, unit tests).
-argument-hint: "<issue-number | what to look for>  (e.g. /debug 72  ·  /debug upgrade button spins forever)"
+argument-hint: "<issue-number | what to look for>  (e.g. /device-debug 72  ·  /device-debug upgrade button spins forever)"
 ---
 
-# /debug — find the fault on the device, and only find it
+# /device-debug — find the fault on the device, and only find it
 
-**Command**: `/debug <issue-number | description>`
+**Command**: `/device-debug <issue-number | description>`
+
+> **Do not rename this back to `debug`.** Claude Code ships its own `/debug` command, and a project skill of that name is shadowed by it: the Skill tool resolves `debug` to the built-in, which carries `disable-model-invocation`, so the call comes back *"Skill debug cannot be used with Skill tool… reserved for explicit user invocation"* and this file is never reached. The skill is also absent from a subagent's skills listing under that name. That makes `/work` Step 3b — which runs this **in a subagent** — impossible to satisfy, which is the whole reason the skill exists. The shorter name is not worth it.
 
 A diagnosis run against a **real phone over wireless ADB**. It ends in a report, not a commit.
 
@@ -47,7 +49,7 @@ This skill talks to a human holding a phone. **Whether you can talk to them dire
 
 **Detect the mode before Step 1**: if `mcp__ccd_turn__wrap_up` is among your tools, you are **direct**. If it is not, you are **relayed**. Do not infer the mode from the brief's wording; check the tool.
 
-### Direct — the user invoked `/debug` in a session
+### Direct — the user invoked `/device-debug` in a session
 
 You speak to the user. Ask, then end the turn with `wrap_up` carrying `blocked: true`, and continue when they reply. Keep the task list up to date as usual.
 
@@ -267,7 +269,7 @@ Stop narrowing when you can name **the file, the line and the mechanism**, and s
 
 Stop the background logcat. `git status --porcelain` must be empty.
 
-Save to `.claude/debug-reports/<issue-or-slug>-<YYYY-MM-DD>.md` in the worktree, so the user and the next agent can open it. Create the folder if needed, and if `.claude/debug-reports/` is not in `.gitignore`, append it once — the reports are run artefacts, not repository content. **Copy the raw `logcat.txt` and the step slices in beside the report**; the scratchpad can be cleared at any time, and the report's evidence should outlive it.
+Save to `.claude/device-debug-reports/<issue-or-slug>-<YYYY-MM-DD>.md` in the worktree, so the user and the next agent can open it. Create the folder if needed, and if `.claude/device-debug-reports/` is not in `.gitignore`, append it once — the reports are run artefacts, not repository content. **Copy the raw `logcat.txt` and the step slices in beside the report**; the scratchpad can be cleared at any time, and the report's evidence should outlive it.
 
 ```markdown
 # Debug report — <symptom in one line>

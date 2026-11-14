@@ -23,7 +23,7 @@ One issue in, a build on the Play **internal** track out (or a merged PR, when t
 >
 > Interrupting is justified in exactly two situations, and they are the same thing from two sides: **a decision that isn't yours to make** (the issue is ambiguous in a way that changes what gets built, the review escalated something needing a human, a release failed in a way a retry would make worse) or **a path that can't be taken safely** (the branch won't build, CI won't go green, the ruleset can't be satisfied without bypassing it). Both are enumerated as the hard stops below — and that list is exhaustive. If the urge to ask doesn't map onto one of them, it isn't a stop; keep going.
 >
-> There is **one sanctioned conversation**, and it is not a stop: the `/debug` walkthrough in Step 3b, where the user's hands are the only way to reach the phone. Relay it and carry on — the run resumes by itself when the report lands.
+> There is **one sanctioned conversation**, and it is not a stop: the `/device-debug` walkthrough in Step 3b, where the user's hands are the only way to reach the phone. Relay it and carry on — the run resumes by itself when the report lands.
 >
 > When you do stop, **stop properly**: go no further, say where the run got to, what is on the branch, what would unblock it, and leave the session in "Work". Never a half-stop that asks a question and carries on anyway, and never a stop disguised as a finished run.
 
@@ -88,7 +88,7 @@ Stop, and say why, when the issue is:
 - **Ambiguous in a way that changes what you'd build**: two readings lead to materially different code, and nothing in the body or comments settles it.
 - **A question or a "To Check"** — anything whose answer is a conversation rather than a change.
 
-An issue whose first real step is **observing the app running** is no longer a stop. `/work` still can't drive a phone, but `/debug` can, through the user's hands — route it to **Step 3b** and come back with a cause. What that gate was always protecting against still holds, though: **never implement a fix for a defect nobody has diagnosed.** A change aimed at a guessed cause reviews clean, passes CI, ships to testers and doesn't fix the bug — and it costs a version code to find that out.
+An issue whose first real step is **observing the app running** is no longer a stop. `/work` still can't drive a phone, but `/device-debug` can, through the user's hands — route it to **Step 3b** and come back with a cause. What that gate was always protecting against still holds, though: **never implement a fix for a defect nobody has diagnosed.** A change aimed at a guessed cause reviews clean, passes CI, ships to testers and doesn't fix the bug — and it costs a version code to find that out.
 
 Be honest at this gate rather than optimistic. A stop here costs a message; a hands-off run on a misread issue costs a release.
 
@@ -134,7 +134,7 @@ git checkout -B "<type>/issue-<N>-<slug>" origin/main
 
 **Run this when, and only when, the issue describes a symptom whose cause you cannot establish by reading the code.** A reported misbehaviour with no mechanism named — "recording stops after a few minutes", "the upgrade button does nothing", "my recordings vanished after reboot" — is the case. An issue that already names the mechanism, a crash with a stack trace that points at a line, a build or CI problem, and every `enhancement` are not: skip straight to Step 4. The test is honest and specific — *can I name the file, the line and the mechanism right now?* If yes, don't spend the user's time; if no, don't start guessing in an editor.
 
-Diagnosis is `/debug`'s job, and it is strictly a diagnosis: that skill refuses to write code, and its report deliberately contains no proposed remedy. Yours is to get a cause out of it and build the fix on top.
+Diagnosis is `/device-debug`'s job, and it is strictly a diagnosis: that skill refuses to write code, and its report deliberately contains no proposed remedy. Yours is to get a cause out of it and build the fix on top.
 
 ### How to run it
 
@@ -150,20 +150,20 @@ Brief it with everything it would otherwise have to re-derive, in your own words
 
 ### Relaying the walkthrough — the one place this run talks to the user
 
-`/debug` works through the user's hands: it asks for the phone's IP and pairing code, then issues one instruction at a time and waits for what they saw. This is the **single sanctioned exception** to the hands-off rule at the top of this file, and it is an exception because the alternative isn't "ask less" — it's "ship a guess".
+`/device-debug` works through the user's hands: it asks for the phone's IP and pairing code, then issues one instruction at a time and waits for what they saw. This is the **single sanctioned exception** to the hands-off rule at the top of this file, and it is an exception because the alternative isn't "ask less" — it's "ship a guess".
 
 So, for as long as the walkthrough runs:
 
-- **Read the first line to know what you were handed.** A relayed `/debug` marks every message it returns: `QUESTION FOR THE USER —` means it is waiting on the phone, and `DIAGNOSIS COMPLETE —` means the run is over and the rest is the report path and summary. Those are the only two shapes. Strip the marker line and forward what follows; it is addressed to the user, not a label for them to read. A message carrying neither marker is a `/debug` that has lost the protocol — ask it, with `SendMessage`, which of the two it meant, rather than guessing: guessing wrong either strands the run waiting on a user who was never asked anything, or reads a root-cause report aloud to someone holding a phone.
+- **Read the first line to know what you were handed.** A relayed `/device-debug` marks every message it returns: `QUESTION FOR THE USER —` means it is waiting on the phone, and `DIAGNOSIS COMPLETE —` means the run is over and the rest is the report path and summary. Those are the only two shapes. Strip the marker line and forward what follows; it is addressed to the user, not a label for them to read. A message carrying neither marker is a `/device-debug` that has lost the protocol — ask it, with `SendMessage`, which of the two it meant, rather than guessing: guessing wrong either strands the run waiting on a user who was never asked anything, or reads a root-cause report aloud to someone holding a phone.
 - **Forward each instruction verbatim**, as its own message, with nothing of yours added. The subagent wrote it to be read by someone holding the phone, and paraphrasing it loses the control's on-screen label or the thing to watch for. Don't batch two steps into one message.
 - **Forward the answer back whole** — `SendMessage` to the same subagent, including the parts that sound irrelevant and the exact words of "nothing happened". A dead button with a clean log is a finding.
 - **Add nothing and interpret nothing.** You are a wire between the user and the agent reading the logs. Don't theorise in between; it leaks your hypothesis into their observation.
 - **Say at the start** what is about to happen and roughly how long it takes: that this needs their phone and wireless ADB, and that the run resumes on its own afterwards. Someone who left the room to let `/work` run deserves to know why it is talking to them.
-- **If the user doesn't engage**, or declines, or can't connect the phone — **stop and report**. Not a failure of the run: the branch exists, nothing is committed, and the single next action is a `/debug` session when they have the device. Never fall back to fixing it blind.
+- **If the user doesn't engage**, or declines, or can't connect the phone — **stop and report**. Not a failure of the run: the branch exists, nothing is committed, and the single next action is a `/device-debug` session when they have the device. Never fall back to fixing it blind.
 
 ### What comes back
 
-A report at `.claude/debug-reports/<issue-or-slug>-<date>.md` with the symptom, the root cause down to `file:line`, numbered evidence, what was **ruled out**, what is still unknown, and the exact reproduction. Read the whole thing — the "Ruled out" section is what stops you re-walking covered ground, and "Unknowns" is where it tells you how far to trust the rest.
+A report at `.claude/device-debug-reports/<issue-or-slug>-<date>.md` with the symptom, the root cause down to `file:line`, numbered evidence, what was **ruled out**, what is still unknown, and the exact reproduction. Read the whole thing — the "Ruled out" section is what stops you re-walking covered ground, and "Unknowns" is where it tells you how far to trust the rest.
 
 Then judge it, because a report is evidence, not a verdict:
 
@@ -174,9 +174,14 @@ Then judge it, because a report is evidence, not a verdict:
 | A cause stated as "most likely, unconfirmed" | Treat it as a hypothesis: it is good enough to write a test against, and if the test can't be made to fail, that falsifies it — stop and say so rather than fixing anyway |
 | **Not reproducible** | **Stop and report.** Nothing to fix. Carry the variations that were tried into the report and the issue; that's the useful output of the run |
 
-**Keep the subagent alive** until the branch is merged. `/debug` is built to answer follow-ups from its captured logs, and "was the service dead before or after the flush?" is a `SendMessage` away while that context exists, versus a whole new device session once it's gone. Ask it; don't infer from the source what the phone would have done.
+**Keep the subagent alive** until the branch is merged. `/device-debug` is built to answer follow-ups from its captured logs, and "was the service dead before or after the flush?" is a `SendMessage` away while that context exists, versus a whole new device session once it's gone. Ask it; don't infer from the source what the phone would have done.
 
-**If `/debug` isn't available** in this checkout (it may not have landed on `main` yet — `.claude/skills/debug/SKILL.md`), say so and stop at the 2a gate as before. Don't reimplement it here, and don't proceed without a diagnosis.
+**If `/device-debug` isn't available**, say so and stop at the 2a gate as before. Don't reimplement it here, and don't proceed without a diagnosis. Two different things produce that, and they need different answers:
+
+- **`Unknown skill: device-debug`** — the file isn't in this checkout (`.claude/skills/device-debug/SKILL.md`), *or* **your session is older than the skill is**. A session's available-skills list is a **snapshot taken when the session starts**: a skill merged to `main` afterwards does not appear in it, however current the working tree is, and neither do skills a subagent of that session is given. Check the file on disk before concluding anything. If it's there, the run is in a session that predates it, and the fix is a **fresh `/work` session** — nothing you can do from inside this one will conjure it.
+- **A refusal mentioning `disable-model-invocation`** — you have asked for a name this build reserves. That is what the skill was called `debug` for, and why it isn't any more: Claude Code ships its own `/debug`, so a project skill of that name is shadowed by the built-in and the Skill tool resolves to *that*, refusing with a message naming a skill you never wrote. Never rename this skill to a bare word a slash command already uses; the failure looks like a bug in your own file.
+
+The same snapshot rule is why a `/work` run that predates a change to **this** file keeps following the older text. If Step 3b is missing from the instructions you hold but present in `.claude/skills/work/SKILL.md` on disk, you are that run — stop and say so rather than following stale guidance, and let the user restart.
 
 Record in the report which branch this step took: diagnosed (with the report path), not needed (cause already known from the issue), or stopped.
 
@@ -211,7 +216,7 @@ When Step 3b produced a report, the order is **test first**, and not as a ritual
 
    Only when that ladder is genuinely exhausted does this become a stop — and then it's a real finding, not a shrug: say which rungs you tried and what each ruled out, name which of the two it looks like (the cause is wrong, or it's beyond any test this repo can run), quote the report's own stated confidence, and leave the attempted test on the branch so the next run starts further along. What you must never do is give up on the test and fix the code anyway: that puts you back at the guess the whole diagnosis existed to prevent.
 4. **Then fix, and watch the same test pass** — with the rest of the suite still green. The diff that goes to review is the test plus the smallest change that flips it.
-5. **Keep the test.** It's the regression test Step 4.4 asks for, and its name should say the behavior (`recordingSurvivesRotationAfterServiceRestart`), not the issue number. Reference the issue and the report in the commit body instead; `.claude/debug-reports/` is not committed.
+5. **Keep the test.** It's the regression test Step 4.4 asks for, and its name should say the behavior (`recordingSurvivesRotationAfterServiceRestart`), not the issue number. Reference the issue and the report in the commit body instead; `.claude/device-debug-reports/` is not committed.
 
 Where the mechanism genuinely can't be reached from a JVM unit test and the e2e harness exists, Step 4b's one focused instrumented test is the right home for the reproduction. Where neither can reach it, say so plainly in the report and make the manual walkthrough's first scenario the exact reproduction from the debug report.
 
@@ -520,8 +525,8 @@ Rules for it:
 
 ## Safety rules
 
-- **Never fix a defect nobody diagnosed** (3b). No cause you can name down to `file:line`, no edit — run `/debug` in a subagent and build the fix on its report. And never ship a fix whose failing test you never saw fail (4a) — but a test that won't fail is a problem to work at, not a reason to stop: exhaust 4a.3's ladder first, and stop only with the rungs you tried written down.
-- **The `/debug` walkthrough is the only conversation this run may have**, and it is relayed verbatim in both directions. Everything else is decided here.
+- **Never fix a defect nobody diagnosed** (3b). No cause you can name down to `file:line`, no edit — run `/device-debug` in a subagent and build the fix on its report. And never ship a fix whose failing test you never saw fail (4a) — but a test that won't fail is a problem to work at, not a reason to stop: exhaust 4a.3's ladder first, and stop only with the rungs you tried written down.
+- **The `/device-debug` walkthrough is the only conversation this run may have**, and it is relayed verbatim in both directions. Everything else is decided here.
 - **Finish the issue without the user.** That is the skill. Step 0.2 asking for a missing issue number is the only question this run is allowed to ask; everything after it is decided here and reported afterwards. Judgment calls are yours — make the smaller, more reversible one and say so. Asking is not the safe default; it is the one failure mode that delivers nothing at all.
 - **The hard-stop list is exhaustive.** An urge to stop that isn't on it is not a stop.
 - **The review round threshold is not a hard stop** (6b). Hitting it moves the bar — real blockers only — rather than ending the run; what ends the loop is a round that fixes nothing, a finding that survives two rounds, or ten cumulative rounds. Escalation and drift remain hard stops at any round.
