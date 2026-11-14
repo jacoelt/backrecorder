@@ -8,7 +8,9 @@ description: >-
   reads the logs for each step. Ends with a written root-cause report (evidence, exact file:line,
   what is NOT the cause) saved to a file and summarised in chat. The report is usually consumed by
   another agent that will implement the fix, so this skill stays available afterwards to answer
-  follow-up questions from its captured logs. Use when the user says "/debug 57", "/debug the upgrade
+  follow-up questions from its captured logs. Runs either directly in a session or relayed, when
+  `/work` Step 3b invokes it inside a subagent that has no user to talk to and must return each
+  question instead of asking it. Use when the user says "/debug 57", "/debug the upgrade
   button does nothing", "debug this on my phone", "connect to my phone and find out why X", or when
   an agent asks for a device-level diagnosis of an issue. Do NOT use for fixing, for writing code, or
   for debugging that needs no device (static reading, CI failures, unit tests).
@@ -39,6 +41,31 @@ If the user asks you to fix what you found, say the report is ready and that `/w
 
 ---
 
+## Two ways this skill runs
+
+This skill talks to a human holding a phone. **Whether you can talk to them directly is the thing to establish first**, because it changes the mechanics of every ask in Steps 3, 5 and 6 — and getting it wrong strands the run.
+
+**Detect the mode before Step 1**: if `mcp__ccd_turn__wrap_up` is among your tools, you are **direct**. If it is not, you are **relayed**. Do not infer the mode from the brief's wording; check the tool.
+
+### Direct — the user invoked `/debug` in a session
+
+You speak to the user. Ask, then end the turn with `wrap_up` carrying `blocked: true`, and continue when they reply. Keep the task list up to date as usual.
+
+### Relayed — `/work` Step 3b invoked you in a subagent
+
+There is **no user on the other end of your messages**. There is a caller — a `/work` run — that forwards your words to the user verbatim and sends their answer back with `SendMessage`, resuming you with your context intact. Six things follow, and each of them is a way the run dies if you ignore it:
+
+1. **You have no `wrap_up`, no `update_plan`, and no way to ask a question in the middle of a turn.** The only way to ask is to **end your turn**. Do not call those tools to try; a missing-tool error is how this run fails on its first ask.
+2. **Your final message *is* the message the user reads.** It is relayed verbatim. So it must contain the instruction and nothing else — no preamble addressed to the caller, no status line, no "I'll now analyse the logs". Anything you say to the caller gets read out to someone holding a phone, wondering what to tap.
+3. **Ending a turn is not ending the run.** You will be resumed. So carry your state in what you write down — the `$RUN` path (in full), the marker you last wrote, the step number, the hypotheses still alive — and open every ask by restating which step it is. A resumed turn that has to re-derive where it was wastes a user's step.
+4. **Mark what kind of message you are returning**, because the caller cannot otherwise tell a question from a result, and a wrong guess either strands the run or relays a report to a user who has nothing to do with it. Begin a relayed question with `QUESTION FOR THE USER —` on its own first line, and the end of the run with `DIAGNOSIS COMPLETE —` followed by the report path and the summary. Nothing else starts with those words.
+5. **Re-check your capture after every resume.** Confirm `$RUN/logcat.txt` is still growing and the device is still listed by `adb devices`; a backgrounded `adb logcat` does not reliably survive the gap between turns, and a dead capture turns the next three steps into wasted taps. If it died, restart it, write a fresh marker, and say in the next step's analysis that there is a gap — never pretend the capture is continuous when it is not.
+6. **Analyse slices yourself if you cannot delegate.** Nested subagents may not be available to you. Where Step 5 says to hand a slice to a subagent, fall back to filtering it hard before reading it (see Step 5), and keep the raw file out of your context.
+
+The relayed mode is also the one `/work` documents, so its Step 3b and this section have to stay true to each other. If you change the hand-off shape here, `.claude/skills/work/SKILL.md` Step 3b is the other half.
+
+---
+
 ## Step 0 — Guards
 
 Each failure **stops** the run with the stated reason.
@@ -52,7 +79,8 @@ Each failure **stops** the run with the stated reason.
    Not there → look under `$LOCALAPPDATA/Android/Sdk/platform-tools/` and `$ANDROID_HOME/platform-tools/`. Found nowhere → stop and say Android SDK platform-tools are missing. Version must be **≥ 30.0.0** for `adb pair`; 35.0.2 is what is installed.
 2. **Scratchpad.** Every capture, slice and intermediate file goes in the session scratchpad directory, never in the repo and never in `/tmp`. Make a run folder and keep its absolute path in `RUN` — you will quote it to the user, so it must stay a full path.
 3. **Argument.** `$ARGUMENTS` must say what to look for. Empty → ask once, before anything else happens, and stop until answered.
-4. **Clean tree.** `git status --porcelain` must be empty. This skill never writes to the working tree, so anything already there is the user's; note it and carry on, but refuse to run Step 6 instrumentation over a dirty tree.
+4. **Mode.** Settle direct vs relayed now, by the tool check above, and say which one you are in your first message. Every ask in Steps 3, 5 and 6 depends on it, and discovering it at the first ask is discovering it one failed tool call too late.
+5. **Clean tree.** `git status --porcelain` must be empty. This skill never writes to the working tree, so anything already there is the user's; note it and carry on, but refuse to run Step 6 instrumentation over a dirty tree.
 
 ---
 
@@ -112,7 +140,7 @@ On the phone: *Settings → System → Developer options → Wireless debugging*
 
 Try `"$ADB" connect <ip>:<port>` with the connect address first: **pairing persists per machine**, so a phone paired in an earlier run needs no code. Ask for the pairing pair only if that fails.
 
-Ask in prose (an IP and a code are free text, not a menu), one message, then end the turn with `wrap_up` carrying `blocked: true`:
+Ask in prose — an IP and a code are free text, not a menu — as one message, then end the turn: **direct**, with `wrap_up` carrying `blocked: true`; **relayed**, by returning, with `QUESTION FOR THE USER —` as the first line and the text below as the whole of the rest.
 
 > On your phone open **Settings → System → Developer options → Wireless debugging** and leave that screen open. Tell me the **IP address & Port** shown there (e.g. `192.168.1.42:37561`). If I can't connect I'll then ask you to tap **Pair device with pairing code** and read me that dialog's port and 6-digit code — the ports are different, so keep them apart.
 
@@ -176,7 +204,7 @@ The markers are what makes a slice exact. Correlating by wall clock across a PC 
 
 ## Step 5 — Walk the user through it
 
-The user is your hands. Give them **one step per message**, and wait.
+The user is your hands. Give them **one step per message**, and wait — by ending the turn, in whichever way your mode ends it. Relayed, that means the step instruction is the entire returned message, under the `QUESTION FOR THE USER —` line; a step buried under your reasoning reaches the user as noise around the one sentence they needed.
 
 Each step message is exactly this shape:
 
@@ -204,6 +232,15 @@ sed -n '/STEP 3 BEGIN/,/STEP 3 END/p' "$RUN/logcat.txt" > "$RUN/step3.txt"
 Brief the subagent with: the slice path, `SYMPTOM`/`EXPECTED`, the hypotheses and the tags from Step 2, and the user's observation for that step. Ask it to return, in at most ~15 lines: which hypotheses the slice **supports**, which it **rules out**, any exception/`ActivityManager` kill/response code with the exact log line quoted, and anything it did not expect. Explicitly tell it not to propose fixes.
 
 Run the analysis for step *n* while the user performs step *n+1* — that is what the background agent is for, and it keeps the walkthrough at the user's pace instead of yours.
+
+**When you cannot delegate** (relayed mode, where nested subagents may not be available to you), do not fall back to reading the raw slice — a minute of logcat on a busy phone is thousands of lines and it will bury the rest of the run. Filter it down to something you can afford to read, in this order, and say in the report that the analysis was filtered rather than full:
+
+```bash
+grep -nE 'PlayBilling|RecordingService|CloudSyncManager|DriveAuth|AndroidRuntime|ActivityManager|FATAL|ANR|Exception' "$RUN/step3.txt" | head -80
+wc -l "$RUN/step3.txt"      # so you know how much you did NOT read
+```
+
+Then widen deliberately — `grep -C5` around anything that looks like the moment, the crash buffer, the one tag the hypothesis named. The rule is that every line entering your context should be one you asked for by name.
 
 **Re-plan between steps.** If a slice kills a hypothesis, say so out loud and change the remaining steps. A walkthrough executed to the end after its premise died wastes the user's time and ends in a report with no cause in it.
 
@@ -273,6 +310,8 @@ Two things about tone, both of which matter because the reader is usually anothe
 
 Then, in chat: the file path, a 3–5 line summary (symptom → cause → the one decisive piece of evidence), and the paths to the raw logs. Someone must be able to act on the chat message alone.
 
+**Relayed**, this is the message that ends the run, and it is the one thing the caller is waiting for: first line `DIAGNOSIS COMPLETE — <symptom in one line>`, then the report path, then the summary and the raw-log paths. Its reader is a `/work` run that will write a failing test from it, not the user holding the phone — so it is the only relayed message you do not write for them.
+
 ---
 
 ## Step 8 — Stay available
@@ -283,4 +322,5 @@ So, at the end of the run:
 
 - **Keep the raw capture.** Do not delete `logcat.txt` or the slices. They are the only way to answer a follow-up without re-running the whole walkthrough.
 - **Keep the device connected** unless the user asks otherwise, and say that it is. A follow-up that needs one more `dumpsys` is cheap while connected and a new run once disconnected.
+- **Expect follow-ups by `SendMessage`.** Relayed, `/work` keeps you alive until its branch merges precisely so it can ask "was the service dead before or after the flush?" without a new device session. Those arrive as ordinary turns; answer them the same way, and keep marking a message that needs the user with `QUESTION FOR THE USER —` if one more device step is the honest answer.
 - **Answer from evidence.** For a follow-up, re-read the capture and quote it. Where the capture cannot answer, say so and offer one more device step — do not reason from the source about what the phone *would have* done, and do not slide into proposing the fix.

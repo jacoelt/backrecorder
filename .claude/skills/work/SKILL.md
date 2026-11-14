@@ -154,6 +154,7 @@ Brief it with everything it would otherwise have to re-derive, in your own words
 
 So, for as long as the walkthrough runs:
 
+- **Read the first line to know what you were handed.** A relayed `/debug` marks every message it returns: `QUESTION FOR THE USER —` means it is waiting on the phone, and `DIAGNOSIS COMPLETE —` means the run is over and the rest is the report path and summary. Those are the only two shapes. Strip the marker line and forward what follows; it is addressed to the user, not a label for them to read. A message carrying neither marker is a `/debug` that has lost the protocol — ask it, with `SendMessage`, which of the two it meant, rather than guessing: guessing wrong either strands the run waiting on a user who was never asked anything, or reads a root-cause report aloud to someone holding a phone.
 - **Forward each instruction verbatim**, as its own message, with nothing of yours added. The subagent wrote it to be read by someone holding the phone, and paraphrasing it loses the control's on-screen label or the thing to watch for. Don't batch two steps into one message.
 - **Forward the answer back whole** — `SendMessage` to the same subagent, including the parts that sound irrelevant and the exact words of "nothing happened". A dead button with a clean log is a finding.
 - **Add nothing and interpret nothing.** You are a wire between the user and the agent reading the logs. Don't theorise in between; it leaks your hypothesis into their observation.
