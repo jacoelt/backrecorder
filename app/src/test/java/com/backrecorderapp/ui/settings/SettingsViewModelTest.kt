@@ -60,6 +60,8 @@ class SettingsViewModelTest {
     private lateinit var driveAuthorized: MutableStateFlow<Boolean>
     private lateinit var needsReauth: MutableStateFlow<Boolean>
     private lateinit var storageFull: MutableStateFlow<Boolean>
+    private lateinit var subscriptionStatus: MutableStateFlow<SubscriptionStatus>
+    private lateinit var statusResolved: MutableStateFlow<Boolean>
 
     @Before
     fun setup() {
@@ -76,11 +78,13 @@ class SettingsViewModelTest {
         driveAuthorized = MutableStateFlow(false)
         needsReauth = MutableStateFlow(false)
         storageFull = MutableStateFlow(false)
+        subscriptionStatus = MutableStateFlow(SubscriptionStatus.ACTIVE)
+        statusResolved = MutableStateFlow(true)
 
         every { appPreferences.cloudUploadMode } returns cloudUploadMode
         every { appPreferences.driveDisconnected } returns driveDisconnected
-        every { billingRepository.subscriptionStatus } returns
-            MutableStateFlow(SubscriptionStatus.ACTIVE)
+        every { billingRepository.subscriptionStatus } returns subscriptionStatus
+        every { subscriptionGate.statusResolved } returns statusResolved
         every { billingRepository.getTrialDaysRemaining() } returns 0
         every { driveAuthManager.isAuthorized } returns driveAuthorized
         every { cloudSyncManager.needsReauth } returns needsReauth
@@ -283,6 +287,63 @@ class SettingsViewModelTest {
 
             storageFull.value = true
             assertTrue(awaitItem().driveStorageFull)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `drive row reports the grant as unusable once the subscription lapses`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            val active = awaitItem()
+            assertTrue("precondition: the grant is in place", active.driveConnected)
+            assertFalse(
+                "precondition: a paying subscriber is not told to upgrade",
+                active.driveSyncBlockedByPlan
+            )
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+
+            val lapsed = awaitItem()
+            // The grant itself is deliberately kept, so re-subscribing does not need a fresh
+            // consent round - but the row must stop claiming uploads work.
+            assertTrue(lapsed.driveConnected)
+            assertTrue(lapsed.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * The constraint from CLAUDE.md's "Subscription gate": at process start the status is only
+     * its FREE default. Reading that as a lapsed subscription would tell a paying subscriber at
+     * every launch that their Drive account is unusable.
+     */
+    @Test
+    fun `does not call the grant unusable before billing has answered`() = runTest {
+        statusResolved.value = false
+        subscriptionStatus.value = SubscriptionStatus.FREE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            val unresolved = awaitItem()
+            assertTrue("precondition: the grant is in place", unresolved.driveConnected)
+            assertFalse(unresolved.driveSyncBlockedByPlan)
+
+            statusResolved.value = true
+
+            assertTrue(awaitItem().driveSyncBlockedByPlan)
 
             cancelAndIgnoreRemainingEvents()
         }

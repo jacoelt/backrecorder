@@ -169,6 +169,7 @@ fun SettingsScreen(
 
             DriveAccountRow(
                 connected = state.driveConnected,
+                syncBlockedByPlan = state.driveSyncBlockedByPlan,
                 needsReauth = state.driveNeedsReauth,
                 storageFull = state.driveStorageFull,
                 onConnect = { viewModel.connectDrive() },
@@ -297,6 +298,7 @@ fun SettingsScreen(
 @Composable
 private fun DriveAccountRow(
     connected: Boolean,
+    syncBlockedByPlan: Boolean,
     needsReauth: Boolean,
     storageFull: Boolean,
     onConnect: () -> Unit,
@@ -313,14 +315,19 @@ private fun DriveAccountRow(
                 text = stringResource(R.string.settings_drive_account),
                 style = MaterialTheme.typography.bodyLarge
             )
+            // A grant that outlived its subscription is still a grant, so the row says so rather
+            // than claiming "Not connected" next to a Disconnect button - but it must not read as
+            // working, in colour any more than in words.
+            val uploadsWorking = connected && !syncBlockedByPlan
             Text(
-                text = if (connected) {
-                    stringResource(R.string.settings_drive_connected)
-                } else {
-                    stringResource(R.string.settings_drive_not_connected)
+                text = when {
+                    !connected -> stringResource(R.string.settings_drive_not_connected)
+                    syncBlockedByPlan ->
+                        stringResource(R.string.settings_drive_connected_upgrade_required)
+                    else -> stringResource(R.string.settings_drive_connected)
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = if (connected) {
+                color = if (uploadsWorking) {
                     MaterialTheme.colorScheme.primary
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant

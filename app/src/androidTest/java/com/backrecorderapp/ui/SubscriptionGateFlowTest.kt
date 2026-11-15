@@ -20,6 +20,7 @@ import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.FakeBillingRepository
 import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
+import com.backrecorderapp.data.cloud.FakeDriveAuthorizationClient
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.domain.BlockReason
@@ -66,6 +67,7 @@ class SubscriptionGateFlowTest {
     @Inject lateinit var billing: FakeBillingRepository
     @Inject lateinit var subscriptionGate: SubscriptionGate
     @Inject lateinit var saveRecordingUseCase: SaveRecordingUseCase
+    @Inject lateinit var authorizationClient: FakeDriveAuthorizationClient
 
     private val preferences = PreferenceSnapshot()
 
@@ -352,6 +354,40 @@ class SubscriptionGateFlowTest {
         // UI first, so a refusal posted just after the write is not missed.
         composeRule.waitForIdle()
         composeRule.onAllNodesWithText(string(R.string.upgrade_cloud_title)).assertCountEquals(0)
+    }
+
+    /**
+     * Issue #85, end to end: the OAuth grant outlives the subscription that was required to
+     * obtain it, so the Drive row went on reading "Connected" directly below "Free plan" on an
+     * account that could not upload a thing.
+     *
+     * The grant is deliberately left in place - re-subscribing should not need a fresh consent
+     * round - so what is asserted is what the row *says*. Driven through the real screen, with
+     * entitlement changing underneath a live settings screen, because the defect is precisely
+     * that nothing re-evaluated the row when it did.
+     */
+    @Test
+    fun aLapsedSubscriberIsNotToldTheirDriveAccountIsWorking() {
+        authorizationClient.grantAccess()
+        billing.setStatus(SubscriptionStatus.ACTIVE)
+        openSettings()
+
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText(string(R.string.settings_drive_connected))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+
+        billing.setStatus(SubscriptionStatus.FREE)
+
+        composeRule.waitUntil(timeoutMillis = 10_000) {
+            composeRule.onAllNodesWithText(
+                string(R.string.settings_drive_connected_upgrade_required)
+            ).fetchSemanticsNodes().isNotEmpty()
+        }
+        // The bare "Connected" is an exact-match node, so the longer string does not satisfy it:
+        // this asserts the contradictory label is gone, not merely that another one appeared.
+        composeRule.onAllNodesWithText(string(R.string.settings_drive_connected))
+            .assertCountEquals(0)
     }
 
     // --- Extended recording, through SaveRecordingUseCase -------------------------------------

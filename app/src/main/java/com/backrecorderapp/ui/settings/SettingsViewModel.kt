@@ -50,7 +50,14 @@ data class SettingsUiState(
     val trialDaysRemaining: Int = 0,
     val driveConnected: Boolean = false,
     val driveNeedsReauth: Boolean = false,
-    val driveStorageFull: Boolean = false
+    val driveStorageFull: Boolean = false,
+    /**
+     * The Drive grant exists but the subscription no longer covers uploads. The OAuth grant
+     * outlives the subscription that was required to obtain it, so [driveConnected] alone says
+     * "Connected" indefinitely on an account that cannot upload - which is what #85 reported,
+     * directly above "Free plan".
+     */
+    val driveSyncBlockedByPlan: Boolean = false
 )
 
 @HiltViewModel
@@ -73,19 +80,33 @@ class SettingsViewModel @Inject constructor(
         cloudSyncManager.storageFull
     ) { needsReauth, storageFull -> needsReauth to storageFull }
 
+    // Paired for the same reason, and kept together for a second one: the status means nothing
+    // until it has been resolved, so nothing should ever read one without the other.
+    private val entitlement = combine(
+        billingRepository.subscriptionStatus,
+        subscriptionGate.statusResolved
+    ) { status, resolved -> status to resolved }
+
     val uiState: StateFlow<SettingsUiState> = combine(
         RecordingService.isRunning,
         appPreferences.cloudUploadMode,
-        billingRepository.subscriptionStatus,
+        entitlement,
         driveAuthManager.isAuthorized,
         driveProblems
-    ) { recording, cloudMode, subStatus, driveConnected, problems ->
+    ) { recording, cloudMode, entitlementState, driveConnected, problems ->
+        val (subStatus, statusResolved) = entitlementState
         SettingsUiState(
             recordingEnabled = recording,
             cloudUploadMode = cloudMode,
             subscriptionStatus = subStatus,
             trialDaysRemaining = billingRepository.getTrialDaysRemaining(),
             driveConnected = driveConnected,
+            // Only once billing has answered. Before that the status is merely its FREE default,
+            // and acting on that default would tell a paying subscriber at every launch that the
+            // account they are paying for cannot upload - the same mistake the app-launch resume
+            // is gated indirectly to avoid.
+            driveSyncBlockedByPlan = driveConnected && statusResolved &&
+                !SubscriptionGate.isPremium(subStatus),
             driveNeedsReauth = problems.first,
             driveStorageFull = problems.second
         )
