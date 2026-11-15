@@ -43,11 +43,6 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Covers the Drive consent / reconnect / disconnect flow. The failure modes that matter here are
- * silent: a blocked subscription that still authorizes, a failed consent that leaves the app in a
- * mode it cannot upload in, and a disconnect that the OAuth grant quietly undoes.
- */
-/**
  * Waits for a state satisfying [predicate] rather than for a fixed number of emissions, so a test
  * that changes two sources does not depend on whether the combine coalesced them.
  */
@@ -60,6 +55,11 @@ private suspend fun ReceiveTurbine<SettingsUiState>.awaitUntil(
     }
 }
 
+/**
+ * Covers the Drive consent / reconnect / disconnect flow. The failure modes that matter here are
+ * silent: a blocked subscription that still authorizes, a failed consent that leaves the app in a
+ * mode it cannot upload in, and a disconnect that the OAuth grant quietly undoes.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
 
