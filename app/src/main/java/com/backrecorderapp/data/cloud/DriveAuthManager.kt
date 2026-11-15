@@ -54,9 +54,6 @@ class DriveAuthManager @Inject constructor(
     companion object {
         private const val TAG = "DriveAuthManager"
 
-        private const val CONNECT_TIMEOUT_MS = 30_000
-        private const val READ_TIMEOUT_MS = 60_000
-
         /** Account type every Google account on the device carries. */
         private const val GOOGLE_ACCOUNT_TYPE = "com.google"
 
@@ -392,14 +389,13 @@ class DriveAuthManager @Inject constructor(
                 "Drive requests must not run on the main thread"
             }
 
-            // The only bound on a Drive call. `execute()` blocks, so no coroutine timeout above
-            // can interrupt it — a `withTimeout` around one does not fire until the call returns
-            // on its own. Without these a half-open socket hangs a sync tick, or holds the
-            // saved-recording upload lock and every save queued behind it, for the life of the
-            // process. The read timeout is per socket read rather than per transfer, so a large
-            // upload still making progress is unaffected.
-            request.connectTimeout = CONNECT_TIMEOUT_MS
-            request.readTimeout = READ_TIMEOUT_MS
+            // Timeouts are deliberately left at google-http-client's own 20s connect / 20s read
+            // defaults. They are what bounds a Drive call, and the bound matters: `execute()`
+            // blocks, so no coroutine `withTimeout` above can interrupt it, and an unbounded
+            // call would hold a sync tick or the saved-recording upload lock indefinitely. The
+            // read timeout is per socket read rather than per transfer, so a large upload that
+            // is still making progress never trips it — which is why the defaults are already
+            // the right size and widening them here would only weaken the bound.
 
             val token = runBlocking { validToken(forceRefresh = false) }
                 ?: throw IOException("No Drive access token available")

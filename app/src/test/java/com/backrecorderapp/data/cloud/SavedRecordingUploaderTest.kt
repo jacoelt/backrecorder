@@ -201,11 +201,13 @@ class SavedRecordingUploaderTest {
     }
 
     /**
-     * Entitled, uploads on, but Drive is not connected: the user has silently lost a backup they
-     * were expecting, so unlike a refusal this is reported.
+     * An upload mode other than OFF does not imply a connected account: settings writes the mode
+     * before asking for consent and leaves it set if the user backs out. Reporting that state
+     * would put a failure notification on every save, forever, for a copy they never granted
+     * access for — so it stays silent.
      */
     @Test
-    fun `tells an entitled user when Drive is not connected`() = runTest {
+    fun `says nothing when Drive was never connected`() = runTest {
         every { driveCloudStorage.isInitialized } returns false
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
@@ -214,7 +216,7 @@ class SavedRecordingUploaderTest {
         }
 
         coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
-        assertEquals(1, reported.size)
+        assertTrue("no grant means nothing was promised", reported.isEmpty())
     }
 
     @Test

@@ -63,8 +63,8 @@ class SavedRecordingUploader @Inject constructor(
         /**
          * A backstop, not the real bound. `execute()` blocks, so this cannot interrupt a stalled
          * transfer - it only fires once the call returns on its own. What actually bounds it is
-         * the connect/read timeout `DriveAuthManager` sets on every Drive request; this catches
-         * the case where a transfer keeps trickling just fast enough never to trip that.
+         * google-http-client's own 20s socket timeouts (see [DriveAuthManager]); this catches the
+         * case where a transfer keeps trickling just fast enough never to trip those.
          */
         private const val UPLOAD_TIMEOUT_MS = 10 * 60 * 1000L
 
@@ -165,11 +165,20 @@ class SavedRecordingUploader @Inject constructor(
      * Whether this copy should be uploaded, and - when it should not - whether that is worth
      * telling the user about.
      *
-     * The split is the point. Someone who turned uploads off, or who is not entitled to them,
-     * has lost nothing and is told nothing: `DECLINED`. But someone who *is* entitled and has
-     * uploads on, and whose copy did not go because Drive was not connected or the device was
-     * offline, has silently lost the backup they were expecting - so that is `BLOCKED` and
-     * reported, exactly as the same condition discovered one attempt later already is.
+     * The split is the point, and it turns on whether the user lost something they were
+     * promised. Uploads off, or no entitlement, is `DECLINED` and silent.
+     *
+     * **No Drive grant is also `DECLINED`**, and that is not obvious: an upload mode other than
+     * OFF does *not* imply a connected account. `SettingsViewModel` writes the mode before asking
+     * for consent and deliberately leaves it set when the user backs out of the sheet, so
+     * mode-on-with-no-grant is a normal, persistent state in which the sync loop simply never
+     * becomes active. Reporting it would mean a failure notification on every single save,
+     * forever, for a copy the user never granted access for.
+     *
+     * Being offline is `BLOCKED` and reported: there the setup is complete and the backup the
+     * user expected genuinely did not happen - and the identical condition discovered one
+     * attempt later was already being reported, so staying silent here made the commonest
+     * version of it the invisible one.
      */
     private suspend fun eligibility(): Eligibility {
         val mode = appPreferences.cloudUploadMode.first()
@@ -180,9 +189,13 @@ class SavedRecordingUploader @Inject constructor(
         }
         if (resolved == null) return Eligibility.DECLINED
         if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return Eligibility.DECLINED
+        if (!driveCloudStorage.isInitialized) return Eligibility.DECLINED
 
-        val ready = driveCloudStorage.isInitialized && isCloudNetworkAvailable(context, mode)
-        return if (ready) Eligibility.UPLOAD else Eligibility.BLOCKED
+        return if (isCloudNetworkAvailable(context, mode)) {
+            Eligibility.UPLOAD
+        } else {
+            Eligibility.BLOCKED
+        }
     }
 
     private enum class Attempt { UPLOADED, RETRYABLE, THROTTLED, TERMINAL }
@@ -224,7 +237,7 @@ class SavedRecordingUploader @Inject constructor(
      *
      * The lock covers the transfer alone so that exactly one saved recording is on the wire at a
      * time through the single Drive client. What stops a stalled transfer holding it - and every
-     * save queued behind it - is the connect/read timeout on the Drive request itself, since a
+     * save queued behind it - is the socket timeout on the Drive request itself, since a
      * coroutine timeout cannot interrupt the blocking call underneath.
      */
     private suspend fun attemptUpload(file: File, displayName: String, attempt: Int): Attempt =
