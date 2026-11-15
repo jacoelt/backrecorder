@@ -15,6 +15,8 @@ import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.data.preferences.ComplimentaryAccessStore
+import com.backrecorderapp.data.preferences.RedeemResult
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
@@ -68,6 +70,7 @@ class SettingsViewModelTest {
     private lateinit var subscriptionGate: SubscriptionGate
     private lateinit var cloudSyncManager: CloudSyncManager
     private lateinit var driveAuthManager: DriveAuthManager
+    private lateinit var complimentaryAccessStore: ComplimentaryAccessStore
 
     private lateinit var cloudUploadMode: MutableStateFlow<CloudUploadMode>
     private lateinit var driveDisconnected: MutableStateFlow<Boolean>
@@ -76,6 +79,7 @@ class SettingsViewModelTest {
     private lateinit var storageFull: MutableStateFlow<Boolean>
     private lateinit var subscriptionStatus: MutableStateFlow<SubscriptionStatus>
     private lateinit var statusResolved: MutableStateFlow<Boolean>
+    private lateinit var complimentaryGranted: MutableStateFlow<Boolean>
 
     @Before
     fun setup() {
@@ -86,6 +90,7 @@ class SettingsViewModelTest {
         subscriptionGate = mockk(relaxed = true)
         cloudSyncManager = mockk(relaxed = true)
         driveAuthManager = mockk(relaxed = true)
+        complimentaryAccessStore = mockk(relaxed = true)
 
         cloudUploadMode = MutableStateFlow(CloudUploadMode.WIFI_ONLY)
         driveDisconnected = MutableStateFlow(false)
@@ -94,11 +99,13 @@ class SettingsViewModelTest {
         storageFull = MutableStateFlow(false)
         subscriptionStatus = MutableStateFlow(SubscriptionStatus.ACTIVE)
         statusResolved = MutableStateFlow(true)
+        complimentaryGranted = MutableStateFlow(false)
 
         every { appPreferences.cloudUploadMode } returns cloudUploadMode
         every { appPreferences.driveDisconnected } returns driveDisconnected
         every { billingRepository.subscriptionStatus } returns subscriptionStatus
         every { subscriptionGate.statusResolved } returns statusResolved
+        every { complimentaryAccessStore.granted } returns complimentaryGranted
         every { billingRepository.getTrialDaysRemaining() } returns 0
         every { driveAuthManager.isAuthorized } returns driveAuthorized
         every { cloudSyncManager.needsReauth } returns needsReauth
@@ -118,7 +125,8 @@ class SettingsViewModelTest {
         billingRepository = billingRepository,
         subscriptionGate = subscriptionGate,
         cloudSyncManager = cloudSyncManager,
-        driveAuthManager = driveAuthManager
+        driveAuthManager = driveAuthManager,
+        complimentaryAccessStore = complimentaryAccessStore
     )
 
     @Test
@@ -881,5 +889,148 @@ class SettingsViewModelTest {
         viewModel.onScreenLeft()
 
         assertFalse(viewModel.showUpgradeDialog.value)
+    }
+
+    @Test
+    fun `an accepted code grants complimentary access and closes the dialog`() = runTest {
+        coEvery { complimentaryAccessStore.redeem(any()) } answers {
+            complimentaryGranted.value = true
+            RedeemResult.ACCEPTED
+        }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        advanceUntilIdle()
+
+        assertEquals(RedeemResult.ACCEPTED, viewModel.redeemOutcome.value)
+        assertFalse(viewModel.redeemDialogVisible.value)
+        // The typed code must reach the store verbatim; normalisation is the validator's job.
+        coVerify(exactly = 1) { complimentaryAccessStore.redeem("TEST-AAAA-BBBB") }
+        viewModel.uiState.test {
+            assertTrue(awaitUntil { it.complimentaryAccess }.complimentaryAccess)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** A rejected code leaves the field up to be corrected rather than closing onto nothing. */
+    @Test
+    fun `a rejected code reports and keeps the dialog open`() = runTest {
+        coEvery { complimentaryAccessStore.redeem(any()) } returns RedeemResult.REJECTED
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("NOPE-NOPE-NOPE")
+        advanceUntilIdle()
+
+        assertEquals(RedeemResult.REJECTED, viewModel.redeemOutcome.value)
+        assertTrue(viewModel.redeemDialogVisible.value)
+        viewModel.uiState.test {
+            assertFalse(awaitItem().complimentaryAccess)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** A valid code that could not be written must not be reported as an unrecognised one. */
+    @Test
+    fun `a failed write is reported apart from a refused code`() = runTest {
+        coEvery { complimentaryAccessStore.redeem(any()) } returns RedeemResult.STORAGE_FAILED
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        advanceUntilIdle()
+
+        assertEquals(RedeemResult.STORAGE_FAILED, viewModel.redeemOutcome.value)
+        assertTrue(viewModel.redeemDialogVisible.value)
+    }
+
+    @Test
+    fun `cancelling the dialog discards an answer still on its way`() = runTest {
+        val parked = CompletableDeferred<RedeemResult>()
+        coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        viewModel.dismissRedeemDialog()
+
+        parked.complete(RedeemResult.REJECTED)
+        advanceUntilIdle()
+
+        assertNull(viewModel.redeemOutcome.value)
+    }
+
+    /**
+     * The entitlement the screen renders must come from the shared rule, not from the billing
+     * status - which stays FREE for a complimentary user for the life of the install.
+     */
+    @Test
+    fun `complimentary access covers uploads while billing still reads FREE`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.FREE
+        statusResolved.value = true
+        cloudUploadMode.value = CloudUploadMode.ALWAYS_ON
+        driveAuthorized.value = true
+        complimentaryGranted.value = true
+
+        val viewModel = createViewModel()
+        viewModel.uiState.test {
+            val state = awaitUntil { it.complimentaryAccess && it.driveConnected }
+            assertFalse(state.driveSyncBlockedByPlan)
+            assertFalse(state.cloudUploadBlockedByPlan)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * An ACCEPTED published after the user left is the render condition for the confirmation
+     * dialog, so it would be waiting on screen the next time Settings opened - the #74
+     * dialog-with-no-tap-behind-it defect in a new place.
+     */
+    @Test
+    fun `an acceptance landing after the user left is discarded`() = runTest {
+        val parked = CompletableDeferred<RedeemResult>()
+        coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        viewModel.onScreenLeft()
+
+        parked.complete(RedeemResult.ACCEPTED)
+        advanceUntilIdle()
+
+        assertNull(viewModel.redeemOutcome.value)
+    }
+
+    @Test
+    fun `a second redeem is refused while one is already running`() = runTest {
+        val parked = CompletableDeferred<RedeemResult>()
+        coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+
+        parked.complete(RedeemResult.REJECTED)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { complimentaryAccessStore.redeem(any()) }
+    }
+
+    @Test
+    fun `leaving settings drops a half-typed redemption`() = runTest {
+        coEvery { complimentaryAccessStore.redeem(any()) } returns RedeemResult.REJECTED
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("NOPE-NOPE-NOPE")
+        advanceUntilIdle()
+
+        viewModel.onScreenLeft()
+
+        assertFalse(viewModel.redeemDialogVisible.value)
+        assertNull(viewModel.redeemOutcome.value)
     }
 }

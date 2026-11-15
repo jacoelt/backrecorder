@@ -59,6 +59,17 @@
     <string name="settings_drive_sign_in_failed">Could not connect to Google Drive. Please try again.</string>
     <string name="settings_drive_account_mismatch">Google signed in with a different account than the one your recordings are backed up to. To avoid uploading them to the wrong Drive, nothing has been uploaded. Disconnect and reconnect, choosing the original account.</string>
     <string name="settings_subscription">Subscription</string>
+    <string name="settings_complimentary_access">Complimentary access</string>
+    <string name="settings_complimentary_access_desc">All premium features are unlocked on this device. Nothing to pay.</string>
+    <string name="settings_redeem_code">Redeem a code</string>
+    <string name="settings_redeem_code_message">Have a complimentary access code? Enter it below to unlock all premium features on this device.</string>
+    <string name="settings_redeem_code_label">Access code</string>
+    <string name="settings_redeem_confirm">Redeem</string>
+    <string name="settings_redeem_storage_failed">Your code is valid, but it could not be saved on this device. Please try again.</string>
+    <string name="settings_redeem_in_progress">Redeeming</string>
+    <string name="settings_redeem_rejected">That code was not recognised. Check it and try again.</string>
+    <string name="settings_redeem_accepted_title">Complimentary access unlocked</string>
+    <string name="settings_redeem_accepted_message">All premium features are now available on this device.</string>
     <string name="settings_legal">Legal</string>
     <string name="settings_view_disclaimer">View legal disclaimer</string>
 

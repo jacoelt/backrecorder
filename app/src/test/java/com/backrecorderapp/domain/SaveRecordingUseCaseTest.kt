@@ -20,6 +20,7 @@ import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -55,7 +56,8 @@ class SaveRecordingUseCaseTest {
         segmentManager = mockk(relaxed = true)
         trimUseCase = mockk(relaxed = true)
         billingRepository = mockk()
-        subscriptionGate = SubscriptionGate(billingRepository)
+        every { billingRepository.statusResolved } returns MutableStateFlow(true)
+        subscriptionGate = testSubscriptionGate(billingRepository)
         recordingFlusher = mockk(relaxed = true)
 
         contentResolver = mockk(relaxed = true)

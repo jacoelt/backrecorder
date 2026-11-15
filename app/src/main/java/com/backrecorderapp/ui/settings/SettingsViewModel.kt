@@ -16,6 +16,8 @@ import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.data.preferences.ComplimentaryAccessStore
+import com.backrecorderapp.data.preferences.RedeemResult
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.service.RecordingService
@@ -70,7 +72,21 @@ data class SettingsUiState(
      * `driveConnected` term, unlike [driveSyncBlockedByPlan]: the stored mode claims uploads are
      * happening whether or not an account was ever connected.
      */
-    val cloudUploadBlockedByPlan: Boolean = false
+    val cloudUploadBlockedByPlan: Boolean = false,
+    /** Replaces the plan card and removes the Upgrade affordance: there is nothing to buy (#98). */
+    val complimentaryAccess: Boolean = false
+)
+
+
+/**
+ * The two billing terms plus the complimentary one. Kept together because the status means
+ * nothing without the other two: before billing resolves it is only its FREE default, and a
+ * complimentary user's status stays FREE forever by design.
+ */
+private data class EntitlementState(
+    val status: SubscriptionStatus,
+    val resolved: Boolean,
+    val complimentary: Boolean
 )
 
 @HiltViewModel
@@ -79,7 +95,8 @@ class SettingsViewModel @Inject constructor(
     private val billingRepository: BillingRepository,
     private val subscriptionGate: SubscriptionGate,
     private val cloudSyncManager: CloudSyncManager,
-    private val driveAuthManager: DriveAuthManager
+    private val driveAuthManager: DriveAuthManager,
+    private val complimentaryAccessStore: ComplimentaryAccessStore
 ) : ViewModel() {
 
     companion object {
@@ -93,12 +110,11 @@ class SettingsViewModel @Inject constructor(
         cloudSyncManager.storageFull
     ) { needsReauth, storageFull -> needsReauth to storageFull }
 
-    // Paired for the same reason, and kept together for a second one: the status means nothing
-    // until it has been resolved, so nothing should ever read one without the other.
     private val entitlement = combine(
         billingRepository.subscriptionStatus,
-        subscriptionGate.statusResolved
-    ) { status, resolved -> status to resolved }
+        subscriptionGate.statusResolved,
+        complimentaryAccessStore.granted
+    ) { status, resolved, complimentary -> EntitlementState(status, resolved, complimentary) }
 
     val uiState: StateFlow<SettingsUiState> = combine(
         RecordingService.isRunning,
@@ -107,15 +123,17 @@ class SettingsViewModel @Inject constructor(
         driveAuthManager.isAuthorized,
         driveProblems
     ) { recording, cloudMode, entitlementState, driveConnected, problems ->
-        val (subStatus, statusResolved) = entitlementState
+        val (subStatus, statusResolved, complimentary) = entitlementState
         // Before billing answers the status is only its FREE default; acting on it would tell a
         // paying subscriber at every launch that the account they pay for cannot upload.
-        val planCoversUploads = !statusResolved || SubscriptionGate.isPremium(subStatus)
+        val planCoversUploads =
+            !statusResolved || SubscriptionGate.isPremium(subStatus, complimentary)
         val driveSyncBlockedByPlan = driveConnected && !planCoversUploads
         SettingsUiState(
             recordingEnabled = recording,
             cloudUploadMode = cloudMode,
             subscriptionStatus = subStatus,
+            complimentaryAccess = complimentary,
             trialDaysRemaining = billingRepository.getTrialDaysRemaining(),
             driveConnected = driveConnected,
             driveSyncBlockedByPlan = driveSyncBlockedByPlan,
@@ -324,6 +342,62 @@ class SettingsViewModel @Inject constructor(
         _driveError.value = null
     }
 
+    private val _redeemDialogVisible = MutableStateFlow(false)
+    val redeemDialogVisible: StateFlow<Boolean> = _redeemDialogVisible.asStateFlow()
+
+    private val _redeemOutcome = MutableStateFlow<RedeemResult?>(null)
+
+    val redeemOutcome: StateFlow<RedeemResult?> = _redeemOutcome.asStateFlow()
+
+    /** See [planLoadGeneration]; the acceptance dialog is raised by the answer, not by a tap. */
+    private var redeemGeneration = 0
+
+    private val _redeemInFlight = MutableStateFlow(false)
+
+    /** Rendered by the Redeem button: a tap while this is set is discarded, so it must not look
+     * live. The first write to a cold DataStore is a real disk round-trip. */
+    val redeemInFlight: StateFlow<Boolean> = _redeemInFlight.asStateFlow()
+
+    fun showRedeemDialog() {
+        _redeemOutcome.value = null
+        _redeemDialogVisible.value = true
+    }
+
+    fun dismissRedeemDialog() {
+        // Cancelling abandons the answer too, like dismissing the upgrade offer: a REJECTED
+        // landing afterwards would mark a code the user has not submitted as invalid.
+        redeemGeneration++
+        _redeemDialogVisible.value = false
+    }
+
+    fun dismissRedeemResult() {
+        _redeemOutcome.value = null
+    }
+
+    /**
+     * The dialog closes only on acceptance - a rejected code leaves the field up to be corrected
+     * rather than making the user find the entry point again.
+     *
+     * An answer that arrives after the user has left is discarded rather than published: an
+     * ACCEPTED landing then is the render condition for the confirmation dialog, which would
+     * otherwise be waiting on the screen the next time Settings is opened.
+     */
+    fun redeemCode(code: String) {
+        if (_redeemInFlight.value) return
+        val issued = redeemGeneration
+        _redeemInFlight.value = true
+        viewModelScope.launch {
+            try {
+                val result = complimentaryAccessStore.redeem(code)
+                if (issued != redeemGeneration) return@launch
+                _redeemOutcome.value = result
+                if (result == RedeemResult.ACCEPTED) _redeemDialogVisible.value = false
+            } finally {
+                _redeemInFlight.value = false
+            }
+        }
+    }
+
     /**
      * Loads the plans and opens the chooser. A refusal is reported like a refused hand-off, on
      * this screen only.
@@ -421,6 +495,11 @@ class SettingsViewModel @Inject constructor(
         _showUpgradeDialog.value = false
         _subscriptionPlans.value = null
         _purchaseError.value = null
+        // Same reason: a half-typed code and its last rejection would be waiting on the screen
+        // on the way back from the disclaimer.
+        redeemGeneration++
+        _redeemDialogVisible.value = false
+        _redeemOutcome.value = null
     }
 
     fun dismissPurchaseError() {
