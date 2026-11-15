@@ -214,9 +214,7 @@ class SettingsViewModel @Inject constructor(
     fun connectDrive() {
         viewModelScope.launch {
             if (!isCloudAccessAllowed()) return@launch
-            if (requestDriveAccess() && appPreferences.cloudUploadMode.first() != CloudUploadMode.OFF) {
-                cloudSyncManager.startSync()
-            }
+            if (requestDriveAccess()) startSyncEnablingUploads()
         }
     }
 
@@ -266,6 +264,22 @@ class SettingsViewModel @Inject constructor(
         cloudSyncManager.onAuthorizationRestored()
     }
 
+    /**
+     * Connecting Drive *is* the request to upload, so an `OFF` mode at this point is the default
+     * nobody chose rather than a decision. Leaving it was #80: consent completed, the screen read
+     * "Connected", and `canSyncNow()` refused at its first gate forever, uploading nothing and
+     * logging nothing. `WIFI_ONLY` rather than `ALWAYS_ON` because opting someone onto cellular
+     * data is not ours to assume. Only reached from an explicit connect or consent result - never
+     * from the ungated `restoreSession()` in `init`, which must not resurrect uploads the user
+     * turned off.
+     */
+    private suspend fun startSyncEnablingUploads() {
+        if (appPreferences.cloudUploadMode.first() == CloudUploadMode.OFF) {
+            appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
+        }
+        cloudSyncManager.startSync()
+    }
+
     fun onConsentLaunched() {
         _consentRequest.value = null
     }
@@ -287,9 +301,7 @@ class SettingsViewModel @Inject constructor(
             }
 
             onDriveConnected()
-            if (appPreferences.cloudUploadMode.first() != CloudUploadMode.OFF) {
-                cloudSyncManager.startSync()
-            }
+            startSyncEnablingUploads()
         }
     }
 

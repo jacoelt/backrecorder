@@ -132,6 +132,20 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `restoring the session on init never enables uploads`() = runTest {
+        // A grant outliving a subscription must not resurrect uploads the user switched off, so
+        // init's restoreSession() must never reach startSyncEnablingUploads().
+        cloudUploadMode.value = CloudUploadMode.OFF
+        driveDisconnected.value = false
+
+        createViewModel()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
+        verify(exactly = 0) { cloudSyncManager.startSync() }
+    }
+
+    @Test
     fun `does not restore the session after an explicit disconnect`() = runTest {
         // The OAuth grant survives sign-out, so an unconditional restore would silently
         // reconnect the account the user just removed.
@@ -200,7 +214,9 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `connectDrive leaves sync stopped while the upload mode is off`() = runTest {
+    fun `connecting Drive enables uploads when no mode was chosen`() = runTest {
+        // #80: consent completed, the screen read "Connected", and nothing ever uploaded. The
+        // mode stayed on its OFF default, so canSyncNow() refused at its first gate.
         coEvery { driveAuthManager.authorize() } returns
             DriveAuthManager.AuthorizationOutcome.Authorized
         cloudUploadMode.value = CloudUploadMode.OFF
@@ -209,7 +225,47 @@ class SettingsViewModelTest {
         viewModel.connectDrive()
         advanceUntilIdle()
 
-        verify(exactly = 0) { cloudSyncManager.startSync() }
+        coVerifyOrder {
+            appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
+            cloudSyncManager.startSync()
+        }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
+        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
+    }
+
+    @Test
+    fun `completing consent enables uploads when no mode was chosen`() = runTest {
+        // The reporter's actual path: the grant arrives through the consent sheet, a separate
+        // branch from connectDrive that carried the same defect.
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+        cloudUploadMode.value = CloudUploadMode.OFF
+
+        val viewModel = createViewModel()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        coVerifyOrder {
+            appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
+            cloudSyncManager.startSync()
+        }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
+        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
+    }
+
+    @Test
+    fun `connecting Drive keeps an upload mode the user already chose`() = runTest {
+        // Only the OFF default is overridden. ALWAYS_ON is a decision, not the absence of one.
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+        cloudUploadMode.value = CloudUploadMode.ALWAYS_ON
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
     }
 
     @Test
