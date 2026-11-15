@@ -2,6 +2,7 @@ package com.backrecorderapp.ui.settings
 
 import android.app.Activity
 import android.app.PendingIntent
+import app.cash.turbine.ReceiveTurbine
 import app.cash.turbine.test
 import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.BillingRepository
@@ -42,6 +43,19 @@ import org.junit.Before
 import org.junit.Test
 
 /**
+ * Waits for a state satisfying [predicate] rather than for a fixed number of emissions, so a test
+ * that changes two sources does not depend on whether the combine coalesced them.
+ */
+private suspend fun ReceiveTurbine<SettingsUiState>.awaitUntil(
+    predicate: (SettingsUiState) -> Boolean
+): SettingsUiState {
+    while (true) {
+        val item = awaitItem()
+        if (predicate(item)) return item
+    }
+}
+
+/**
  * Covers the Drive consent / reconnect / disconnect flow. The failure modes that matter here are
  * silent: a blocked subscription that still authorizes, a failed consent that leaves the app in a
  * mode it cannot upload in, and a disconnect that the OAuth grant quietly undoes.
@@ -60,6 +74,8 @@ class SettingsViewModelTest {
     private lateinit var driveAuthorized: MutableStateFlow<Boolean>
     private lateinit var needsReauth: MutableStateFlow<Boolean>
     private lateinit var storageFull: MutableStateFlow<Boolean>
+    private lateinit var subscriptionStatus: MutableStateFlow<SubscriptionStatus>
+    private lateinit var statusResolved: MutableStateFlow<Boolean>
 
     @Before
     fun setup() {
@@ -76,11 +92,13 @@ class SettingsViewModelTest {
         driveAuthorized = MutableStateFlow(false)
         needsReauth = MutableStateFlow(false)
         storageFull = MutableStateFlow(false)
+        subscriptionStatus = MutableStateFlow(SubscriptionStatus.ACTIVE)
+        statusResolved = MutableStateFlow(true)
 
         every { appPreferences.cloudUploadMode } returns cloudUploadMode
         every { appPreferences.driveDisconnected } returns driveDisconnected
-        every { billingRepository.subscriptionStatus } returns
-            MutableStateFlow(SubscriptionStatus.ACTIVE)
+        every { billingRepository.subscriptionStatus } returns subscriptionStatus
+        every { subscriptionGate.statusResolved } returns statusResolved
         every { billingRepository.getTrialDaysRemaining() } returns 0
         every { driveAuthManager.isAuthorized } returns driveAuthorized
         every { cloudSyncManager.needsReauth } returns needsReauth
@@ -279,10 +297,193 @@ class SettingsViewModelTest {
             assertTrue(awaitItem().driveConnected)
 
             needsReauth.value = true
-            assertTrue(awaitItem().driveNeedsReauth)
+            assertTrue(awaitItem().showDriveReauthPrompt)
 
             storageFull.value = true
-            assertTrue(awaitItem().driveStorageFull)
+            assertTrue(awaitItem().showDriveStorageFull)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * Both problems are latched by `CloudSyncManager` and cleared only by a tick the gate allows,
+     * a disconnect or a re-grant - none of which can happen while the plan blocks every tick. So
+     * a 401 from before the lapse would otherwise sit on the row permanently, giving a second and
+     * wrong reason for the same stopped uploads, with Connect next to a row reading "Connected".
+     */
+    @Test
+    fun `the plan takes precedence over a latched drive problem`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            awaitItem()
+            needsReauth.value = true
+            storageFull.value = true
+
+            val premium = awaitUntil { it.showDriveReauthPrompt && it.showDriveStorageFull }
+            assertFalse("precondition: the plan is not blocking", premium.driveSyncBlockedByPlan)
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+
+            val lapsed = awaitUntil { it.driveSyncBlockedByPlan }
+            assertFalse(lapsed.showDriveReauthPrompt)
+            assertFalse(lapsed.showDriveStorageFull)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `drive row reports the grant as unusable once the subscription lapses`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            val active = awaitItem()
+            assertTrue("precondition: the grant is in place", active.driveConnected)
+            assertFalse(
+                "precondition: a paying subscriber is not told to upgrade",
+                active.driveSyncBlockedByPlan
+            )
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+
+            val lapsed = awaitItem()
+            // The grant itself is deliberately kept, so re-subscribing does not need a fresh
+            // consent round - but the row must stop claiming uploads work.
+            assertTrue(lapsed.driveConnected)
+            assertTrue(lapsed.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * TRIAL is premium, and is the status most easily lost by a regression to a bare
+     * `== ACTIVE` - which would tell every trial user their Drive account was unusable.
+     */
+    @Test
+    fun `a trial subscriber is not told to upgrade`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.TRIAL
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            val trial = awaitItem()
+            assertTrue("precondition: the grant is in place", trial.driveConnected)
+            assertFalse(trial.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * Without the `driveConnected` term the row would offer to restore uploads for an account
+     * that was never connected.
+     */
+    @Test
+    fun `a lapsed subscriber with no grant is not told their account is blocked`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+            val lapsed = awaitItem()
+            assertFalse("precondition: no grant", lapsed.driveConnected)
+            assertFalse(lapsed.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * The stored upload mode is the screen's *other* claim that uploads are happening, and it
+     * outlives the subscription exactly as the grant does. It carries no `driveConnected` term:
+     * a mode set before the account was connected still says "Always on".
+     */
+    @Test
+    fun `a stored upload mode is reported as paused once the subscription lapses`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+        cloudUploadMode.value = CloudUploadMode.ALWAYS_ON
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+            val lapsed = awaitItem()
+            assertTrue(lapsed.cloudUploadBlockedByPlan)
+            // The preference itself is kept, so uploads resume on re-subscribe.
+            assertEquals(CloudUploadMode.ALWAYS_ON, lapsed.cloudUploadMode)
+            assertFalse("no grant, so the Drive row says nothing", lapsed.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** OFF makes no claim, so there is nothing to contradict. */
+    @Test
+    fun `an upload mode of off is never reported as paused`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+        cloudUploadMode.value = CloudUploadMode.OFF
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+            assertFalse(awaitItem().cloudUploadBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * The constraint from CLAUDE.md's "Subscription gate": at process start the status is only
+     * its FREE default. Reading that as a lapsed subscription would tell a paying subscriber at
+     * every launch that their Drive account is unusable.
+     */
+    @Test
+    fun `does not call the grant unusable before billing has answered`() = runTest {
+        statusResolved.value = false
+        subscriptionStatus.value = SubscriptionStatus.FREE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            val unresolved = awaitItem()
+            assertTrue("precondition: the grant is in place", unresolved.driveConnected)
+            assertFalse(unresolved.driveSyncBlockedByPlan)
+            // The stored mode is WIFI_ONLY here, so this pins the upload flag's own
+            // statusResolved term rather than riding on the Drive flag's.
+            assertFalse(unresolved.cloudUploadBlockedByPlan)
+
+            statusResolved.value = true
+
+            val resolved = awaitItem()
+            assertTrue(resolved.driveSyncBlockedByPlan)
+            assertTrue(resolved.cloudUploadBlockedByPlan)
 
             cancelAndIgnoreRemainingEvents()
         }
