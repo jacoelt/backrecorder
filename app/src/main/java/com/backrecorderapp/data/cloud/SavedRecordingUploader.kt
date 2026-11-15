@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
@@ -54,6 +56,16 @@ class SavedRecordingUploader @Inject constructor(
         internal const val MAX_ATTEMPTS = 3
 
         private const val RETRY_BASE_DELAY_MS = 2_000L
+
+        /** Drive penalises a throttle retried promptly, so that case waits far longer. */
+        private const val THROTTLED_RETRY_DELAY_MS = 15_000L
+
+        /**
+         * Generous enough for a long recording on a slow connection, but finite: nothing between
+         * here and the transport sets a socket timeout, so this is the only thing stopping a
+         * stalled transfer from holding the upload lock for the life of the process.
+         */
+        private const val UPLOAD_TIMEOUT_MS = 10 * 60 * 1000L
 
         /**
          * Billing often has not answered yet when the user saves, and [SubscriptionGate.isPremium]
@@ -104,10 +116,12 @@ class SavedRecordingUploader @Inject constructor(
 
         applicationScope.launch {
             try {
-                uploadMutex.withLock {
-                    if (shouldUpload()) {
-                        upload(staged, displayName)
-                    }
+                // Deliberately outside `uploadMutex`: the preconditions touch no Drive request
+                // state, and `statusResolved` is a shared flow every caller can await at once.
+                // Holding the lock across that wait made several saves queue 30 seconds each,
+                // serially, for an answer they would all have got from the same one.
+                if (shouldUpload()) {
+                    upload(staged, displayName)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -159,38 +173,80 @@ class SavedRecordingUploader @Inject constructor(
         return driveCloudStorage.isInitialized && isCloudNetworkAvailable(context, mode)
     }
 
+    private enum class Attempt { UPLOADED, RETRYABLE, THROTTLED, TERMINAL }
+
     private suspend fun upload(file: File, displayName: String) {
         for (attempt in 1..MAX_ATTEMPTS) {
-            try {
-                if (driveCloudStorage.uploadSavedRecording(file, displayName) != null) return
-                Log.w(TAG, "Drive refused the upload of a saved recording (attempt $attempt)")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: HttpResponseException) {
-                Log.e(TAG, "Saved-recording upload attempt $attempt failed", e)
-                // A dead grant or a full account cannot be fixed by asking again a second later,
-                // and retrying a throttle is what Drive penalises. Spending the remaining
-                // attempts on any of them only delays telling the user.
-                if (isDriveAuthFailure(e) || isDriveQuotaExceeded(e) || isDriveRateLimited(e)) {
-                    break
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Saved-recording upload attempt $attempt failed", e)
-            }
+            when (val outcome = attemptUpload(file, displayName, attempt)) {
+                Attempt.UPLOADED -> return
+                Attempt.TERMINAL -> break
+                else -> {
+                    if (attempt == MAX_ATTEMPTS) break
+                    // Backoff sits *outside* the lock: making the next save wait out this one's
+                    // retry delays is the head-of-line blocking the lock exists to bound, not
+                    // to create. Drive punishes a throttle retried promptly, so that case waits
+                    // considerably longer than an ordinary transport failure.
+                    val base = if (outcome == Attempt.THROTTLED) {
+                        THROTTLED_RETRY_DELAY_MS
+                    } else {
+                        RETRY_BASE_DELAY_MS
+                    }
+                    delay(base * attempt)
 
-            if (attempt < MAX_ATTEMPTS) {
-                delay(RETRY_BASE_DELAY_MS * attempt)
-                // Re-read rather than captured once: the retries span several seconds, and a user
-                // who walks off Wi-Fi - or turns uploads off outright - must not have the
-                // remaining attempts go out anyway.
-                if (!isCloudNetworkAvailable(context, appPreferences.cloudUploadMode.first())) {
-                    break
+                    // Re-read rather than captured once: the retries span several seconds. A user
+                    // who turns uploads off in that window has *declined* the copy, so the run
+                    // ends silently; losing the transport is not a decision they made, so that
+                    // one is still reported.
+                    val mode = appPreferences.cloudUploadMode.first()
+                    if (mode == CloudUploadMode.OFF) return
+                    if (!isCloudNetworkAvailable(context, mode)) break
                 }
             }
         }
 
         reportFailure(displayName)
     }
+
+    /**
+     * One transfer, under the lock.
+     *
+     * The lock covers the transfer alone so that exactly one saved recording is on the wire at a
+     * time through the single Drive client, and [UPLOAD_TIMEOUT_MS] bounds it because nothing
+     * below configures a socket timeout - without it a half-open connection would hold the lock,
+     * and every later save behind it, for the life of the process.
+     */
+    private suspend fun attemptUpload(file: File, displayName: String, attempt: Int): Attempt =
+        uploadMutex.withLock {
+            try {
+                val uploadedId = withTimeout(UPLOAD_TIMEOUT_MS) {
+                    driveCloudStorage.uploadSavedRecording(file, displayName)
+                }
+                if (uploadedId != null) return@withLock Attempt.UPLOADED
+                Log.w(TAG, "Drive refused the upload of a saved recording (attempt $attempt)")
+                Attempt.RETRYABLE
+            } catch (e: TimeoutCancellationException) {
+                // Caught before CancellationException, which it extends - a bare catch below
+                // would read a timed-out attempt as the caller going away.
+                Log.w(TAG, "Saved-recording upload attempt $attempt timed out")
+                Attempt.RETRYABLE
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: HttpResponseException) {
+                Log.e(TAG, "Saved-recording upload attempt $attempt failed", e)
+                when {
+                    // Neither a dead grant nor a full account can be fixed by asking again, so
+                    // spending the remaining attempts on them only delays telling the user.
+                    isDriveAuthFailure(e) || isDriveQuotaExceeded(e) -> Attempt.TERMINAL
+                    // A throttle *is* transient, and unlike the sync loop there is no later tick
+                    // to pick it up - so it is retried, just not promptly.
+                    isDriveRateLimited(e) -> Attempt.THROTTLED
+                    else -> Attempt.RETRYABLE
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Saved-recording upload attempt $attempt failed", e)
+                Attempt.RETRYABLE
+            }
+        }
 
     /**
      * The in-app message goes up first and unconditionally. The notification is the half that can

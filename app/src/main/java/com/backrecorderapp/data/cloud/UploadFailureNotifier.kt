@@ -9,6 +9,7 @@ import com.backrecorderapp.BackRecorderApp
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 
 /**
@@ -28,8 +29,16 @@ class SystemUploadFailureNotifier @Inject constructor(
 ) : UploadFailureNotifier {
 
     private companion object {
-        const val UPLOAD_FAILED_NOTIFICATION_ID = 101
+        /**
+         * Above the ids the recording service (1, 2) and the recovery notice (100) hold.
+         * Each failure gets its own, counting up from here: a batch of them is likely - they
+         * queue while the device is offline - and one reused id would leave the user looking at
+         * a single notification naming only the last recording that failed.
+         */
+        const val FIRST_UPLOAD_FAILED_NOTIFICATION_ID = 101
     }
+
+    private val nextNotificationId = AtomicInteger(FIRST_UPLOAD_FAILED_NOTIFICATION_ID)
 
     override fun notifyUploadFailed(text: String) {
         val intent = PendingIntent.getActivity(
@@ -54,7 +63,7 @@ class SystemUploadFailureNotifier @Inject constructor(
             .build()
 
         context.getSystemService(NotificationManager::class.java)
-            .notify(UPLOAD_FAILED_NOTIFICATION_ID, notification)
+            .notify(nextNotificationId.getAndIncrement(), notification)
     }
 
     private fun baseBuilder(intent: PendingIntent) =

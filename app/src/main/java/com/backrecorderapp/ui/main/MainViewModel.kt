@@ -38,6 +38,17 @@ import javax.inject.Inject
 
 private const val MINUTE_MS = 60_000L
 
+/**
+ * A failed Drive upload, carrying an id purely so the UI can tell two of them apart.
+ *
+ * Without it the screen keys its snackbar on the message text, and two failures for the same
+ * recording name are indistinguishable: the dismissal and the next message both land before
+ * Compose recomposes, the effect never re-runs, and the collector waiting on that dismissal
+ * parks forever - withholding every later failure. That is the conflation the uploader's
+ * channel exists to avoid, reappearing one layer up.
+ */
+data class UploadError(val id: Long, val text: String)
+
 data class MainUiState(
     val isRecording: Boolean = false,
     val segments: List<SegmentEntity> = emptyList(),
@@ -57,7 +68,7 @@ data class MainUiState(
     val errorMessage: String? = null,
     val successMessage: String? = null,
     val recoveryMessage: String? = null,
-    val cloudUploadError: String? = null
+    val cloudUploadError: UploadError? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -220,8 +231,11 @@ class MainViewModel @Inject constructor(
      */
     private fun observeCloudUploadFailures() {
         viewModelScope.launch {
+            var id = 0L
             savedRecordingUploader.uploadFailures.collect { message ->
-                _uiState.value = _uiState.value.copy(cloudUploadError = message)
+                _uiState.value = _uiState.value.copy(
+                    cloudUploadError = UploadError(++id, message)
+                )
                 uiState.first { it.cloudUploadError == null }
             }
         }

@@ -104,7 +104,7 @@ class MainViewModelSaveTest {
 
         uploadFailures.emit("first failure")
         advanceUntilIdle()
-        assertEquals("first failure", viewModel.uiState.value.cloudUploadError)
+        assertEquals("first failure", viewModel.uiState.value.cloudUploadError?.text)
 
         viewModel.dismissCloudUploadError()
         advanceUntilIdle()
@@ -123,11 +123,11 @@ class MainViewModelSaveTest {
         uploadFailures.emit("first failure")
         uploadFailures.emit("second failure")
         advanceUntilIdle()
-        assertEquals("first failure", viewModel.uiState.value.cloudUploadError)
+        assertEquals("first failure", viewModel.uiState.value.cloudUploadError?.text)
 
         viewModel.dismissCloudUploadError()
         advanceUntilIdle()
-        assertEquals("second failure", viewModel.uiState.value.cloudUploadError)
+        assertEquals("second failure", viewModel.uiState.value.cloudUploadError?.text)
     }
 
     @Test

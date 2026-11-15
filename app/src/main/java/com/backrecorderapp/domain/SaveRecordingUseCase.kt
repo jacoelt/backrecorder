@@ -43,6 +43,7 @@ class SaveRecordingUseCase @Inject constructor(
         private const val TAG = "SaveRecordingUseCase"
 
         private const val MAX_DISPLAY_NAME_LENGTH = 100
+        private const val MAX_EXTENSION_LENGTH = 8
         private val ALLOWED_NAME_PUNCTUATION = setOf(' ', '.', '-', '_', '(', ')')
 
         /**
@@ -290,11 +291,26 @@ class SaveRecordingUseCase @Inject constructor(
 
         val sanitized = name
             ?.filter { it.isLetterOrDigit() || it in ALLOWED_NAME_PUNCTUATION }
-            ?.take(MAX_DISPLAY_NAME_LENGTH)
             ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { shortenKeepingExtension(it) }
 
-        return sanitized?.takeIf { it.isNotBlank() }
-            ?: "recording_${System.currentTimeMillis()}.m4a"
+        return sanitized ?: "recording_${System.currentTimeMillis()}.m4a"
+    }
+
+    /**
+     * Truncating the whole string would cut a long name mid-stem and take `.m4a` with it, leaving
+     * a Drive file nothing recognises as audio.
+     */
+    private fun shortenKeepingExtension(name: String): String {
+        if (name.length <= MAX_DISPLAY_NAME_LENGTH) return name
+
+        val extension = name.substringAfterLast('.', missingDelimiterValue = "")
+            .takeIf { it.isNotEmpty() && it.length <= MAX_EXTENSION_LENGTH }
+            ?.let { ".$it" }
+            ?: ""
+
+        return name.take(MAX_DISPLAY_NAME_LENGTH - extension.length).trim() + extension
     }
 
     private fun copyToUri(sourceFile: File, destUri: Uri) {

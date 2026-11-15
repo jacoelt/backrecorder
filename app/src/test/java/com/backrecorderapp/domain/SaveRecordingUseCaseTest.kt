@@ -15,6 +15,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
@@ -172,6 +173,100 @@ class SaveRecordingUseCaseTest {
             assertTrue(result is SaveResult.Success)
             verify(exactly = 1) { savedRecordingUploader.enqueue(any(), any()) }
         }
+
+    /**
+     * A provider that refuses the write used to be silent: the save reported Success over the
+     * zero-byte file the picker had just created, and - once the Drive copy existed - shipped the
+     * audio that was missing from it. It must fail instead, and offer nothing to the uploader.
+     */
+    @Test
+    fun `fails the save when the chosen location cannot be opened for writing`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        every { context.cacheDir } returns temporaryFolder.root
+        every { trimUseCase.trim(any(), any(), any(), any()) } answers {
+            secondArg<File>().writeBytes(ByteArray(8))
+        }
+        every { contentResolver.openOutputStream(any()) } returns null
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(completeSegment())
+
+        val now = System.currentTimeMillis()
+        val result = saveRecordingUseCase.execute(now - (5 * 60 * 1000), now, mockk())
+
+        assertTrue(result is SaveResult.Error)
+        verify(exactly = 0) { savedRecordingUploader.enqueue(any(), any()) }
+    }
+
+    @Test
+    fun `uploads under the name the picker reports`() = runTest {
+        val name = captureUploadName(pickerName = "Team sync.m4a")
+        assertEquals("Team sync.m4a", name)
+    }
+
+    @Test
+    fun `strips characters a provider should not have put in a name`() = runTest {
+        val name = captureUploadName(pickerName = "Hello\u0000\nthere/evil.m4a")
+        assertEquals("Hellothereevil.m4a", name)
+    }
+
+    @Test
+    fun `shortens a very long name but keeps its extension`() = runTest {
+        val name = captureUploadName(pickerName = "a".repeat(300) + ".m4a")
+        assertTrue("the name must be bounded", name.length <= 100)
+        assertTrue("a Drive file with no extension is not recognised as audio", name.endsWith(".m4a"))
+    }
+
+    @Test
+    fun `falls back to a generated name when nothing usable survives`() = runTest {
+        val name = captureUploadName(pickerName = "///")
+        assertTrue("got: $name", name.startsWith("recording_") && name.endsWith(".m4a"))
+    }
+
+    @Test
+    fun `falls back to a generated name when the provider throws`() = runTest {
+        val name = captureUploadName(pickerName = null, queryThrows = true)
+        assertTrue("got: $name", name.startsWith("recording_"))
+    }
+
+    private fun completeSegment() = SegmentEntity(
+        id = "1",
+        filePath = "/nonexistent/file.m4a",
+        waveformPath = "/test/waveform.bin",
+        startTime = System.currentTimeMillis() - (5 * 60 * 1000),
+        endTime = System.currentTimeMillis(),
+        durationMs = 300_000,
+        isComplete = true
+    )
+
+    /** Runs one save and hands back the name the Drive upload was actually offered. */
+    private suspend fun captureUploadName(
+        pickerName: String?,
+        queryThrows: Boolean = false
+    ): String {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        every { context.cacheDir } returns temporaryFolder.root
+        every { trimUseCase.trim(any(), any(), any(), any()) } answers {
+            secondArg<File>().writeBytes(ByteArray(8))
+        }
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(completeSegment())
+
+        if (queryThrows) {
+            every { contentResolver.query(any(), any(), any(), any(), any()) } throws
+                RuntimeException("provider died")
+        } else {
+            val cursor = mockk<android.database.Cursor>(relaxed = true)
+            every { cursor.moveToFirst() } returns true
+            every { cursor.getString(0) } returns pickerName
+            every { contentResolver.query(any(), any(), any(), any(), any()) } returns cursor
+        }
+
+        val captured = slot<String>()
+        every { savedRecordingUploader.enqueue(any(), capture(captured)) } returns Unit
+
+        val now = System.currentTimeMillis()
+        val result = saveRecordingUseCase.execute(now - (5 * 60 * 1000), now, mockk())
+        assertTrue("the save itself must succeed", result is SaveResult.Success)
+        return captured.captured
+    }
 
     /** A save must never be reported as failed because the bonus Drive copy could not be queued. */
     @Test

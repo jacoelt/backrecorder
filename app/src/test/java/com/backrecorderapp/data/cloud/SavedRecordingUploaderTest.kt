@@ -333,6 +333,36 @@ class SavedRecordingUploaderTest {
         assertEquals(1, reported.size)
     }
 
+    /**
+     * A throttle is transient and, unlike the sync loop, this path has no later tick to pick it
+     * up - so it is retried rather than treated as terminal, just not promptly.
+     */
+    @Test
+    fun `keeps retrying a throttle, after a longer wait`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            httpError(403, """{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}""")
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        uploader.enqueue(sourceFile(), "My Recording.m4a")
+        advanceUntilIdle()
+
+        coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
+            driveCloudStorage.uploadSavedRecording(any(), any())
+        }
+    }
+
+    @Test
+    fun `treats a plain 403 as a dead grant and stops`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            httpError(403, """{"error":{"errors":[{"reason":"insufficientPermissions"}]}}""")
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        uploader.enqueue(sourceFile(), "My Recording.m4a")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+    }
+
     @Test
     fun `stops retrying when the Drive account is out of space`() = runTest {
         coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
@@ -353,11 +383,65 @@ class SavedRecordingUploaderTest {
         }
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
-        uploader.enqueue(sourceFile(), "My Recording.m4a")
-        advanceUntilIdle()
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
 
         // The remaining attempts would have gone out over cellular against the user's setting.
         coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        // Losing the transport is not a choice the user made, so they are still told.
+        assertEquals(1, reported.size)
+    }
+
+    /**
+     * Turning uploads off mid-retry is the user declining the copy, so it ends silently - unlike
+     * losing the transport, which is not a decision they made.
+     */
+    @Test
+    fun `says nothing when the user turns uploads off part way through`() = runTest {
+        val mode = MutableStateFlow(CloudUploadMode.WIFI_ONLY)
+        every { appPreferences.cloudUploadMode } returns mode
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+            mode.value = CloudUploadMode.OFF
+            throw RuntimeException("transient")
+        }
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        assertTrue("declining the copy must be silent", reported.isEmpty())
+    }
+
+    /** The in-app half must survive the notification half failing, or a failure goes unreported. */
+    @Test
+    fun `still reports in app when the notification cannot be posted`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            RuntimeException("Drive is down")
+        every { uploadFailureNotifier.notifyUploadFailed(any()) } throws
+            SecurityException("notifications are blocked")
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        assertEquals(1, reported.size)
+    }
+
+    @Test
+    fun `tells the user the same thing in the app and in the notification`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            RuntimeException("Drive is down")
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        verify(exactly = 1) { uploadFailureNotifier.notifyUploadFailed(reported.single()) }
     }
 
     @Test
