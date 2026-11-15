@@ -33,15 +33,19 @@ import javax.inject.Singleton
  * (issue #84).
  *
  * The local save is the product; this is a bonus copy. So nothing here can make a save slower,
- * fail it, or report an error for it: [enqueue] does not suspend, every precondition is evaluated
- * on the application scope afterwards, and a refusal to upload is silent. Only a failure *after*
- * the preconditions said yes is worth telling the user about - they were entitled to the copy and
- * did not get it.
+ * fail it, or report an error for it: [enqueue] does not suspend and every precondition is
+ * evaluated on the application scope afterwards.
+ *
+ * What the user is told turns on whether they lost something they were promised, not on how far
+ * the attempt got. Declining - uploads off, no entitlement, no grant, or billing never answering
+ * - is silent, because nothing was ever going to happen. Being offline with the setup complete
+ * is reported even though no attempt was made, and so is a run that exhausted its attempts.
  */
 @Singleton
 class SavedRecordingUploader @Inject constructor(
     @ApplicationContext private val context: Context,
     private val driveCloudStorage: DriveCloudStorage,
+    private val driveAuthManager: DriveAuthManager,
     private val appPreferences: AppPreferences,
     private val subscriptionGate: SubscriptionGate,
     private val uploadFailureNotifier: UploadFailureNotifier,
@@ -62,9 +66,12 @@ class SavedRecordingUploader @Inject constructor(
 
         /**
          * A backstop, not the real bound. `execute()` blocks, so this cannot interrupt a stalled
-         * transfer - it only fires once the call returns on its own. What actually bounds it is
-         * google-http-client's own 20s socket timeouts (see [DriveAuthManager]); this catches the
-         * case where a transfer keeps trickling just fast enough never to trip those.
+         * transfer - it only fires once the call returns on its own. What actually bounds one is
+         * google-http-client's own 20s connect / 20s read defaults, which are left alone on
+         * purpose: the read timeout is per socket read rather than per transfer, so a large
+         * upload still making progress never trips it, and widening them would only weaken the
+         * one thing stopping a half-open socket from holding [uploadMutex] indefinitely. This
+         * catches the case of a transfer trickling just fast enough never to trip those.
          */
         private const val UPLOAD_TIMEOUT_MS = 10 * 60 * 1000L
 
@@ -75,6 +82,9 @@ class SavedRecordingUploader @Inject constructor(
          * and nothing is on screen waiting for it.
          */
         private const val STATUS_RESOLVE_TIMEOUT_MS = 30_000L
+
+        /** The grant is restored asynchronously at launch; the same reasoning applies to it. */
+        private const val GRANT_RESTORE_TIMEOUT_MS = 30_000L
 
         /**
          * A staged file left behind by a process death is only reclaimed by the next save or by
@@ -189,7 +199,14 @@ class SavedRecordingUploader @Inject constructor(
         }
         if (resolved == null) return Eligibility.DECLINED
         if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return Eligibility.DECLINED
-        if (!driveCloudStorage.isInitialized) return Eligibility.DECLINED
+
+        // Awaited, not read once, for the same reason billing is: at launch the grant is restored
+        // asynchronously, so a connected user who saves in that window would otherwise be read as
+        // having no grant at all and lose the copy with nothing to retry it.
+        val authorized = withTimeoutOrNull(GRANT_RESTORE_TIMEOUT_MS) {
+            driveAuthManager.isAuthorized.first { it }
+        }
+        if (authorized == null) return Eligibility.DECLINED
 
         return if (isCloudNetworkAvailable(context, mode)) {
             Eligibility.UPLOAD
@@ -274,9 +291,14 @@ class SavedRecordingUploader @Inject constructor(
         }
 
     /**
-     * The in-app message goes up first and unconditionally. The notification is the half that can
-     * fail - permission, a dead channel - and it must not be able to take the message with it,
-     * because that would turn a failed upload into a completely silent one.
+     * The in-app message goes up first and unconditionally, then the notification, wrapped so an
+     * unexpected throw out of the builder or the notification service cannot take the message
+     * with it and turn a failed upload into a completely silent one.
+     *
+     * Neither half is guaranteed: `notify` drops the notification silently when the user has not
+     * granted POST_NOTIFICATIONS (this app only asks for it in the start-recording flow), and the
+     * in-app message is only seen if a main screen is there to show it. They cover different
+     * absences rather than backing each other up.
      */
     private fun reportFailure(displayName: String) {
         val text = context.getString(R.string.cloud_saved_upload_failed, displayName)

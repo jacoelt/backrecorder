@@ -60,6 +60,8 @@ class SavedRecordingUploaderTest {
     private lateinit var capabilities: NetworkCapabilities
     private lateinit var uploadFailureNotifier: UploadFailureNotifier
     private lateinit var driveCloudStorage: DriveCloudStorage
+    private lateinit var driveAuthManager: DriveAuthManager
+    private lateinit var isAuthorized: MutableStateFlow<Boolean>
     private lateinit var appPreferences: AppPreferences
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
@@ -93,6 +95,10 @@ class SavedRecordingUploaderTest {
         driveCloudStorage = mockk(relaxed = true)
         every { driveCloudStorage.isInitialized } returns true
 
+        driveAuthManager = mockk(relaxed = true)
+        isAuthorized = MutableStateFlow(true)
+        every { driveAuthManager.isAuthorized } returns isAuthorized
+
         appPreferences = mockk(relaxed = true)
         every { appPreferences.cloudUploadMode } returns flowOf(CloudUploadMode.WIFI_ONLY)
 
@@ -111,6 +117,7 @@ class SavedRecordingUploaderTest {
     private fun buildUploader(scope: CoroutineScope) = SavedRecordingUploader(
         context,
         driveCloudStorage,
+        driveAuthManager,
         appPreferences,
         subscriptionGate,
         uploadFailureNotifier,
@@ -208,7 +215,7 @@ class SavedRecordingUploaderTest {
      */
     @Test
     fun `says nothing when Drive was never connected`() = runTest {
-        every { driveCloudStorage.isInitialized } returns false
+        isAuthorized.value = false
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
         val reported = withFailureCollector(uploader) {
@@ -217,6 +224,26 @@ class SavedRecordingUploaderTest {
 
         coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
         assertTrue("no grant means nothing was promised", reported.isEmpty())
+    }
+
+    /**
+     * The grant is restored asynchronously at launch. A connected user who saves in that window
+     * must not be read as having no grant and lose the copy with nothing to retry it.
+     */
+    @Test
+    fun `waits for a grant still being restored at launch`() = runTest {
+        isAuthorized.value = false
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        uploader.enqueue(sourceFile(), "My Recording.m4a")
+        advanceTimeBy(5_000)
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+
+        isAuthorized.value = true
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
     }
 
     @Test
