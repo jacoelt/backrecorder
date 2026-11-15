@@ -20,6 +20,7 @@ import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -199,26 +200,34 @@ class SavedRecordingUploaderTest {
         assertTrue(reported.isEmpty())
     }
 
+    /**
+     * Entitled, uploads on, but Drive is not connected: the user has silently lost a backup they
+     * were expecting, so unlike a refusal this is reported.
+     */
     @Test
-    fun `does not upload when Drive is not connected`() = runTest {
+    fun `tells an entitled user when Drive is not connected`() = runTest {
         every { driveCloudStorage.isInitialized } returns false
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
-        uploader.enqueue(sourceFile(), "My Recording.m4a")
-        advanceUntilIdle()
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
 
         coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        assertEquals(1, reported.size)
     }
 
     @Test
-    fun `does not upload over cellular when the user chose Wi-Fi only`() = runTest {
+    fun `does not upload over cellular when the user chose Wi-Fi only, and says so`() = runTest {
         every { capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) } returns false
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
-        uploader.enqueue(sourceFile(), "My Recording.m4a")
-        advanceUntilIdle()
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
 
         coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        assertEquals(1, reported.size)
     }
 
     @Test
@@ -349,6 +358,62 @@ class SavedRecordingUploaderTest {
         coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
             driveCloudStorage.uploadSavedRecording(any(), any())
         }
+    }
+
+    /**
+     * The attempt count alone would be identical with the ordinary 2s backoff, so this checks the
+     * clock: nothing may go back to a throttled Drive before the longer wait has elapsed.
+     */
+    @Test
+    fun `waits out a throttle before trying again`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            httpError(403, """{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}""")
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        uploader.enqueue(sourceFile(), "My Recording.m4a")
+        advanceTimeBy(3_000)
+
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+
+        advanceUntilIdle()
+        coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
+            driveCloudStorage.uploadSavedRecording(any(), any())
+        }
+    }
+
+    @Test
+    fun `retries an ordinary failure promptly`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            RuntimeException("transient")
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        uploader.enqueue(sourceFile(), "My Recording.m4a")
+        advanceTimeBy(3_000)
+
+        // Unlike a throttle, this one is back inside a few seconds.
+        coVerify(exactly = 2) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+    }
+
+    /**
+     * A timed-out attempt must be retryable rather than fatal, and must leave the lock usable.
+     * Reordering the `TimeoutCancellationException` catch after the `CancellationException`
+     * rethrow would make a timeout read as the caller going away, and nothing else would notice.
+     */
+    @Test
+    fun `retries an attempt that times out, and frees the lock for the next save`() = runTest {
+        var calls = 0
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } coAnswers {
+            calls++
+            if (calls == 1) awaitCancellation() else "drive-id"
+        }
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile("a.m4a"), "a.m4a")
+            uploader.enqueue(sourceFile("b.m4a"), "b.m4a")
+        }
+
+        assertEquals("the hung attempt must be retried, and b must get through", 3, calls)
+        assertTrue("a timeout is not a failure to report", reported.isEmpty())
     }
 
     @Test

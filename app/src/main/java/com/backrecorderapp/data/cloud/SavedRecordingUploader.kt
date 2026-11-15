@@ -61,9 +61,10 @@ class SavedRecordingUploader @Inject constructor(
         private const val THROTTLED_RETRY_DELAY_MS = 15_000L
 
         /**
-         * Generous enough for a long recording on a slow connection, but finite: nothing between
-         * here and the transport sets a socket timeout, so this is the only thing stopping a
-         * stalled transfer from holding the upload lock for the life of the process.
+         * A backstop, not the real bound. `execute()` blocks, so this cannot interrupt a stalled
+         * transfer - it only fires once the call returns on its own. What actually bounds it is
+         * the connect/read timeout `DriveAuthManager` sets on every Drive request; this catches
+         * the case where a transfer keeps trickling just fast enough never to trip that.
          */
         private const val UPLOAD_TIMEOUT_MS = 10 * 60 * 1000L
 
@@ -120,8 +121,10 @@ class SavedRecordingUploader @Inject constructor(
                 // state, and `statusResolved` is a shared flow every caller can await at once.
                 // Holding the lock across that wait made several saves queue 30 seconds each,
                 // serially, for an answer they would all have got from the same one.
-                if (shouldUpload()) {
-                    upload(staged, displayName)
+                when (eligibility()) {
+                    Eligibility.UPLOAD -> upload(staged, displayName)
+                    Eligibility.BLOCKED -> reportFailure(displayName)
+                    Eligibility.DECLINED -> Unit
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -156,21 +159,30 @@ class SavedRecordingUploader @Inject constructor(
         }
     }
 
+    private enum class Eligibility { UPLOAD, BLOCKED, DECLINED }
+
     /**
-     * The gate every new cloud entry point has to pass, plus the user's own transport choice:
-     * someone who set uploads to Wi-Fi-only did not ask for this copy to go out over cellular.
+     * Whether this copy should be uploaded, and - when it should not - whether that is worth
+     * telling the user about.
+     *
+     * The split is the point. Someone who turned uploads off, or who is not entitled to them,
+     * has lost nothing and is told nothing: `DECLINED`. But someone who *is* entitled and has
+     * uploads on, and whose copy did not go because Drive was not connected or the device was
+     * offline, has silently lost the backup they were expecting - so that is `BLOCKED` and
+     * reported, exactly as the same condition discovered one attempt later already is.
      */
-    private suspend fun shouldUpload(): Boolean {
+    private suspend fun eligibility(): Eligibility {
         val mode = appPreferences.cloudUploadMode.first()
-        if (mode == CloudUploadMode.OFF) return false
+        if (mode == CloudUploadMode.OFF) return Eligibility.DECLINED
 
         val resolved = withTimeoutOrNull(STATUS_RESOLVE_TIMEOUT_MS) {
             subscriptionGate.statusResolved.first { it }
         }
-        if (resolved == null) return false
-        if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return false
+        if (resolved == null) return Eligibility.DECLINED
+        if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return Eligibility.DECLINED
 
-        return driveCloudStorage.isInitialized && isCloudNetworkAvailable(context, mode)
+        val ready = driveCloudStorage.isInitialized && isCloudNetworkAvailable(context, mode)
+        return if (ready) Eligibility.UPLOAD else Eligibility.BLOCKED
     }
 
     private enum class Attempt { UPLOADED, RETRYABLE, THROTTLED, TERMINAL }
@@ -211,9 +223,9 @@ class SavedRecordingUploader @Inject constructor(
      * One transfer, under the lock.
      *
      * The lock covers the transfer alone so that exactly one saved recording is on the wire at a
-     * time through the single Drive client, and [UPLOAD_TIMEOUT_MS] bounds it because nothing
-     * below configures a socket timeout - without it a half-open connection would hold the lock,
-     * and every later save behind it, for the life of the process.
+     * time through the single Drive client. What stops a stalled transfer holding it - and every
+     * save queued behind it - is the connect/read timeout on the Drive request itself, since a
+     * coroutine timeout cannot interrupt the blocking call underneath.
      */
     private suspend fun attemptUpload(file: File, displayName: String, attempt: Int): Attempt =
         uploadMutex.withLock {

@@ -426,7 +426,10 @@ class DriveSyncE2eTest {
         }
         savedRecordingUploader.enqueue(saved, "Saved Recording.m4a")
 
-        awaitUntil("The saved recording never reached the fake Drive") {
+        // The same long budget the other Drive-upload waits in this class use: this path waits on
+        // the billing resolve and then a real Drive round trip, and a hosted emulator is slow
+        // enough that the default 30s would flake — which on this repo blocks every PR.
+        awaitUntil("The saved recording never reached the fake Drive", LOOP_TIMEOUT_MS) {
             server.entries().any { it.name == "Saved Recording.m4a" }
         }
 

@@ -216,6 +216,19 @@ class SaveRecordingUseCaseTest {
     }
 
     @Test
+    fun `shortens a long name whose extension is too long to keep`() = runTest {
+        val name = captureUploadName(pickerName = "b".repeat(300) + ".superlongextension")
+        assertTrue("the name must be bounded", name.length <= 100)
+    }
+
+    @Test
+    fun `shortens a long name that ends in a bare dot`() = runTest {
+        val name = captureUploadName(pickerName = "c".repeat(300) + ".")
+        assertTrue("the name must be bounded", name.length <= 100)
+        assertTrue("got: $name", name.isNotBlank())
+    }
+
+    @Test
     fun `falls back to a generated name when nothing usable survives`() = runTest {
         val name = captureUploadName(pickerName = "///")
         assertTrue("got: $name", name.startsWith("recording_") && name.endsWith(".m4a"))

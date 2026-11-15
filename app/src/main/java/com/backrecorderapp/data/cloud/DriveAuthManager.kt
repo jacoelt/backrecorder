@@ -54,6 +54,9 @@ class DriveAuthManager @Inject constructor(
     companion object {
         private const val TAG = "DriveAuthManager"
 
+        private const val CONNECT_TIMEOUT_MS = 30_000
+        private const val READ_TIMEOUT_MS = 60_000
+
         /** Account type every Google account on the device carries. */
         private const val GOOGLE_ACCOUNT_TYPE = "com.google"
 
@@ -388,6 +391,15 @@ class DriveAuthManager @Inject constructor(
             check(Looper.myLooper() != Looper.getMainLooper()) {
                 "Drive requests must not run on the main thread"
             }
+
+            // The only bound on a Drive call. `execute()` blocks, so no coroutine timeout above
+            // can interrupt it — a `withTimeout` around one does not fire until the call returns
+            // on its own. Without these a half-open socket hangs a sync tick, or holds the
+            // saved-recording upload lock and every save queued behind it, for the life of the
+            // process. The read timeout is per socket read rather than per transfer, so a large
+            // upload still making progress is unaffected.
+            request.connectTimeout = CONNECT_TIMEOUT_MS
+            request.readTimeout = READ_TIMEOUT_MS
 
             val token = runBlocking { validToken(forceRefresh = false) }
                 ?: throw IOException("No Drive access token available")

@@ -34,6 +34,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
@@ -129,6 +130,32 @@ class MainViewModelSaveTest {
         advanceUntilIdle()
         assertEquals("second failure", viewModel.uiState.value.cloudUploadError?.text)
     }
+
+    /**
+     * The reason `UploadError` carries an id at all. Two failures naming the same recording are
+     * the same string; without a distinguishing id the screen's `LaunchedEffect` key would not
+     * change, the second snackbar would never show, and the collector waiting on its dismissal
+     * would park for good.
+     */
+    @Test
+    fun `two failures with identical text are distinguishable to the screen (issue 84)`() =
+        runTest {
+            val viewModel = buildViewModel()
+            advanceUntilIdle()
+
+            uploadFailures.emit("same text")
+            advanceUntilIdle()
+            val first = viewModel.uiState.value.cloudUploadError
+
+            viewModel.dismissCloudUploadError()
+            advanceUntilIdle()
+            uploadFailures.emit("same text")
+            advanceUntilIdle()
+            val second = viewModel.uiState.value.cloudUploadError
+
+            assertEquals("same text", second?.text)
+            assertNotEquals("the two must not compare equal", first, second)
+        }
 
     @Test
     fun `requestSave with no segments in range shows error and skips picker (issue 23)`() = runTest {

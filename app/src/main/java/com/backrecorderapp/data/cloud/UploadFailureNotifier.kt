@@ -30,15 +30,23 @@ class SystemUploadFailureNotifier @Inject constructor(
 
     private companion object {
         /**
-         * Above the ids the recording service (1, 2) and the recovery notice (100) hold.
-         * Each failure gets its own, counting up from here: a batch of them is likely - they
-         * queue while the device is offline - and one reused id would leave the user looking at
-         * a single notification naming only the last recording that failed.
+         * Well above the ids the recording service (1, 2) and the recovery notice (100) hold.
+         * Each failure gets its own, because a batch of them is likely - they queue while the
+         * device is offline - and one reused id would leave the user looking at a single
+         * notification naming only the last recording that failed. The start point varies per
+         * process so that a failure after a process death does not replace one still on screen
+         * from before it.
          */
-        const val FIRST_UPLOAD_FAILED_NOTIFICATION_ID = 101
+        const val NOTIFICATION_ID_FLOOR = 1_000
+        const val NOTIFICATION_ID_SPREAD = 100_000L
+
+        /** Lets the system bundle a batch of these rather than stack them individually. */
+        const val GROUP_KEY = "com.backrecorderapp.UPLOAD_FAILURES"
     }
 
-    private val nextNotificationId = AtomicInteger(FIRST_UPLOAD_FAILED_NOTIFICATION_ID)
+    private val nextNotificationId = AtomicInteger(
+        NOTIFICATION_ID_FLOOR + (System.currentTimeMillis() % NOTIFICATION_ID_SPREAD).toInt()
+    )
 
     override fun notifyUploadFailed(text: String) {
         val intent = PendingIntent.getActivity(
@@ -72,4 +80,5 @@ class SystemUploadFailureNotifier @Inject constructor(
             .setSmallIcon(R.drawable.ic_notification)
             .setContentIntent(intent)
             .setAutoCancel(true)
+            .setGroup(GROUP_KEY)
 }
