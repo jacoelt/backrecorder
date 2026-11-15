@@ -182,7 +182,9 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `connectDrive leaves sync stopped while the upload mode is off`() = runTest {
+    fun `connecting Drive enables uploads when no mode was chosen`() = runTest {
+        // #80: consent completed, the screen read "Connected", and nothing ever uploaded. The
+        // mode stayed on its OFF default, so canSyncNow() refused at its first gate.
         coEvery { driveAuthManager.authorize() } returns
             DriveAuthManager.AuthorizationOutcome.Authorized
         cloudUploadMode.value = CloudUploadMode.OFF
@@ -191,7 +193,39 @@ class SettingsViewModelTest {
         viewModel.connectDrive()
         advanceUntilIdle()
 
-        verify(exactly = 0) { cloudSyncManager.startSync() }
+        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
+    }
+
+    @Test
+    fun `completing consent enables uploads when no mode was chosen`() = runTest {
+        // The reporter's actual path: the grant arrives through the consent sheet, a separate
+        // branch from connectDrive that carried the same defect.
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+        cloudUploadMode.value = CloudUploadMode.OFF
+
+        val viewModel = createViewModel()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
+    }
+
+    @Test
+    fun `connecting Drive keeps an upload mode the user already chose`() = runTest {
+        // Only the OFF default is overridden. ALWAYS_ON is a decision, not the absence of one.
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+        cloudUploadMode.value = CloudUploadMode.ALWAYS_ON
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
     }
 
     @Test

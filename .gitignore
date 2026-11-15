@@ -22,3 +22,6 @@ google-services.json
 
 # OAuth client configs downloaded from the Cloud console
 .config/
+
+# /device-debug run artefacts (logs, screenshots, reports) - not repository content
+.claude/device-debug-reports/
