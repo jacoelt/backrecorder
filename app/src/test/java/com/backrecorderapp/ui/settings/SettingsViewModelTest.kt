@@ -207,6 +207,98 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `connectDrive reports itself busy and discards a second tap`() = runTest {
+        // #102: a second tap during an in-flight connect is dropped, not queued.
+        val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+        coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.driveConnecting.value)
+
+        viewModel.connectDrive()
+        advanceUntilIdle()
+        authorizing.complete(DriveAuthManager.AuthorizationOutcome.Authorized)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+        assertFalse(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `a refused connect releases the busy claim`() = runTest {
+        // The paths where a leaked flag would leave the Connect button disabled for good, which
+        // is a worse version of the dead button #102 reported.
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.Failed
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.driveConnecting.value)
+        assertEquals(DriveError.SIGN_IN_FAILED, viewModel.driveError.value)
+    }
+
+    @Test
+    fun `an upload-mode change cannot start a second grant request`() = runTest {
+        // Two grant operations at once publish two consent requests, and the screen launches the
+        // second sheet over the first. The chosen mode is still written.
+        val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+        coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        advanceUntilIdle()
+        authorizing.complete(DriveAuthManager.AuthorizationOutcome.Authorized)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+        coVerify { appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON) }
+    }
+
+    @Test
+    fun `an upload-mode change on a connected account starts sync without a grant request`() =
+        runTest {
+            // The mode the user chose must take effect even while another grant operation holds
+            // the claim: an account already connected needs no grant request at all.
+            driveAuthorized.value = true
+            val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+            coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+            val viewModel = createViewModel()
+            viewModel.connectDrive()
+            advanceUntilIdle()
+
+            viewModel.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+            advanceUntilIdle()
+
+            coVerify { appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON) }
+            verify { cloudSyncManager.startSync() }
+            coVerify(exactly = 1) { driveAuthManager.authorize() }
+
+            authorizing.complete(DriveAuthManager.AuthorizationOutcome.Authorized)
+            advanceUntilIdle()
+        }
+
+    @Test
+    fun `the consent result releases the busy claim`() = runTest {
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Failed
+
+        val viewModel = createViewModel()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.driveConnecting.value)
+    }
+
+    @Test
     fun `connectDrive starts sync and clears the disconnect flag once authorized`() = runTest {
         coEvery { driveAuthManager.authorize() } returns
             DriveAuthManager.AuthorizationOutcome.Authorized

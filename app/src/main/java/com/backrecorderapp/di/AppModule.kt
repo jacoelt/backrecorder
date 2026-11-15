@@ -54,8 +54,11 @@ object AppModule {
 
     /**
      * Never cancelled: it exists precisely for work that has to outlive its caller. Nothing
-     * long-running belongs on it — a coroutine launched here runs until it finishes or the process
-     * dies.
+     * launched here can be stopped, so only work that ends on its own, with a worst case you can
+     * name, belongs on it — a coroutine launched here runs until it finishes or the process dies.
+     *
+     * `DriveAuthManager.resolveIdentityWithinBudget` is the shape to copy: the caller's wait is
+     * bounded, and the uninterruptible call it was waiting on is abandoned here to finish alone.
      */
     @Provides
     @Singleton

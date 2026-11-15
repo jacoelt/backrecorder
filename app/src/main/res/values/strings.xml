@@ -53,6 +53,7 @@
     <string name="settings_drive_connected_upgrade_required">Connected — upgrade to resume uploads</string>
     <string name="settings_cloud_upload_paused">Uploads are paused — your plan no longer covers cloud storage. Your choice is kept and is restored when you upgrade.</string>
     <string name="settings_drive_connect">Connect</string>
+    <string name="settings_drive_connecting">Connecting to Google Drive</string>
     <string name="settings_drive_disconnect">Disconnect</string>
     <string name="settings_drive_connect_prompt">Connect a Google Drive account to enable cloud uploads.</string>
     <string name="settings_drive_storage_full">Google Drive is out of space. Uploads are paused until you free some.</string>

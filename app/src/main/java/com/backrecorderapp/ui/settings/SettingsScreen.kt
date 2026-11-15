@@ -83,6 +83,7 @@ fun SettingsScreen(
     val upgradeBusy by viewModel.upgradeBusy.collectAsState()
     val subscriptionPlans by viewModel.subscriptionPlans.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
+    val driveConnecting by viewModel.driveConnecting.collectAsState()
     val redeemDialogVisible by viewModel.redeemDialogVisible.collectAsState()
     val redeemOutcome by viewModel.redeemOutcome.collectAsState()
     val redeemInFlight by viewModel.redeemInFlight.collectAsState()
@@ -215,6 +216,7 @@ fun SettingsScreen(
 
             DriveAccountRow(
                 connected = state.driveConnected,
+                connecting = driveConnecting,
                 syncBlockedByPlan = state.driveSyncBlockedByPlan,
                 showReauthPrompt = state.showDriveReauthPrompt,
                 showStorageFull = state.showDriveStorageFull,
@@ -456,6 +458,7 @@ private fun RedeemCodeDialog(
 @Composable
 private fun DriveAccountRow(
     connected: Boolean,
+    connecting: Boolean,
     syncBlockedByPlan: Boolean,
     showReauthPrompt: Boolean,
     showStorageFull: Boolean,
@@ -508,9 +511,13 @@ private fun DriveAccountRow(
         }
 
         if (!connected || showReauthPrompt) {
-            Button(onClick = onConnect) {
-                Text(stringResource(R.string.settings_drive_connect))
-            }
+            // Busy: a second tap is discarded, so a live-looking button would be a dead one.
+            BusyButton(
+                busy = connecting,
+                text = stringResource(R.string.settings_drive_connect),
+                busyStateDescription = stringResource(R.string.settings_drive_connecting),
+                onClick = onConnect
+            )
         } else {
             OutlinedButton(onClick = onDisconnect) {
                 Text(stringResource(R.string.settings_drive_disconnect))

@@ -185,6 +185,14 @@ class SettingsViewModel @Inject constructor(
     /** Why the last Upgrade tap never reached Play, or null. */
     val purchaseError: StateFlow<PurchaseFailure?> = _purchaseError.asStateFlow()
 
+    private val _driveConnecting = MutableStateFlow(false)
+
+    /**
+     * True while a Drive grant operation is in flight. The connect queues behind the session lock
+     * and crosses Play Services, so the button must render the wait rather than look live.
+     */
+    val driveConnecting: StateFlow<Boolean> = _driveConnecting.asStateFlow()
+
     private val _driveError = MutableStateFlow<DriveError?>(null)
 
     /** The Drive problem to show, or null. */
@@ -221,18 +229,52 @@ class SettingsViewModel @Inject constructor(
 
             appPreferences.setCloudUploadMode(mode)
 
-            // Uploads cannot work without the Drive grant, so ask for it as part of turning
-            // the mode on rather than silently queueing segments that will never leave.
-            if (!requestDriveAccess()) return@launch
+            // An account already connected needs no grant request, so the loop starts without
+            // going near the claim - otherwise a mode chosen while some other grant operation
+            // was running would be persisted and then never acted on.
+            if (driveAuthManager.isAuthorized.value) {
+                cloudSyncManager.startSync()
+                return@launch
+            }
 
-            cloudSyncManager.startSync()
+            // Uploads cannot work without the grant, so ask for it as part of turning the mode
+            // on rather than silently queueing segments that will never leave. If another grant
+            // request is already running, that one starts the loop when it finishes.
+            claimingDriveConnect {
+                if (requestDriveAccess()) cloudSyncManager.startSync()
+            }
         }
     }
 
     fun connectDrive() {
         viewModelScope.launch {
-            if (!isCloudAccessAllowed()) return@launch
-            if (requestDriveAccess()) startSyncEnablingUploads()
+            claimingDriveConnect {
+                if (!isCloudAccessAllowed()) return@claimingDriveConnect
+                if (requestDriveAccess()) startSyncEnablingUploads()
+            }
+        }
+    }
+
+    /**
+     * Runs [block] as *the* Drive grant operation, or not at all if one is already running.
+     *
+     * Every path that asks `DriveAuthManager` for a grant goes through here - the Connect button,
+     * an upload-mode change, and the consent result - because they all queue on the one session
+     * lock and all used to render as nothing while they waited (#102). Two at once is worse than
+     * a discarded tap: the second publishes a second `_consentRequest`, which the screen launches
+     * as a second consent sheet over the first.
+     *
+     * The claim is released only by the call that took it, in a `finally` - never by the user
+     * leaving the screen. See [planLoadGeneration] above for why: a flag freed from outside the
+     * call it guards lets a second operation start over the top of one still running.
+     */
+    private suspend fun claimingDriveConnect(block: suspend () -> Unit) {
+        if (_driveConnecting.value) return
+        _driveConnecting.value = true
+        try {
+            block()
+        } finally {
+            _driveConnecting.value = false
         }
     }
 
@@ -304,23 +346,28 @@ class SettingsViewModel @Inject constructor(
 
     fun onConsentResult(data: Intent?) {
         viewModelScope.launch {
-            val outcome = driveAuthManager.handleAuthorizationResult(data)
-            if (outcome !is DriveAuthManager.AuthorizationOutcome.Authorized) {
-                // Backing out of the consent sheet is a routine cancel, so the chosen upload mode
-                // is left alone. Without a grant the sync loop simply never becomes active.
-                _driveError.value =
-                    if (outcome is DriveAuthManager.AuthorizationOutcome.AccountMismatch) {
-                        DriveError.ACCOUNT_MISMATCH
-                    } else {
-                        DriveError.SIGN_IN_FAILED
-                    }
-                cloudSyncManager.stopSync()
-                return@launch
-            }
-
-            onDriveConnected()
-            startSyncEnablingUploads()
+            // Adopting the grant crosses the same lock and lookup, so it is busy too.
+            claimingDriveConnect { completeConsent(data) }
         }
+    }
+
+    private suspend fun completeConsent(data: Intent?) {
+        val outcome = driveAuthManager.handleAuthorizationResult(data)
+        if (outcome !is DriveAuthManager.AuthorizationOutcome.Authorized) {
+            // Backing out of the consent sheet is a routine cancel, so the chosen upload mode
+            // is left alone. Without a grant the sync loop simply never becomes active.
+            _driveError.value =
+                if (outcome is DriveAuthManager.AuthorizationOutcome.AccountMismatch) {
+                    DriveError.ACCOUNT_MISMATCH
+                } else {
+                    DriveError.SIGN_IN_FAILED
+                }
+            cloudSyncManager.stopSync()
+            return
+        }
+
+        onDriveConnected()
+        startSyncEnablingUploads()
     }
 
     fun disconnectDrive() {
