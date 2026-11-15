@@ -2,23 +2,44 @@ package com.backrecorderapp.domain
 
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
+import com.backrecorderapp.data.preferences.ComplimentaryAccessStore
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class SubscriptionGateTest {
 
     private lateinit var billingRepository: BillingRepository
+    private lateinit var complimentaryAccessStore: ComplimentaryAccessStore
+    private lateinit var complimentaryGranted: MutableStateFlow<Boolean>
+    private lateinit var billingResolved: MutableStateFlow<Boolean>
     private lateinit var subscriptionGate: SubscriptionGate
 
     @Before
     fun setup() {
         billingRepository = mockk()
-        subscriptionGate = SubscriptionGate(billingRepository)
+        complimentaryAccessStore = mockk()
+        complimentaryGranted = MutableStateFlow(false)
+        billingResolved = MutableStateFlow(false)
+        every { complimentaryAccessStore.granted } returns complimentaryGranted
+        coEvery { complimentaryAccessStore.isGranted() } answers { complimentaryGranted.value }
+        every { billingRepository.statusResolved } returns billingResolved
+        subscriptionGate = SubscriptionGate(
+            billingRepository,
+            complimentaryAccessStore,
+            CoroutineScope(UnconfinedTestDispatcher())
+        )
     }
 
     @Test
@@ -124,6 +145,44 @@ class SubscriptionGateTest {
 
         val result = subscriptionGate.checkSaveAccess(startTime, endTime)
         assertTrue(result is GateResult.Allowed)
+    }
+
+    @Test
+    fun `complimentary access saves any time range while billing still reads FREE`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
+        complimentaryGranted.value = true
+
+        val now = System.currentTimeMillis()
+        val result = subscriptionGate.checkSaveAccess(now - (2 * 60 * 60 * 1000), now)
+
+        assertTrue(result is GateResult.Allowed)
+    }
+
+    @Test
+    fun `complimentary access allows cloud even when the subscription has expired`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.EXPIRED
+        complimentaryGranted.value = true
+
+        assertTrue(subscriptionGate.checkCloudAccess() is GateResult.Allowed)
+    }
+
+    @Test
+    fun `complimentary access resolves entitlement without waiting for Play`() = runTest {
+        complimentaryGranted.value = true
+
+        assertTrue(subscriptionGate.statusResolved.value)
+    }
+
+    @Test
+    fun `entitlement is unresolved while neither term has answered`() = runTest {
+        assertFalse(subscriptionGate.statusResolved.value)
+    }
+
+    @Test
+    fun `billing resolving alone still resolves entitlement`() = runTest {
+        billingResolved.value = true
+
+        assertTrue(subscriptionGate.statusResolved.value)
     }
 
     @Test

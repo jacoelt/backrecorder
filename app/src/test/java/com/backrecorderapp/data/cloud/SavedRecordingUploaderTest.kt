@@ -9,6 +9,7 @@ import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.domain.SubscriptionGate
+import com.backrecorderapp.domain.testSubscriptionGate
 import com.google.api.client.http.HttpHeaders
 import com.google.api.client.http.HttpResponseException
 import io.mockk.coEvery
@@ -106,7 +107,7 @@ class SavedRecordingUploaderTest {
         statusResolved = MutableStateFlow(true)
         every { billingRepository.statusResolved } returns statusResolved
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
-        subscriptionGate = SubscriptionGate(billingRepository)
+        subscriptionGate = testSubscriptionGate(billingRepository)
     }
 
     @After

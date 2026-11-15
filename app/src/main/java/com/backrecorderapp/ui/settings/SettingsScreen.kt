@@ -29,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
@@ -40,10 +41,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -55,6 +60,12 @@ import com.backrecorderapp.ui.components.PlanChooserDialog
 import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.util.findActivity
 import com.backrecorderapp.util.messageRes
+
+/**
+ * A tag rather than the label text: a Material 3 text field does not reliably expose its label in
+ * the semantics tree, and the instrumented redemption test has to type into this exact field.
+ */
+const val REDEEM_CODE_FIELD_TAG = "redeem_code_field"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -70,6 +81,8 @@ fun SettingsScreen(
     val upgradeBusy by viewModel.upgradeBusy.collectAsState()
     val subscriptionPlans by viewModel.subscriptionPlans.collectAsState()
     val consentRequest by viewModel.consentRequest.collectAsState()
+    val redeemDialogVisible by viewModel.redeemDialogVisible.collectAsState()
+    val redeemOutcome by viewModel.redeemOutcome.collectAsState()
     val context = LocalContext.current
 
     // This view model is not always torn down on the way out: settings navigates *forward* to
@@ -124,7 +137,10 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = if (
-                        SubscriptionGate.isPremium(state.subscriptionStatus)
+                        SubscriptionGate.isPremium(
+                            state.subscriptionStatus,
+                            state.complimentaryAccess
+                        )
                     ) {
                         MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
                     } else {
@@ -139,19 +155,33 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = when (state.subscriptionStatus) {
-                            SubscriptionStatus.FREE -> "Free plan"
-                            SubscriptionStatus.TRIAL -> stringResource(
-                                R.string.trial_active,
-                                state.trialDaysRemaining
-                            )
-                            SubscriptionStatus.ACTIVE -> "Premium"
-                            SubscriptionStatus.EXPIRED -> "Subscription expired"
+                        // A complimentary grant replaces the plan line rather than sitting beside
+                        // it: the billing status underneath stays FREE for these users forever by
+                        // design, and showing it would contradict the entitlement they have.
+                        text = if (state.complimentaryAccess) {
+                            stringResource(R.string.settings_complimentary_access)
+                        } else {
+                            when (state.subscriptionStatus) {
+                                SubscriptionStatus.FREE -> "Free plan"
+                                SubscriptionStatus.TRIAL -> stringResource(
+                                    R.string.trial_active,
+                                    state.trialDaysRemaining
+                                )
+                                SubscriptionStatus.ACTIVE -> "Premium"
+                                SubscriptionStatus.EXPIRED -> "Subscription expired"
+                            }
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (state.subscriptionStatus == SubscriptionStatus.FREE ||
+                    if (state.complimentaryAccess) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = stringResource(R.string.settings_complimentary_access_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else if (state.subscriptionStatus == SubscriptionStatus.FREE ||
                         state.subscriptionStatus == SubscriptionStatus.EXPIRED
                     ) {
                         Spacer(modifier = Modifier.height(8.dp))
@@ -159,6 +189,10 @@ fun SettingsScreen(
                             busy = upgradeBusy,
                             onClick = { viewModel.showPlanChooser() }
                         )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(onClick = { viewModel.showRedeemDialog() }) {
+                            Text(stringResource(R.string.settings_redeem_code))
+                        }
                     }
                 }
             }
@@ -291,6 +325,29 @@ fun SettingsScreen(
         )
     }
 
+    if (redeemDialogVisible) {
+        RedeemCodeDialog(
+            rejected = redeemOutcome == RedeemOutcome.REJECTED,
+            onRedeem = { viewModel.redeemCode(it) },
+            onDismiss = { viewModel.dismissRedeemDialog() }
+        )
+    }
+
+    // Shown outside the dialog, because acceptance closes it: the grant is the whole point and
+    // it should be confirmed rather than inferred from the card changing behind it.
+    if (redeemOutcome == RedeemOutcome.ACCEPTED && !redeemDialogVisible) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissRedeemOutcome() },
+            title = { Text(stringResource(R.string.settings_redeem_accepted_title)) },
+            text = { Text(stringResource(R.string.settings_redeem_accepted_message)) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissRedeemOutcome() }) {
+                    Text(stringResource(R.string.ok))
+                }
+            }
+        )
+    }
+
     driveError?.let { error ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissDriveError() },
@@ -313,6 +370,56 @@ fun SettingsScreen(
             }
         )
     }
+}
+
+@Composable
+private fun RedeemCodeDialog(
+    rejected: Boolean,
+    onRedeem: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    // Survives rotation: orientation cannot be restricted at this target on large screens, and a
+    // re-created activity that silently emptied the field would make the code look rejected.
+    var code by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_redeem_code)) },
+        text = {
+            Column {
+                Text(stringResource(R.string.settings_redeem_code_message))
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    modifier = Modifier.testTag(REDEEM_CODE_FIELD_TAG),
+                    singleLine = true,
+                    isError = rejected,
+                    label = { Text(stringResource(R.string.settings_redeem_code_label)) }
+                )
+                if (rejected) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.settings_redeem_rejected),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onRedeem(code) },
+                enabled = code.isNotBlank()
+            ) {
+                Text(stringResource(R.string.settings_redeem_confirm))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
 }
 
 @Composable
