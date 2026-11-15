@@ -39,16 +39,28 @@ class SystemUploadFailureNotifier @Inject constructor(
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val notification = NotificationCompat.Builder(context, BackRecorderApp.CLOUD_CHANNEL_ID)
-            .setContentTitle(context.getString(R.string.cloud_saved_upload_failed_title))
+        // The recording's name is the one piece of this the user may not want read over their
+        // shoulder - this app exists to record discreetly, and "Chat with HR.m4a" on a lock
+        // screen defeats that. The public version carries the generic title alone.
+        val publicVersion = baseBuilder(intent)
+            .setContentText(context.getString(R.string.cloud_saved_upload_failed_generic))
+            .build()
+
+        val notification = baseBuilder(intent)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(intent)
-            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .build()
 
         context.getSystemService(NotificationManager::class.java)
             .notify(UPLOAD_FAILED_NOTIFICATION_ID, notification)
     }
+
+    private fun baseBuilder(intent: PendingIntent) =
+        NotificationCompat.Builder(context, BackRecorderApp.CLOUD_CHANNEL_ID)
+            .setContentTitle(context.getString(R.string.cloud_saved_upload_failed_title))
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentIntent(intent)
+            .setAutoCancel(true)
 }

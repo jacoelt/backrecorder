@@ -25,6 +25,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -77,7 +78,7 @@ class MainViewModelPurchaseTest {
         every { cloudSyncManager.recoveryMessage } returns MutableStateFlow(null)
 
         savedRecordingUploader = mockk(relaxed = true)
-        every { savedRecordingUploader.uploadFailure } returns MutableStateFlow(null)
+        every { savedRecordingUploader.uploadFailures } returns MutableSharedFlow()
 
         billingRepository = mockk(relaxed = true)
         subscriptionGate = mockk(relaxed = true)

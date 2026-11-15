@@ -23,6 +23,7 @@ import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -34,6 +35,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 
@@ -48,6 +50,7 @@ class MainViewModelSaveTest {
     private lateinit var appPreferences: AppPreferences
     private lateinit var cloudSyncManager: CloudSyncManager
     private lateinit var savedRecordingUploader: SavedRecordingUploader
+    private lateinit var uploadFailures: MutableSharedFlow<String>
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
 
@@ -70,7 +73,8 @@ class MainViewModelSaveTest {
         every { cloudSyncManager.recoveryMessage } returns MutableStateFlow(null)
 
         savedRecordingUploader = mockk(relaxed = true)
-        every { savedRecordingUploader.uploadFailure } returns MutableStateFlow(null)
+        uploadFailures = MutableSharedFlow(extraBufferCapacity = 8)
+        every { savedRecordingUploader.uploadFailures } returns uploadFailures
 
         billingRepository = mockk(relaxed = true)
         subscriptionGate = mockk(relaxed = true)
@@ -92,6 +96,39 @@ class MainViewModelSaveTest {
         billingRepository,
         subscriptionGate
     )
+
+    @Test
+    fun `an upload failure reaches the screen and clears when dismissed (issue 84)`() = runTest {
+        val viewModel = buildViewModel()
+        advanceUntilIdle()
+
+        uploadFailures.emit("first failure")
+        advanceUntilIdle()
+        assertEquals("first failure", viewModel.uiState.value.cloudUploadError)
+
+        viewModel.dismissCloudUploadError()
+        advanceUntilIdle()
+        assertNull(viewModel.uiState.value.cloudUploadError)
+    }
+
+    /**
+     * Two failures must be shown one after the other, not collapsed: the second arriving while
+     * the first snackbar is still up would otherwise overwrite a message the user never read.
+     */
+    @Test
+    fun `a second upload failure waits for the first to be dismissed (issue 84)`() = runTest {
+        val viewModel = buildViewModel()
+        advanceUntilIdle()
+
+        uploadFailures.emit("first failure")
+        uploadFailures.emit("second failure")
+        advanceUntilIdle()
+        assertEquals("first failure", viewModel.uiState.value.cloudUploadError)
+
+        viewModel.dismissCloudUploadError()
+        advanceUntilIdle()
+        assertEquals("second failure", viewModel.uiState.value.cloudUploadError)
+    }
 
     @Test
     fun `requestSave with no segments in range shows error and skips picker (issue 23)`() = runTest {

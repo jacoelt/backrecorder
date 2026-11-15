@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
@@ -211,10 +212,17 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Shows one upload failure at a time, waiting for each to be dismissed before taking the
+     * next off the channel. Writing them straight into the state would let a second failure
+     * overwrite a snackbar the user had not read yet, which is the same "told about only one of
+     * them" defect the channel replaced the conflating flow to avoid.
+     */
     private fun observeCloudUploadFailures() {
         viewModelScope.launch {
-            savedRecordingUploader.uploadFailure.collect { message ->
+            savedRecordingUploader.uploadFailures.collect { message ->
                 _uiState.value = _uiState.value.copy(cloudUploadError = message)
+                uiState.first { it.cloudUploadError == null }
             }
         }
     }
@@ -564,7 +572,8 @@ class MainViewModel @Inject constructor(
         cloudSyncManager.dismissRecoveryMessage()
     }
 
+    /** Clearing the field is what releases the collector above to show the next queued failure. */
     fun dismissCloudUploadError() {
-        savedRecordingUploader.dismissUploadFailure()
+        _uiState.value = _uiState.value.copy(cloudUploadError = null)
     }
 }

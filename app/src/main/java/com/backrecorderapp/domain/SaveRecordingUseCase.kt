@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
 import javax.inject.Inject
 
@@ -40,6 +41,9 @@ class SaveRecordingUseCase @Inject constructor(
 
     companion object {
         private const val TAG = "SaveRecordingUseCase"
+
+        private const val MAX_DISPLAY_NAME_LENGTH = 100
+        private val ALLOWED_NAME_PUNCTUATION = setOf(' ', '.', '-', '_', '(', ')')
 
         /**
          * Upper bound on the flush handshake. The service normally answers in well under
@@ -258,7 +262,7 @@ class SaveRecordingUseCase @Inject constructor(
     private fun deliver(sourceFile: File, destUri: Uri) {
         copyToUri(sourceFile, destUri)
         try {
-            savedRecordingUploader.enqueue(sourceFile, displayNameOf(destUri, sourceFile))
+            savedRecordingUploader.enqueue(sourceFile, displayNameOf(destUri))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -266,8 +270,15 @@ class SaveRecordingUseCase @Inject constructor(
         }
     }
 
-    /** The name the user gave the file in the picker, so the Drive copy matches what they saved. */
-    private fun displayNameOf(uri: Uri, fallback: File): String {
+    /**
+     * The name the user gave the file in the picker, so the Drive copy matches what they saved.
+     *
+     * The value comes from a content provider - possibly a third party's - and travels on into
+     * Drive metadata and a notification, so it is bounded and stripped of control characters
+     * rather than trusted. The fallback is a generated name, never the cache temp file's
+     * (`temp_save_…`/`merged_…`), which would be meaningless to the person reading it.
+     */
+    private fun displayNameOf(uri: Uri): String {
         val name = try {
             context.contentResolver
                 .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -276,13 +287,28 @@ class SaveRecordingUseCase @Inject constructor(
             Log.w(TAG, "Could not read the saved file's display name", e)
             null
         }
-        return name?.takeIf { it.isNotBlank() } ?: fallback.name
+
+        val sanitized = name
+            ?.filter { it.isLetterOrDigit() || it in ALLOWED_NAME_PUNCTUATION }
+            ?.take(MAX_DISPLAY_NAME_LENGTH)
+            ?.trim()
+
+        return sanitized?.takeIf { it.isNotBlank() }
+            ?: "recording_${System.currentTimeMillis()}.m4a"
     }
 
     private fun copyToUri(sourceFile: File, destUri: Uri) {
-        context.contentResolver.openOutputStream(destUri)?.use { outputStream ->
-            sourceFile.inputStream().use { inputStream ->
-                inputStream.copyTo(outputStream)
+        // A provider may refuse the write by answering null. Letting `?.` swallow that reported
+        // Success over a zero-byte file the picker had already created, left it on the user's
+        // storage, and - once the Drive copy existed - uploaded the audio that was missing from
+        // it. The save must fail instead, so the empty file is cleaned up and nothing is handed
+        // to the uploader.
+        val outputStream = context.contentResolver.openOutputStream(destUri)
+            ?: throw IOException("Could not open the chosen location for writing")
+
+        outputStream.use { out ->
+            sourceFile.inputStream().use { input ->
+                input.copyTo(out)
             }
         }
     }

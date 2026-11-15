@@ -94,4 +94,5 @@
     <!-- Saved recording upload -->
     <string name="cloud_saved_upload_failed_title">Upload to Drive Failed</string>
     <string name="cloud_saved_upload_failed">“%1$s” was saved on this device but could not be uploaded to Google Drive.</string>
+    <string name="cloud_saved_upload_failed_generic">A saved recording could not be uploaded to Google Drive.</string>
 </resources>
