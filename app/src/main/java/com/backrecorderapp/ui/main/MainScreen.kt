@@ -127,6 +127,15 @@ fun MainScreen(
         }
     }
 
+    // Keyed on the whole value, not its text: two failures naming the same recording must still
+    // re-run this, or the dismissal below never happens and no later failure is ever shown.
+    LaunchedEffect(state.cloudUploadError) {
+        state.cloudUploadError?.let {
+            snackbarHostState.showSnackbar(it.text)
+            viewModel.dismissCloudUploadError()
+        }
+    }
+
     // Launch file picker after subscription gate passes
     LaunchedEffect(state.launchSavePicker) {
         if (state.launchSavePicker) {

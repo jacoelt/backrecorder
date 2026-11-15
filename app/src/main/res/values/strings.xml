@@ -90,4 +90,9 @@
     <string name="recovery_notification_title">Recordings Recovered</string>
     <string name="recovery_notification_text">Older recordings have been moved to a recovery folder on Google Drive. Open Back Recorder for details.</string>
     <string name="recovery_banner">Recovered recordings are available in your Google Drive under BackRecorder/recovery_%1$s. Please move them to a safe location — they will not be automatically deleted.</string>
+
+    <!-- Saved recording upload -->
+    <string name="cloud_saved_upload_failed_title">Upload to Drive Failed</string>
+    <string name="cloud_saved_upload_failed">“%1$s” was saved on this device but could not be uploaded to Google Drive.</string>
+    <string name="cloud_saved_upload_failed_generic">A saved recording could not be uploaded to Google Drive.</string>
 </resources>

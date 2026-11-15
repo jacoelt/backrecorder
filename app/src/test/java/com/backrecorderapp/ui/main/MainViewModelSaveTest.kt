@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
@@ -22,6 +23,7 @@ import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -32,7 +34,9 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 
@@ -46,6 +50,8 @@ class MainViewModelSaveTest {
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
     private lateinit var appPreferences: AppPreferences
     private lateinit var cloudSyncManager: CloudSyncManager
+    private lateinit var savedRecordingUploader: SavedRecordingUploader
+    private lateinit var uploadFailures: MutableSharedFlow<String>
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
 
@@ -67,6 +73,10 @@ class MainViewModelSaveTest {
         cloudSyncManager = mockk(relaxed = true)
         every { cloudSyncManager.recoveryMessage } returns MutableStateFlow(null)
 
+        savedRecordingUploader = mockk(relaxed = true)
+        uploadFailures = MutableSharedFlow(extraBufferCapacity = 8)
+        every { savedRecordingUploader.uploadFailures } returns uploadFailures
+
         billingRepository = mockk(relaxed = true)
         subscriptionGate = mockk(relaxed = true)
     }
@@ -83,9 +93,69 @@ class MainViewModelSaveTest {
         saveRecordingUseCase,
         appPreferences,
         cloudSyncManager,
+        savedRecordingUploader,
         billingRepository,
         subscriptionGate
     )
+
+    @Test
+    fun `an upload failure reaches the screen and clears when dismissed (issue 84)`() = runTest {
+        val viewModel = buildViewModel()
+        advanceUntilIdle()
+
+        uploadFailures.emit("first failure")
+        advanceUntilIdle()
+        assertEquals("first failure", viewModel.uiState.value.cloudUploadError?.text)
+
+        viewModel.dismissCloudUploadError()
+        advanceUntilIdle()
+        assertNull(viewModel.uiState.value.cloudUploadError)
+    }
+
+    /**
+     * Two failures must be shown one after the other, not collapsed: the second arriving while
+     * the first snackbar is still up would otherwise overwrite a message the user never read.
+     */
+    @Test
+    fun `a second upload failure waits for the first to be dismissed (issue 84)`() = runTest {
+        val viewModel = buildViewModel()
+        advanceUntilIdle()
+
+        uploadFailures.emit("first failure")
+        uploadFailures.emit("second failure")
+        advanceUntilIdle()
+        assertEquals("first failure", viewModel.uiState.value.cloudUploadError?.text)
+
+        viewModel.dismissCloudUploadError()
+        advanceUntilIdle()
+        assertEquals("second failure", viewModel.uiState.value.cloudUploadError?.text)
+    }
+
+    /**
+     * The reason `UploadError` carries an id at all. Two failures naming the same recording are
+     * the same string; without a distinguishing id the screen's `LaunchedEffect` key would not
+     * change, the second snackbar would never show, and the collector waiting on its dismissal
+     * would park for good.
+     */
+    @Test
+    fun `two failures with identical text are distinguishable to the screen (issue 84)`() =
+        runTest {
+            val viewModel = buildViewModel()
+            advanceUntilIdle()
+
+            uploadFailures.emit("same text")
+            advanceUntilIdle()
+            val first = viewModel.uiState.value.cloudUploadError
+
+            viewModel.dismissCloudUploadError()
+            advanceUntilIdle()
+            uploadFailures.emit("same text")
+            advanceUntilIdle()
+            val second = viewModel.uiState.value.cloudUploadError
+
+            assertEquals("same text", second?.text)
+            assertNotEquals("the two must not compare equal", first, second)
+        }
 
     @Test
     fun `requestSave with no segments in range shows error and skips picker (issue 23)`() = runTest {

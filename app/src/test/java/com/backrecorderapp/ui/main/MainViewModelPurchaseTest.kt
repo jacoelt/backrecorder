@@ -10,6 +10,7 @@ import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionPlan
 import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.data.cloud.CloudSyncManager
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.data.preferences.AppPreferences
@@ -24,6 +25,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -54,6 +56,7 @@ class MainViewModelPurchaseTest {
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
     private lateinit var appPreferences: AppPreferences
     private lateinit var cloudSyncManager: CloudSyncManager
+    private lateinit var savedRecordingUploader: SavedRecordingUploader
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
 
@@ -73,6 +76,9 @@ class MainViewModelPurchaseTest {
 
         cloudSyncManager = mockk(relaxed = true)
         every { cloudSyncManager.recoveryMessage } returns MutableStateFlow(null)
+
+        savedRecordingUploader = mockk(relaxed = true)
+        every { savedRecordingUploader.uploadFailures } returns MutableSharedFlow()
 
         billingRepository = mockk(relaxed = true)
         subscriptionGate = mockk(relaxed = true)
@@ -112,6 +118,7 @@ class MainViewModelPurchaseTest {
         saveRecordingUseCase,
         appPreferences,
         cloudSyncManager,
+        savedRecordingUploader,
         billingRepository,
         subscriptionGate
     )

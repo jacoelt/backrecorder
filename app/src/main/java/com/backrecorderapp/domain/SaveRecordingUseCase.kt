@@ -6,6 +6,9 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Log
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -13,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
 import javax.inject.Inject
 
@@ -31,10 +35,17 @@ class SaveRecordingUseCase @Inject constructor(
     private val segmentManager: SegmentManager,
     private val trimUseCase: TrimSegmentUseCase,
     private val subscriptionGate: SubscriptionGate,
-    private val recordingFlusher: RecordingFlusher
+    private val recordingFlusher: RecordingFlusher,
+    private val savedRecordingUploader: SavedRecordingUploader
 ) {
 
     companion object {
+        private const val TAG = "SaveRecordingUseCase"
+
+        private const val MAX_DISPLAY_NAME_LENGTH = 100
+        private const val MAX_EXTENSION_LENGTH = 8
+        private val ALLOWED_NAME_PUNCTUATION = setOf(' ', '.', '-', '_', '(', ')')
+
         /**
          * Upper bound on the flush handshake. The service normally answers in well under
          * a second; this only bounds the cases where it never answers at all, turning a
@@ -121,7 +132,7 @@ class SaveRecordingUseCase @Inject constructor(
         val tempFile = File(context.cacheDir, "temp_save_${System.currentTimeMillis()}.m4a")
         try {
             trimUseCase.trim(inputFile, tempFile, startUs, endUs)
-            copyToUri(tempFile, outputUri)
+            deliver(tempFile, outputUri)
         } finally {
             tempFile.delete()
         }
@@ -163,7 +174,7 @@ class SaveRecordingUseCase @Inject constructor(
             val mergedFile = File(context.cacheDir, "merged_${System.currentTimeMillis()}.m4a")
             try {
                 concatenateM4aFiles(tempFiles, mergedFile)
-                copyToUri(mergedFile, outputUri)
+                deliver(mergedFile, outputUri)
             } finally {
                 mergedFile.delete()
             }
@@ -240,10 +251,80 @@ class SaveRecordingUseCase @Inject constructor(
         return null
     }
 
+    /**
+     * Writes the finished recording to where the user pointed the picker, then hands the same
+     * file to the Drive copy (issue #84).
+     *
+     * The hand-off comes last and cannot throw into the save: the local file is what the user
+     * asked for, and a save that reported failure because a backup copy could not be queued
+     * would be a worse outcome than no copy at all. [SavedRecordingUploader.enqueue] takes the
+     * file over from here, which is why nothing below may read it again.
+     */
+    private fun deliver(sourceFile: File, destUri: Uri) {
+        copyToUri(sourceFile, destUri)
+        try {
+            savedRecordingUploader.enqueue(sourceFile, displayNameOf(destUri))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not queue the saved recording for upload", e)
+        }
+    }
+
+    /**
+     * The name the user gave the file in the picker, so the Drive copy matches what they saved.
+     *
+     * The value comes from a content provider - possibly a third party's - and travels on into
+     * Drive metadata and a notification, so it is bounded and stripped of control characters
+     * rather than trusted. The fallback is a generated name, never the cache temp file's
+     * (`temp_save_…`/`merged_…`), which would be meaningless to the person reading it.
+     */
+    private fun displayNameOf(uri: Uri): String {
+        val name = try {
+            context.contentResolver
+                .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read the saved file's display name", e)
+            null
+        }
+
+        val sanitized = name
+            ?.filter { it.isLetterOrDigit() || it in ALLOWED_NAME_PUNCTUATION }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { shortenKeepingExtension(it) }
+
+        return sanitized ?: "recording_${System.currentTimeMillis()}.m4a"
+    }
+
+    /**
+     * Truncating the whole string would cut a long name mid-stem and take `.m4a` with it, leaving
+     * a Drive file nothing recognises as audio.
+     */
+    private fun shortenKeepingExtension(name: String): String {
+        if (name.length <= MAX_DISPLAY_NAME_LENGTH) return name
+
+        val extension = name.substringAfterLast('.', missingDelimiterValue = "")
+            .takeIf { it.isNotEmpty() && it.length <= MAX_EXTENSION_LENGTH }
+            ?.let { ".$it" }
+            ?: ""
+
+        return name.take(MAX_DISPLAY_NAME_LENGTH - extension.length).trim() + extension
+    }
+
     private fun copyToUri(sourceFile: File, destUri: Uri) {
-        context.contentResolver.openOutputStream(destUri)?.use { outputStream ->
-            sourceFile.inputStream().use { inputStream ->
-                inputStream.copyTo(outputStream)
+        // A provider may refuse the write by answering null. Letting `?.` swallow that reported
+        // Success over a zero-byte file the picker had already created, left it on the user's
+        // storage, and - once the Drive copy existed - uploaded the audio that was missing from
+        // it. The save must fail instead, so the empty file is cleaned up and nothing is handed
+        // to the uploader.
+        val outputStream = context.contentResolver.openOutputStream(destUri)
+            ?: throw IOException("Could not open the chosen location for writing")
+
+        outputStream.use { out ->
+            sourceFile.inputStream().use { input ->
+                input.copyTo(out)
             }
         }
     }

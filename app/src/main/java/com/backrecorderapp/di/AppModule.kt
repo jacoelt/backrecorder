@@ -5,6 +5,8 @@ import androidx.room.Room
 import com.backrecorderapp.data.cloud.DriveAboutIdentityResolver
 import com.backrecorderapp.data.cloud.DriveAccountIdentityResolver
 import com.backrecorderapp.data.cloud.DriveServiceFactory
+import com.backrecorderapp.data.cloud.SystemUploadFailureNotifier
+import com.backrecorderapp.data.cloud.UploadFailureNotifier
 import com.backrecorderapp.data.db.AppDatabase
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.domain.RecordingFlusher
@@ -61,6 +63,16 @@ object AppModule {
     fun provideApplicationScope(
         @IoDispatcher ioDispatcher: CoroutineDispatcher
     ): CoroutineScope = CoroutineScope(SupervisorJob() + ioDispatcher)
+
+    /**
+     * Bound here rather than in [CloudModule], which instrumented tests replace wholesale: this
+     * seam exists for JVM tests, and a flow test has no reason to lose the real notification.
+     */
+    @Provides
+    @Singleton
+    fun provideUploadFailureNotifier(
+        notifier: SystemUploadFailureNotifier
+    ): UploadFailureNotifier = notifier
 
     @Provides
     @Singleton

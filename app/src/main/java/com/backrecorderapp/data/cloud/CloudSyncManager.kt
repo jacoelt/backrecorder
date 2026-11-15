@@ -4,8 +4,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.backrecorderapp.BackRecorderApp
@@ -79,15 +77,6 @@ class CloudSyncManager @Inject constructor(
         /** Doubling per consecutive failure, up to this many doublings. */
         private const val MAX_BACKOFF_SHIFT = 5
         private const val MAX_BACKOFF_MS = 15 * 60 * 1000L
-
-        /**
-         * Drive reports throttling with 403, the same status as scope loss. These reasons are
-         * transient and want a back-off, not a reconnect prompt.
-         */
-        private val RATE_LIMIT_REASONS = listOf("rateLimitExceeded", "userRateLimitExceeded")
-
-        /** Also a 403, but terminal: retrying cannot help until the user frees space. */
-        private const val QUOTA_EXCEEDED_REASON = "storageQuotaExceeded"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
@@ -366,22 +355,11 @@ class CloudSyncManager @Inject constructor(
         return complete
     }
 
-    /**
-     * Drive answers 401 when the token is rejected and 403 when the grant no longer covers the
-     * scope; both mean the user must re-authorize. But 403 is also how Drive reports throttling
-     * and a full account, neither of which is an authorization problem.
-     */
-    internal fun isAuthFailure(e: HttpResponseException): Boolean =
-        e.statusCode == 401 ||
-            (e.statusCode == 403 && !isRateLimited(e) && !isQuotaExceeded(e))
+    internal fun isAuthFailure(e: HttpResponseException): Boolean = isDriveAuthFailure(e)
 
-    internal fun isRateLimited(e: HttpResponseException): Boolean {
-        val content = e.content ?: return false
-        return RATE_LIMIT_REASONS.any { content.contains(it, ignoreCase = true) }
-    }
+    internal fun isRateLimited(e: HttpResponseException): Boolean = isDriveRateLimited(e)
 
-    internal fun isQuotaExceeded(e: HttpResponseException): Boolean =
-        e.content?.contains(QUOTA_EXCEEDED_REASON, ignoreCase = true) == true
+    internal fun isQuotaExceeded(e: HttpResponseException): Boolean = isDriveQuotaExceeded(e)
 
     fun dismissRecoveryMessage() {
         _recoveryMessage.value = null
@@ -408,15 +386,6 @@ class CloudSyncManager @Inject constructor(
         notificationManager.notify(RECOVERY_NOTIFICATION_ID, notification)
     }
 
-    private fun isNetworkAvailable(mode: CloudUploadMode): Boolean {
-        val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-
-        return when (mode) {
-            CloudUploadMode.WIFI_ONLY -> capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-            CloudUploadMode.ALWAYS_ON -> capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            CloudUploadMode.OFF -> false
-        }
-    }
+    private fun isNetworkAvailable(mode: CloudUploadMode): Boolean =
+        isCloudNetworkAvailable(context, mode)
 }

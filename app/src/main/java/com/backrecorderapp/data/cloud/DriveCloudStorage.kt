@@ -82,14 +82,26 @@ class DriveCloudStorage @Inject constructor(
 
     suspend fun uploadSegment(file: File): String? {
         val folders = ensureFolderStructure() ?: return null
-        return withContext(Dispatchers.IO) { uploadFile(file, folders.stagingId) }
+        return withContext(Dispatchers.IO) { uploadFile(file, folders.stagingId, file.name) }
     }
 
-    private fun uploadFile(file: File, parentFolderId: String): String? {
+    /**
+     * Uploads a finished recording the user saved, under [displayName], to `BackRecorder/` itself.
+     *
+     * Deliberately not into `staging`: [listStagingFiles] and the buffer cleanup delete anything
+     * in there once it ages past the 24h window, so a saved recording placed in staging would be
+     * destroyed a day later - the one outcome a backup copy must never have.
+     */
+    suspend fun uploadSavedRecording(file: File, displayName: String): String? {
+        val folders = ensureFolderStructure() ?: return null
+        return withContext(Dispatchers.IO) { uploadFile(file, folders.rootId, displayName) }
+    }
+
+    private fun uploadFile(file: File, parentFolderId: String, displayName: String): String? {
         val drive = drive ?: return null
 
         val metadata = com.google.api.services.drive.model.File().apply {
-            name = file.name
+            name = displayName
             parents = listOf(parentFolderId)
         }
 

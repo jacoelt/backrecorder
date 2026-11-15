@@ -71,6 +71,7 @@ class DriveSyncE2eTest {
     @Inject lateinit var driveAuthManager: DriveAuthManager
     @Inject lateinit var driveCloudStorage: DriveCloudStorage
     @Inject lateinit var cloudSyncManager: CloudSyncManager
+    @Inject lateinit var savedRecordingUploader: SavedRecordingUploader
     @Inject lateinit var recorderFactory: FakeAudioRecorderFactory
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var segmentDao: SegmentDao
@@ -400,6 +401,51 @@ class DriveSyncE2eTest {
             "The new staging folder must still sit under $ROOT_FOLDER",
             listOf(second.rootId),
             server.entry(second.stagingId)!!.parents.toList()
+        )
+    }
+
+    /**
+     * A saved recording lands in `BackRecorder/` itself and **not** in `staging` (#84).
+     *
+     * This is the one property of that feature no unit test can establish: the folder ids are
+     * resolved by the real [DriveCloudStorage] against a real Drive API, and "root" and "staging"
+     * are only distinguishable once both folders actually exist on the server. Getting it wrong
+     * is silent at the moment of the save and destroys the file a day later, when buffer cleanup
+     * evicts everything in `staging` — so the assertion that matters most is the negative one.
+     */
+    @Test
+    fun aSavedRecordingUploadsIntoTheDriveRootAndNotIntoStaging() = runBlocking {
+        authorize()
+        appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        // Resolved up front so `staging` exists: a root-vs-staging assertion proves nothing
+        // against a server where staging was never created.
+        val folders = requireNotNull(driveCloudStorage.ensureFolderStructure())
+
+        val saved = File(appContext.cacheDir, "Saved Recording.m4a").apply {
+            writeBytes(ByteArray(64) { it.toByte() })
+        }
+        savedRecordingUploader.enqueue(saved, "Saved Recording.m4a")
+
+        // The same long budget the other Drive-upload waits in this class use: this path waits on
+        // the billing resolve and then a real Drive round trip, and a hosted emulator is slow
+        // enough that the default 30s would flake — which on this repo blocks every PR.
+        awaitUntil("The saved recording never reached the fake Drive", LOOP_TIMEOUT_MS) {
+            server.entries().any { it.name == "Saved Recording.m4a" }
+        }
+
+        val uploaded = server.entries().single { it.name == "Saved Recording.m4a" }
+        assertEquals(
+            "A saved recording must go in $ROOT_FOLDER itself",
+            listOf(folders.rootId),
+            uploaded.parents.toList()
+        )
+        assertFalse(
+            "A saved recording in $STAGING_FOLDER is deleted by buffer cleanup a day later",
+            folders.stagingId in uploaded.parents
+        )
+        assertTrue(
+            "The uploaded bytes do not match the saved recording",
+            uploaded.content.contentEquals(ByteArray(64) { it.toByte() })
         )
     }
 

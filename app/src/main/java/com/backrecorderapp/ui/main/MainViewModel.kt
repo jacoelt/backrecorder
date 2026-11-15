@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
@@ -29,12 +30,24 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 
 private const val MINUTE_MS = 60_000L
+
+/**
+ * A failed Drive upload, carrying an id purely so the UI can tell two of them apart.
+ *
+ * Without it the screen keys its snackbar on the message text, and two failures for the same
+ * recording name are indistinguishable: the dismissal and the next message both land before
+ * Compose recomposes, the effect never re-runs, and the collector waiting on that dismissal
+ * parks forever - withholding every later failure. That is the conflation the uploader's
+ * channel exists to avoid, reappearing one layer up.
+ */
+data class UploadError(val id: Long, val text: String)
 
 data class MainUiState(
     val isRecording: Boolean = false,
@@ -54,7 +67,8 @@ data class MainUiState(
     val purchaseError: PurchaseFailure? = null,
     val errorMessage: String? = null,
     val successMessage: String? = null,
-    val recoveryMessage: String? = null
+    val recoveryMessage: String? = null,
+    val cloudUploadError: UploadError? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -76,7 +90,8 @@ data class MainUiState(
             purchaseError == other.purchaseError &&
             errorMessage == other.errorMessage &&
             successMessage == other.successMessage &&
-            recoveryMessage == other.recoveryMessage
+            recoveryMessage == other.recoveryMessage &&
+            cloudUploadError == other.cloudUploadError
     }
 
     override fun hashCode(): Int {
@@ -98,6 +113,7 @@ data class MainUiState(
         result = 31 * result + (errorMessage?.hashCode() ?: 0)
         result = 31 * result + (successMessage?.hashCode() ?: 0)
         result = 31 * result + (recoveryMessage?.hashCode() ?: 0)
+        result = 31 * result + (cloudUploadError?.hashCode() ?: 0)
         return result
     }
 }
@@ -110,6 +126,7 @@ class MainViewModel @Inject constructor(
     private val saveRecordingUseCase: SaveRecordingUseCase,
     private val appPreferences: AppPreferences,
     private val cloudSyncManager: CloudSyncManager,
+    private val savedRecordingUploader: SavedRecordingUploader,
     private val billingRepository: BillingRepository,
     private val subscriptionGate: SubscriptionGate
 ) : ViewModel() {
@@ -161,6 +178,7 @@ class MainViewModel @Inject constructor(
     init {
         observeSegments()
         observeRecoveryMessages()
+        observeCloudUploadFailures()
     }
 
     private fun observeSegments() {
@@ -201,6 +219,24 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             cloudSyncManager.recoveryMessage.collect { message ->
                 _uiState.value = _uiState.value.copy(recoveryMessage = message)
+            }
+        }
+    }
+
+    /**
+     * Shows one upload failure at a time, waiting for each to be dismissed before taking the
+     * next off the channel. Writing them straight into the state would let a second failure
+     * overwrite a snackbar the user had not read yet, which is the same "told about only one of
+     * them" defect the channel replaced the conflating flow to avoid.
+     */
+    private fun observeCloudUploadFailures() {
+        viewModelScope.launch {
+            var id = 0L
+            savedRecordingUploader.uploadFailures.collect { message ->
+                _uiState.value = _uiState.value.copy(
+                    cloudUploadError = UploadError(++id, message)
+                )
+                uiState.first { it.cloudUploadError == null }
             }
         }
     }
@@ -548,5 +584,10 @@ class MainViewModel @Inject constructor(
 
     fun dismissRecoveryMessage() {
         cloudSyncManager.dismissRecoveryMessage()
+    }
+
+    /** Clearing the field is what releases the collector above to show the next queued failure. */
+    fun dismissCloudUploadError() {
+        _uiState.value = _uiState.value.copy(cloudUploadError = null)
     }
 }
