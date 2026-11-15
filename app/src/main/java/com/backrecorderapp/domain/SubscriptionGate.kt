@@ -23,6 +23,14 @@ class SubscriptionGate @Inject constructor(
     companion object {
         const val FREE_SAVE_LIMIT_MS = 15 * 60 * 1000L // 15 minutes
         private const val MINUTE_MS = 60_000L
+
+        /**
+         * Which statuses carry entitlement, as a pure function: a caller that already holds the
+         * status - the settings screen renders one - would otherwise restate the rule and drift
+         * from it.
+         */
+        fun isPremium(status: SubscriptionStatus): Boolean =
+            status == SubscriptionStatus.ACTIVE || status == SubscriptionStatus.TRIAL
     }
 
     suspend fun checkSaveAccess(startTime: Long, endTime: Long): GateResult {
@@ -56,8 +64,5 @@ class SubscriptionGate @Inject constructor(
         }
     }
 
-    suspend fun isPremium(): Boolean {
-        val status = billingRepository.getSubscriptionStatus()
-        return status == SubscriptionStatus.ACTIVE || status == SubscriptionStatus.TRIAL
-    }
+    suspend fun isPremium(): Boolean = isPremium(billingRepository.getSubscriptionStatus())
 }
