@@ -208,9 +208,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `connectDrive reports itself busy and discards a second tap`() = runTest {
-        // #102: the connect queues behind any other grant operation on the session lock, and the
-        // tap used to render as nothing at all while it waited - a button indistinguishable from
-        // a dead one. A second tap must be dropped, not queued behind the first.
+        // #102: a second tap during an in-flight connect is dropped, not queued.
         val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
         coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
 
@@ -226,6 +224,53 @@ class SettingsViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { driveAuthManager.authorize() }
+        assertFalse(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `a refused connect releases the busy claim`() = runTest {
+        // The paths where a leaked flag would leave the Connect button disabled for good, which
+        // is a worse version of the dead button #102 reported.
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.Failed
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.driveConnecting.value)
+        assertEquals(DriveError.SIGN_IN_FAILED, viewModel.driveError.value)
+    }
+
+    @Test
+    fun `an upload-mode change cannot start a second grant request`() = runTest {
+        // Two grant operations at once publish two consent requests, and the screen launches the
+        // second sheet over the first. The chosen mode is still written.
+        val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+        coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        advanceUntilIdle()
+        authorizing.complete(DriveAuthManager.AuthorizationOutcome.Authorized)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+        coVerify { appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON) }
+    }
+
+    @Test
+    fun `the consent result releases the busy claim`() = runTest {
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Failed
+
+        val viewModel = createViewModel()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
         assertFalse(viewModel.driveConnecting.value)
     }
 

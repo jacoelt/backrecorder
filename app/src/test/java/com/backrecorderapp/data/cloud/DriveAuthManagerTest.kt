@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -425,9 +426,7 @@ class DriveAuthManagerTest {
 
     @Test
     fun `a stalled identity lookup does not park the next authorize behind it`() = runTest {
-        // #102: the Settings screen's init-time restoreSession() held sessionMutex across an
-        // unbounded Drive about.get - 320s on the reporter's device - so the Connect tap that
-        // followed suspended on the mutex and drew nothing at all. The button looked dead.
+        // #102: a lookup that never answers must not hold the session lock past the bound.
         answersWith(grant())
         val auth = newManager(resolver = uninterruptibleResolver(STALLED_LOOKUP_MS))
 
@@ -439,15 +438,38 @@ class DriveAuthManagerTest {
         val waited = testScheduler.currentTime - tappedAt
 
         assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, outcome)
+        // Bounded against the timeout itself, not merely against the stall: a regression to ten
+        // times the intended wait would still be under STALLED_LOOKUP_MS. Two budgets, because
+        // this caller can queue behind the first one's.
         assertTrue(
             "the second caller waited ${waited}ms on the first caller's lookup",
-            waited < STALLED_LOOKUP_MS
+            waited <= 2 * IDENTITY_LOOKUP_BUDGET_MS
         )
         restore.join()
+    }
+
+    @Test
+    fun `a lookup that answers after the bound still records the pin`() = runTest {
+        // Discarding the abandoned lookup outright would weaken the pin rather than leave it
+        // alone: an unpinned session omits setAccount from every later request, and before the
+        // bound existed a slow network still pinned because the caller waited it out.
+        answersWith(grant())
+        val auth = newManager(resolver = uninterruptibleResolver(STALLED_LOOKUP_MS))
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        // Nothing is known about the account at the moment of adoption, so nothing is claimed.
+        coVerify(exactly = 0) { preferences.setDriveAccount(any(), any()) }
+
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { preferences.setDriveAccount("acct-1", "a@x.com") }
     }
 
     private companion object {
         /** Longer than any user waits, and far longer than the bound the lookup now carries. */
         const val STALLED_LOOKUP_MS = 320_000L
+
+        /** Mirrors `DriveAuthManager.IDENTITY_LOOKUP_TIMEOUT_MS`, which is private. */
+        const val IDENTITY_LOOKUP_BUDGET_MS = 10_000L
     }
 }

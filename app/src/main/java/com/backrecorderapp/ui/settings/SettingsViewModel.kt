@@ -188,12 +188,8 @@ class SettingsViewModel @Inject constructor(
     private val _driveConnecting = MutableStateFlow(false)
 
     /**
-     * True while a Connect tap is in flight, so the button can say so.
-     *
-     * Connecting is a multi-second wait even when everything works - it crosses Play Services and,
-     * on a first connect, a Drive round-trip - and it queues behind any other grant operation on
-     * `DriveAuthManager`'s session lock. #102 was that wait rendered as nothing whatsoever: the
-     * tap was swallowed and the button stayed live, so it was indistinguishable from dead.
+     * True while a Drive grant operation is in flight. The connect queues behind the session lock
+     * and crosses Play Services, so the button must render the wait rather than look live.
      */
     val driveConnecting: StateFlow<Boolean> = _driveConnecting.asStateFlow()
 
@@ -234,28 +230,44 @@ class SettingsViewModel @Inject constructor(
             appPreferences.setCloudUploadMode(mode)
 
             // Uploads cannot work without the Drive grant, so ask for it as part of turning
-            // the mode on rather than silently queueing segments that will never leave.
-            if (!requestDriveAccess()) return@launch
-
-            cloudSyncManager.startSync()
+            // the mode on rather than silently queueing segments that will never leave. The mode
+            // is written either way: a grant request refused because one is already running is
+            // not a reason to ignore the option the user just chose.
+            claimingDriveConnect {
+                if (requestDriveAccess()) cloudSyncManager.startSync()
+            }
         }
     }
 
     fun connectDrive() {
-        // A second tap is discarded rather than queued: two connects would serialize on the
-        // session lock and the later one would act on a grant the first had already settled.
+        viewModelScope.launch {
+            claimingDriveConnect {
+                if (!isCloudAccessAllowed()) return@claimingDriveConnect
+                if (requestDriveAccess()) startSyncEnablingUploads()
+            }
+        }
+    }
+
+    /**
+     * Runs [block] as *the* Drive grant operation, or not at all if one is already running.
+     *
+     * Every path that asks `DriveAuthManager` for a grant goes through here - the Connect button,
+     * an upload-mode change, and the consent result - because they all queue on the one session
+     * lock and all used to render as nothing while they waited (#102). Two at once is worse than
+     * a discarded tap: the second publishes a second `_consentRequest`, which the screen launches
+     * as a second consent sheet over the first.
+     *
+     * The claim is released only by the call that took it, in a `finally` - never by the user
+     * leaving the screen. See [planLoadGeneration] above for why: a flag freed from outside the
+     * call it guards lets a second operation start over the top of one still running.
+     */
+    private suspend fun claimingDriveConnect(block: suspend () -> Unit) {
         if (_driveConnecting.value) return
         _driveConnecting.value = true
-        viewModelScope.launch {
-            try {
-                if (!isCloudAccessAllowed()) return@launch
-                if (requestDriveAccess()) startSyncEnablingUploads()
-            } finally {
-                // Cleared unconditionally by the call that set it, never by the user leaving:
-                // see the generation counters below for why freeing a busy flag from outside
-                // the call it guards is what lets a second one start over the top of the first.
-                _driveConnecting.value = false
-            }
+        try {
+            block()
+        } finally {
+            _driveConnecting.value = false
         }
     }
 
@@ -326,15 +338,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onConsentResult(data: Intent?) {
-        // The second half of a connect, and silent for as long as the first: adopting the grant
-        // crosses the same session lock and identity lookup. Shown as busy for the same reason.
-        _driveConnecting.value = true
         viewModelScope.launch {
-            try {
-                completeConsent(data)
-            } finally {
-                _driveConnecting.value = false
-            }
+            // Adopting the grant crosses the same lock and lookup, so it is busy too.
+            claimingDriveConnect { completeConsent(data) }
         }
     }
 

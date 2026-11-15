@@ -511,8 +511,7 @@ private fun DriveAccountRow(
         }
 
         if (!connected || showReauthPrompt) {
-            // Busy rather than plain: the connect crosses Play Services and a Drive round-trip
-            // and discards a second tap, so a button that still looked live would be #102 again.
+            // Busy: a second tap is discarded, so a live-looking button would be a dead one.
             BusyButton(
                 busy = connecting,
                 text = stringResource(R.string.settings_drive_connect),

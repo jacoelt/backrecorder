@@ -16,12 +16,14 @@ import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -78,6 +80,13 @@ class DriveAuthManager @Inject constructor(
          * connect to googleapis.com took 320s to throw on the device in #102.
          */
         private const val IDENTITY_LOOKUP_TIMEOUT_MS = 10_000L
+
+        /**
+         * How long any single Play Services authorization call may take. Generous: it is a
+         * local IPC that normally answers in well under a second, and a bound that fires on a
+         * merely slow device would report a working grant as failed.
+         */
+        private const val PLAY_SERVICES_TIMEOUT_MS = 30_000L
     }
 
     /** Outcome of asking for authorization without showing UI ourselves. */
@@ -154,7 +163,15 @@ class DriveAuthManager @Inject constructor(
     suspend fun authorize(): AuthorizationOutcome = sessionMutex.withLock {
         loadPin()
         val result = try {
-            authorizationClient.authorize(authorizationRequest())
+            withTimeout(PLAY_SERVICES_TIMEOUT_MS) {
+                authorizationClient.authorize(authorizationRequest())
+            }
+        } catch (e: TimeoutCancellationException) {
+            // Bounded for the same reason as the identity lookup below, and ordered before the
+            // CancellationException arm because a timeout is one. Unlike the lookup this call is
+            // a genuinely cancellable Task, so the bound aborts it rather than abandoning it.
+            Log.w(TAG, "Play Services did not answer the authorization request in time")
+            return@withLock AuthorizationOutcome.Failed
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -337,17 +354,10 @@ class DriveAuthManager @Inject constructor(
      * The identity lookup, bounded - and **abandoned rather than cancelled** when the bound is
      * reached.
      *
-     * The distinction is the whole point. [DriveAboutIdentityResolver] ends in a blocking
-     * `execute()` on a socket, which no cancellation can cut short, so a `withTimeout` wrapped
-     * around the call would not return until the call returned anyway. What has to stop is this
-     * coroutine *waiting* on it, because it waits while holding [sessionMutex]: in #102 an
-     * init-time `restoreSession()` held the lock for 320s that way, and the user's Connect tap
-     * suspended behind it with nothing at all on screen.
-     *
-     * The orphan runs on to completion on the application scope and its answer is discarded. That
-     * costs at worst a pin not recorded this time round, which the next connect records - and a
-     * lookup that does not answer is already treated as "unknown, never different" by the caller,
-     * so a timeout needs no separate handling there.
+     * The distinction is the whole point: [DriveAboutIdentityResolver] ends in a blocking
+     * `execute()` on a socket that no cancellation can cut short, so a `withTimeout` around the
+     * call itself would not return until the call did. Only this coroutine's *wait* is cut short,
+     * because it waits while holding [sessionMutex] - see the #102 bullet in CLAUDE.md.
      */
     private suspend fun resolveIdentityWithinBudget(token: String): DriveAccountIdentity? {
         val lookup = applicationScope.async { identityResolver.resolve(token) }
@@ -357,7 +367,39 @@ class DriveAuthManager @Inject constructor(
             // Caught by its own type, not as CancellationException: a caller cancelled from
             // outside must still unwind rather than be reported as a slow lookup.
             Log.w(TAG, "Drive identity lookup did not answer within ${IDENTITY_LOOKUP_TIMEOUT_MS}ms")
+            pinWhateverTheOrphanResolves(token, lookup)
             null
+        }
+    }
+
+    /**
+     * Records the pin from an abandoned lookup if it ever answers.
+     *
+     * Without this the bound would have *weakened* the account pin rather than left it alone. A
+     * lookup that does not answer leaves `pinnedAccountId` null, and an unpinned session omits
+     * [AuthorizationRequest.Builder.setAccount] from every later request - which is the drift
+     * guard itself, not a nicety. Before the bound existed a slow network still pinned, because
+     * the caller waited however long it took; after it, a first connect over a tarpitted network
+     * would adopt a grant and pin nothing.
+     *
+     * Only ever *adds* a pin that is missing, under the lock, and only while the token it asked
+     * about is still the live one — so a sign-out, a re-grant, or a pin recorded in the meantime
+     * all leave it with nothing to say. The token is the right identity to compare, not the
+     * grant generation: the adoption this lookup belongs to bumps that generation itself.
+     */
+    private fun pinWhateverTheOrphanResolves(
+        token: String,
+        lookup: Deferred<DriveAccountIdentity?>
+    ) {
+        applicationScope.launch {
+            val identity = lookup.await() ?: return@launch
+            sessionMutex.withLock {
+                if (pinnedAccountId != null) return@withLock
+                if (tokenMutex.withLock { cachedToken } != token) return@withLock
+                appPreferences.setDriveAccount(identity.accountId, identity.email)
+                pinnedAccountId = identity.accountId
+                pinnedEmail = identity.email
+            }
         }
     }
 
@@ -385,7 +427,17 @@ class DriveAuthManager @Inject constructor(
             // Pinned like every other request, so a refresh cannot silently slide onto another
             // account. The identity is not re-checked here: that needs a Drive call, and this
             // runs inside the Drive request initializer.
-            authorizationClient.authorize(authorizationRequest())
+            //
+            // Bounded like the one in authorize(), and this site matters more: it runs under
+            // runBlocking inside the Drive request initializer, so a Play Services call that
+            // never answers blocks the calling thread - and with it SavedRecordingUploader,
+            // which holds its single upload mutex across the transfer.
+            withTimeout(PLAY_SERVICES_TIMEOUT_MS) {
+                authorizationClient.authorize(authorizationRequest())
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "Play Services did not answer the token refresh in time")
+            return@withLock null
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

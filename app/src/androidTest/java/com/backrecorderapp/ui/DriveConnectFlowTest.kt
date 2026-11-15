@@ -13,17 +13,20 @@ import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.FakeBillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
+import com.backrecorderapp.data.cloud.CloudSyncManager
+import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.cloud.FakeDriveAuthorizationClient
+import com.backrecorderapp.data.cloud.FakeDriveServer
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.testing.PreferenceSnapshot
+import com.backrecorderapp.testing.awaitUntil
 import com.backrecorderapp.testing.cleanUpRule
 import com.backrecorderapp.testing.createNotificationChannels
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -50,14 +53,28 @@ class DriveConnectFlowTest {
     @Inject lateinit var appPreferences: AppPreferences
     @Inject lateinit var billing: FakeBillingRepository
     @Inject lateinit var driveAuthorization: FakeDriveAuthorizationClient
+    @Inject lateinit var server: FakeDriveServer
+    @Inject lateinit var driveAuthManager: DriveAuthManager
+    @Inject lateinit var cloudSyncManager: CloudSyncManager
 
     private val preferences = PreferenceSnapshot()
 
     @get:Rule(order = 0)
     val hiltRule = HiltAndroidRule(this)
 
+    /**
+     * The grant, the session and the sync loop all outlive this class — `FakeCloudModule` installs
+     * the Drive fakes for every instrumented test — so a connect left standing would hand an
+     * unrelated later test a Drive account it never asked for, and leave its loop polling a server
+     * that has stopped. The orchestrator's `clearPackageData` hides that today; it should not be
+     * the only thing that does.
+     */
     @get:Rule(order = 1)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
+        cloudSyncManager.stopSync()
+        runBlocking { driveAuthManager.signOut() }
+        server.stop()
+        server.reset()
         driveAuthorization.reset()
         runBlocking { preferences.restoreAll() }
     }
@@ -66,6 +83,9 @@ class DriveConnectFlowTest {
     val seedPreferences = object : ExternalResource() {
         override fun before() {
             createNotificationChannels()
+            // Without this the factory's root URL is still port 0, so the real identity lookup
+            // the connect performs would hit nothing and the pin path would never run.
+            server.start()
             billing.setStatus(SubscriptionStatus.ACTIVE)
             runBlocking {
                 preferences.capture(
@@ -125,9 +145,12 @@ class DriveConnectFlowTest {
                 .fetchSemanticsNodes().isNotEmpty()
         }
 
-        assertEquals(
-            CloudUploadMode.WIFI_ONLY,
-            runBlocking { appPreferences.cloudUploadMode.first() }
-        )
+        // Polled, not read once: the row follows `isAuthorized`, which is published a suspending
+        // step before the upload mode is written, so a single read here can still see OFF.
+        runBlocking {
+            awaitUntil("cloud upload mode was not promoted off OFF") {
+                appPreferences.cloudUploadMode.first() == CloudUploadMode.WIFI_ONLY
+            }
+        }
     }
 }
