@@ -114,6 +114,20 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `restoring the session on init never enables uploads`() = runTest {
+        // A grant outliving a subscription must not resurrect uploads the user switched off, so
+        // init's restoreSession() must never reach startSyncEnablingUploads().
+        cloudUploadMode.value = CloudUploadMode.OFF
+        driveDisconnected.value = false
+
+        createViewModel()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
+        verify(exactly = 0) { cloudSyncManager.startSync() }
+    }
+
+    @Test
     fun `does not restore the session after an explicit disconnect`() = runTest {
         // The OAuth grant survives sign-out, so an unconditional restore would silently
         // reconnect the account the user just removed.
@@ -193,8 +207,10 @@ class SettingsViewModelTest {
         viewModel.connectDrive()
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
-        verify(exactly = 1) { cloudSyncManager.startSync() }
+        coVerifyOrder {
+            appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
+            cloudSyncManager.startSync()
+        }
     }
 
     @Test
@@ -209,8 +225,10 @@ class SettingsViewModelTest {
         viewModel.onConsentResult(null)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
-        verify(exactly = 1) { cloudSyncManager.startSync() }
+        coVerifyOrder {
+            appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
+            cloudSyncManager.startSync()
+        }
     }
 
     @Test
