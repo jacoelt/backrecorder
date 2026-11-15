@@ -322,6 +322,94 @@ class SettingsViewModelTest {
     }
 
     /**
+     * TRIAL is premium, and is the status most easily lost by a regression to a bare
+     * `== ACTIVE` - which would tell every trial user their Drive account was unusable.
+     */
+    @Test
+    fun `a trial subscriber is not told to upgrade`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.TRIAL
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            val trial = awaitItem()
+            assertTrue("precondition: the grant is in place", trial.driveConnected)
+            assertFalse(trial.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * Without the `driveConnected` term the row would offer to restore uploads for an account
+     * that was never connected.
+     */
+    @Test
+    fun `a lapsed subscriber with no grant is not told their account is blocked`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+            val lapsed = awaitItem()
+            assertFalse("precondition: no grant", lapsed.driveConnected)
+            assertFalse(lapsed.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * The stored upload mode is the screen's *other* claim that uploads are happening, and it
+     * outlives the subscription exactly as the grant does. It carries no `driveConnected` term:
+     * a mode set before the account was connected still says "Always on".
+     */
+    @Test
+    fun `a stored upload mode is reported as paused once the subscription lapses`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+        cloudUploadMode.value = CloudUploadMode.ALWAYS_ON
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+            val lapsed = awaitItem()
+            assertTrue(lapsed.cloudUploadBlockedByPlan)
+            // The preference itself is kept, so uploads resume on re-subscribe.
+            assertEquals(CloudUploadMode.ALWAYS_ON, lapsed.cloudUploadMode)
+            assertFalse("no grant, so the Drive row says nothing", lapsed.driveSyncBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** OFF makes no claim, so there is nothing to contradict. */
+    @Test
+    fun `an upload mode of off is never reported as paused`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+        cloudUploadMode.value = CloudUploadMode.OFF
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+            assertFalse(awaitItem().cloudUploadBlockedByPlan)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
      * The constraint from CLAUDE.md's "Subscription gate": at process start the status is only
      * its FREE default. Reading that as a lapsed subscription would tell a paying subscriber at
      * every launch that their Drive account is unusable.

@@ -30,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -48,6 +50,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.ui.components.PlanChooserDialog
 import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.util.findActivity
@@ -120,10 +123,12 @@ fun SettingsScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = when (state.subscriptionStatus) {
-                        SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIAL ->
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    containerColor = if (
+                        SubscriptionGate.isPremium(state.subscriptionStatus)
+                    ) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
                     }
                 )
             ) {
@@ -178,10 +183,25 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // The stored mode is deliberately kept when the plan lapses, for the same reason the
+            // Drive grant is - it resumes on re-subscribe. So the selection stays where the user
+            // left it and is dimmed instead, because "Always on" at full strength is the same
+            // claim the Drive row above just stopped making. The options stay tappable: a tap
+            // raises the upgrade offer, which is the way back.
+            if (state.cloudUploadBlockedByPlan) {
+                Text(
+                    text = stringResource(R.string.settings_cloud_upload_paused),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
             CloudUploadOption(
                 title = stringResource(R.string.settings_cloud_off),
                 description = stringResource(R.string.settings_cloud_off_desc),
                 selected = state.cloudUploadMode == CloudUploadMode.OFF,
+                dimmed = false,
                 onClick = { viewModel.setCloudUploadMode(CloudUploadMode.OFF) }
             )
 
@@ -189,6 +209,7 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_cloud_wifi_only),
                 description = stringResource(R.string.settings_cloud_wifi_desc),
                 selected = state.cloudUploadMode == CloudUploadMode.WIFI_ONLY,
+                dimmed = state.cloudUploadBlockedByPlan,
                 onClick = { viewModel.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
             )
 
@@ -196,6 +217,7 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_cloud_always),
                 description = stringResource(R.string.settings_cloud_always_desc),
                 selected = state.cloudUploadMode == CloudUploadMode.ALWAYS_ON,
+                dimmed = state.cloudUploadBlockedByPlan,
                 onClick = { viewModel.setCloudUploadMode(CloudUploadMode.ALWAYS_ON) }
             )
 
@@ -366,6 +388,7 @@ private fun CloudUploadOption(
     title: String,
     description: String,
     selected: Boolean,
+    dimmed: Boolean,
     onClick: () -> Unit
 ) {
     Row(
@@ -377,12 +400,24 @@ private fun CloudUploadOption(
     ) {
         RadioButton(
             selected = selected,
-            onClick = onClick
+            onClick = onClick,
+            colors = if (dimmed) {
+                RadioButtonDefaults.colors(
+                    selectedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                RadioButtonDefaults.colors()
+            }
         )
         Column(modifier = Modifier.padding(start = 8.dp)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (dimmed) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    Color.Unspecified
+                }
             )
             Text(
                 text = description,

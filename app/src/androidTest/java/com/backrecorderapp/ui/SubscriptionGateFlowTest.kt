@@ -357,14 +357,9 @@ class SubscriptionGateFlowTest {
     }
 
     /**
-     * Issue #85, end to end: the OAuth grant outlives the subscription that was required to
-     * obtain it, so the Drive row went on reading "Connected" directly below "Free plan" on an
-     * account that could not upload a thing.
-     *
-     * The grant is deliberately left in place - re-subscribing should not need a fresh consent
-     * round - so what is asserted is what the row *says*. Driven through the real screen, with
-     * entitlement changing underneath a live settings screen, because the defect is precisely
-     * that nothing re-evaluated the row when it did.
+     * Issue #85: the grant outlives the subscription, so the Drive row must stop reading
+     * "Connected" when entitlement lapses under a live screen - which is the part nothing
+     * re-evaluated. The grant is deliberately kept, so only the label is asserted.
      */
     @Test
     fun aLapsedSubscriberIsNotToldTheirDriveAccountIsWorking() {
