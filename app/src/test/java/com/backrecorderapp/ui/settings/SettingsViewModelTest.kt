@@ -211,6 +211,8 @@ class SettingsViewModelTest {
             appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
             cloudSyncManager.startSync()
         }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
+        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
     }
 
     @Test
@@ -229,6 +231,8 @@ class SettingsViewModelTest {
             appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY)
             cloudSyncManager.startSync()
         }
+        verify(exactly = 1) { cloudSyncManager.startSync() }
+        coVerify(exactly = 1) { appPreferences.setCloudUploadMode(CloudUploadMode.WIFI_ONLY) }
     }
 
     @Test
