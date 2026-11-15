@@ -27,11 +27,12 @@ fun BusyButton(
     text: String,
     busyStateDescription: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     Button(
         onClick = onClick,
-        enabled = !busy,
+        enabled = enabled && !busy,
         modifier = modifier.semantics {
             // Without this a screen reader announces only a disabled button, which is
             // indistinguishable from the feature being unavailable.

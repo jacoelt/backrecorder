@@ -55,7 +55,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.backrecorderapp.R
 import com.backrecorderapp.data.billing.SubscriptionStatus
 import com.backrecorderapp.data.preferences.CloudUploadMode
+import com.backrecorderapp.data.preferences.RedeemResult
 import com.backrecorderapp.domain.SubscriptionGate
+import com.backrecorderapp.ui.components.BusyButton
 import com.backrecorderapp.ui.components.PlanChooserDialog
 import com.backrecorderapp.ui.components.UpgradeButton
 import com.backrecorderapp.util.findActivity
@@ -83,6 +85,7 @@ fun SettingsScreen(
     val consentRequest by viewModel.consentRequest.collectAsState()
     val redeemDialogVisible by viewModel.redeemDialogVisible.collectAsState()
     val redeemOutcome by viewModel.redeemOutcome.collectAsState()
+    val redeemInFlight by viewModel.redeemInFlight.collectAsState()
     val context = LocalContext.current
 
     // This view model is not always torn down on the way out: settings navigates *forward* to
@@ -327,22 +330,23 @@ fun SettingsScreen(
 
     if (redeemDialogVisible) {
         RedeemCodeDialog(
-            rejected = redeemOutcome == RedeemOutcome.REJECTED,
+            failure = redeemOutcome.takeIf { it != RedeemResult.ACCEPTED },
+            busy = redeemInFlight,
             onRedeem = { viewModel.redeemCode(it) },
-            onEdited = { viewModel.dismissRedeemOutcome() },
+            onEdited = { viewModel.dismissRedeemResult() },
             onDismiss = { viewModel.dismissRedeemDialog() }
         )
     }
 
     // Shown outside the dialog, because acceptance closes it: the grant is the whole point and
     // it should be confirmed rather than inferred from the card changing behind it.
-    if (redeemOutcome == RedeemOutcome.ACCEPTED && !redeemDialogVisible) {
+    if (redeemOutcome == RedeemResult.ACCEPTED && !redeemDialogVisible) {
         AlertDialog(
-            onDismissRequest = { viewModel.dismissRedeemOutcome() },
+            onDismissRequest = { viewModel.dismissRedeemResult() },
             title = { Text(stringResource(R.string.settings_redeem_accepted_title)) },
             text = { Text(stringResource(R.string.settings_redeem_accepted_message)) },
             confirmButton = {
-                TextButton(onClick = { viewModel.dismissRedeemOutcome() }) {
+                TextButton(onClick = { viewModel.dismissRedeemResult() }) {
                     Text(stringResource(R.string.ok))
                 }
             }
@@ -375,11 +379,13 @@ fun SettingsScreen(
 
 @Composable
 private fun RedeemCodeDialog(
-    rejected: Boolean,
+    failure: RedeemResult?,
+    busy: Boolean,
     onRedeem: (String) -> Unit,
     onEdited: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val rejected = failure != null
     // Survives rotation: orientation cannot be restricted at this target on large screens, and a
     // re-created activity that silently emptied the field would make the code look rejected.
     var code by rememberSaveable { mutableStateOf("") }
@@ -402,10 +408,19 @@ private fun RedeemCodeDialog(
                     isError = rejected,
                     label = { Text(stringResource(R.string.settings_redeem_code_label)) }
                 )
-                if (rejected) {
+                failure?.let {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = stringResource(R.string.settings_redeem_rejected),
+                        // A storage failure gets its own line: telling someone holding a valid
+                        // code that it was not recognised sends them re-typing something that
+                        // will never work.
+                        text = stringResource(
+                            if (it == RedeemResult.STORAGE_FAILED) {
+                                R.string.settings_redeem_storage_failed
+                            } else {
+                                R.string.settings_redeem_rejected
+                            }
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -413,12 +428,15 @@ private fun RedeemCodeDialog(
             }
         },
         confirmButton = {
-            Button(
+            // A tap while the write is in flight is discarded by the view model's guard, so the
+            // button must not look live - the same rule the upgrade affordances follow.
+            BusyButton(
+                busy = busy,
+                text = stringResource(R.string.settings_redeem_confirm),
+                busyStateDescription = stringResource(R.string.settings_redeem_in_progress),
                 onClick = { onRedeem(code) },
                 enabled = code.isNotBlank()
-            ) {
-                Text(stringResource(R.string.settings_redeem_confirm))
-            }
+            )
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {

@@ -27,8 +27,13 @@ class ComplimentaryCodeValidator(
     private val blocked: Set<String> = BLOCKED_CODE_DIGESTS
 ) {
 
-    fun accepts(code: String): Boolean =
-        normalize(code).length >= MIN_CODE_LENGTH && acceptsDigest(digestOf(code))
+    fun accepts(code: String): Boolean {
+        // Bounded before hashing: the field this comes from is unbounded, and normalizing and
+        // hashing a pasted novel would do it on the main thread.
+        if (code.length > MAX_INPUT_LENGTH) return false
+        val normalized = normalize(code)
+        return normalized.length >= MIN_CODE_LENGTH && acceptsDigest(digestOf(normalized))
+    }
 
     /**
      * Re-checks a grant that was stored earlier, which is what makes [blocked] able to *revoke*
@@ -49,6 +54,9 @@ class ComplimentaryCodeValidator(
          * a short or guessable code would be crackable from a shipped APK.
          */
         const val MIN_CODE_LENGTH = 12
+
+        /** Generous for any real code, and small enough that a pasted blob is cheap to refuse. */
+        const val MAX_INPUT_LENGTH = 256
 
         /**
          * Digests of the codes handed out for #98. Each entry is one person, so a code that

@@ -65,6 +65,8 @@
     <string name="settings_redeem_code_message">Have a complimentary access code? Enter it below to unlock all premium features on this device.</string>
     <string name="settings_redeem_code_label">Access code</string>
     <string name="settings_redeem_confirm">Redeem</string>
+    <string name="settings_redeem_storage_failed">Your code is valid, but it could not be saved on this device. Please try again.</string>
+    <string name="settings_redeem_in_progress">Redeeming</string>
     <string name="settings_redeem_rejected">That code was not recognised. Check it and try again.</string>
     <string name="settings_redeem_accepted_title">Complimentary access unlocked</string>
     <string name="settings_redeem_accepted_message">All premium features are now available on this device.</string>

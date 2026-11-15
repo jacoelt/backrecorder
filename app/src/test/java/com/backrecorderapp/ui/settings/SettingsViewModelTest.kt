@@ -16,6 +16,7 @@ import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.preferences.ComplimentaryAccessStore
+import com.backrecorderapp.data.preferences.RedeemResult
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
@@ -894,7 +895,7 @@ class SettingsViewModelTest {
     fun `an accepted code grants complimentary access and closes the dialog`() = runTest {
         coEvery { complimentaryAccessStore.redeem(any()) } answers {
             complimentaryGranted.value = true
-            true
+            RedeemResult.ACCEPTED
         }
 
         val viewModel = createViewModel()
@@ -902,7 +903,7 @@ class SettingsViewModelTest {
         viewModel.redeemCode("TEST-AAAA-BBBB")
         advanceUntilIdle()
 
-        assertEquals(RedeemOutcome.ACCEPTED, viewModel.redeemOutcome.value)
+        assertEquals(RedeemResult.ACCEPTED, viewModel.redeemOutcome.value)
         assertFalse(viewModel.redeemDialogVisible.value)
         // The typed code must reach the store verbatim; normalisation is the validator's job.
         coVerify(exactly = 1) { complimentaryAccessStore.redeem("TEST-AAAA-BBBB") }
@@ -915,15 +916,49 @@ class SettingsViewModelTest {
     /** A rejected code leaves the field up to be corrected rather than closing onto nothing. */
     @Test
     fun `a rejected code reports and keeps the dialog open`() = runTest {
-        coEvery { complimentaryAccessStore.redeem(any()) } returns false
+        coEvery { complimentaryAccessStore.redeem(any()) } returns RedeemResult.REJECTED
 
         val viewModel = createViewModel()
         viewModel.showRedeemDialog()
         viewModel.redeemCode("NOPE-NOPE-NOPE")
         advanceUntilIdle()
 
-        assertEquals(RedeemOutcome.REJECTED, viewModel.redeemOutcome.value)
+        assertEquals(RedeemResult.REJECTED, viewModel.redeemOutcome.value)
         assertTrue(viewModel.redeemDialogVisible.value)
+        viewModel.uiState.test {
+            assertFalse(awaitItem().complimentaryAccess)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /** A valid code that could not be written must not be reported as an unrecognised one. */
+    @Test
+    fun `a failed write is reported apart from a refused code`() = runTest {
+        coEvery { complimentaryAccessStore.redeem(any()) } returns RedeemResult.STORAGE_FAILED
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        advanceUntilIdle()
+
+        assertEquals(RedeemResult.STORAGE_FAILED, viewModel.redeemOutcome.value)
+        assertTrue(viewModel.redeemDialogVisible.value)
+    }
+
+    @Test
+    fun `cancelling the dialog discards an answer still on its way`() = runTest {
+        val parked = CompletableDeferred<RedeemResult>()
+        coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        viewModel.dismissRedeemDialog()
+
+        parked.complete(RedeemResult.REJECTED)
+        advanceUntilIdle()
+
+        assertNull(viewModel.redeemOutcome.value)
     }
 
     /**
@@ -954,7 +989,7 @@ class SettingsViewModelTest {
      */
     @Test
     fun `an acceptance landing after the user left is discarded`() = runTest {
-        val parked = CompletableDeferred<Boolean>()
+        val parked = CompletableDeferred<RedeemResult>()
         coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
 
         val viewModel = createViewModel()
@@ -962,7 +997,7 @@ class SettingsViewModelTest {
         viewModel.redeemCode("TEST-AAAA-BBBB")
         viewModel.onScreenLeft()
 
-        parked.complete(true)
+        parked.complete(RedeemResult.ACCEPTED)
         advanceUntilIdle()
 
         assertNull(viewModel.redeemOutcome.value)
@@ -970,7 +1005,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `a second redeem is refused while one is already running`() = runTest {
-        val parked = CompletableDeferred<Boolean>()
+        val parked = CompletableDeferred<RedeemResult>()
         coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
 
         val viewModel = createViewModel()
@@ -978,7 +1013,7 @@ class SettingsViewModelTest {
         viewModel.redeemCode("TEST-AAAA-BBBB")
         viewModel.redeemCode("TEST-AAAA-BBBB")
 
-        parked.complete(false)
+        parked.complete(RedeemResult.REJECTED)
         advanceUntilIdle()
 
         coVerify(exactly = 1) { complimentaryAccessStore.redeem(any()) }
@@ -986,7 +1021,7 @@ class SettingsViewModelTest {
 
     @Test
     fun `leaving settings drops a half-typed redemption`() = runTest {
-        coEvery { complimentaryAccessStore.redeem(any()) } returns false
+        coEvery { complimentaryAccessStore.redeem(any()) } returns RedeemResult.REJECTED
 
         val viewModel = createViewModel()
         viewModel.showRedeemDialog()

@@ -17,6 +17,7 @@ import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
 import com.backrecorderapp.data.preferences.ComplimentaryAccessStore
+import com.backrecorderapp.data.preferences.RedeemResult
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.service.RecordingService
@@ -76,7 +77,6 @@ data class SettingsUiState(
     val complimentaryAccess: Boolean = false
 )
 
-enum class RedeemOutcome { ACCEPTED, REJECTED }
 
 /**
  * The two billing terms plus the complimentary one. Kept together because the status means
@@ -345,14 +345,18 @@ class SettingsViewModel @Inject constructor(
     private val _redeemDialogVisible = MutableStateFlow(false)
     val redeemDialogVisible: StateFlow<Boolean> = _redeemDialogVisible.asStateFlow()
 
-    private val _redeemOutcome = MutableStateFlow<RedeemOutcome?>(null)
+    private val _redeemOutcome = MutableStateFlow<RedeemResult?>(null)
 
-    val redeemOutcome: StateFlow<RedeemOutcome?> = _redeemOutcome.asStateFlow()
+    val redeemOutcome: StateFlow<RedeemResult?> = _redeemOutcome.asStateFlow()
 
     /** See [planLoadGeneration]; the acceptance dialog is raised by the answer, not by a tap. */
     private var redeemGeneration = 0
 
     private val _redeemInFlight = MutableStateFlow(false)
+
+    /** Rendered by the Redeem button: a tap while this is set is discarded, so it must not look
+     * live. The first write to a cold DataStore is a real disk round-trip. */
+    val redeemInFlight: StateFlow<Boolean> = _redeemInFlight.asStateFlow()
 
     fun showRedeemDialog() {
         _redeemOutcome.value = null
@@ -360,10 +364,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun dismissRedeemDialog() {
+        // Cancelling abandons the answer too, like dismissing the upgrade offer: a REJECTED
+        // landing afterwards would mark a code the user has not submitted as invalid.
+        redeemGeneration++
         _redeemDialogVisible.value = false
     }
 
-    fun dismissRedeemOutcome() {
+    fun dismissRedeemResult() {
         _redeemOutcome.value = null
     }
 
@@ -381,11 +388,10 @@ class SettingsViewModel @Inject constructor(
         _redeemInFlight.value = true
         viewModelScope.launch {
             try {
-                val accepted = complimentaryAccessStore.redeem(code)
+                val result = complimentaryAccessStore.redeem(code)
                 if (issued != redeemGeneration) return@launch
-                _redeemOutcome.value =
-                    if (accepted) RedeemOutcome.ACCEPTED else RedeemOutcome.REJECTED
-                if (accepted) _redeemDialogVisible.value = false
+                _redeemOutcome.value = result
+                if (result == RedeemResult.ACCEPTED) _redeemDialogVisible.value = false
             } finally {
                 _redeemInFlight.value = false
             }

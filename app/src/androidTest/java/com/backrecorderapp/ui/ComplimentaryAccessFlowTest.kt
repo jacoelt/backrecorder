@@ -27,6 +27,7 @@ import com.backrecorderapp.testing.createNotificationChannels
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -151,6 +152,10 @@ class ComplimentaryAccessFlowTest {
     @Test
     fun anUnknownCodeIsRefusedAndGrantsNothing() {
         openSettings()
+
+        // Both tests assert this, so a grant leaking past clearPackageData fails here with a
+        // clear precondition rather than further down with an opaque one.
+        assertFalse(runBlocking { subscriptionGate.isPremium() })
 
         enterCode("ZZZZ-ZZZZ-ZZZZ")
 
