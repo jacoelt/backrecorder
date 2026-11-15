@@ -428,10 +428,15 @@ class SettingsViewModelTest {
             val unresolved = awaitItem()
             assertTrue("precondition: the grant is in place", unresolved.driveConnected)
             assertFalse(unresolved.driveSyncBlockedByPlan)
+            // The stored mode is WIFI_ONLY here, so this pins the upload flag's own
+            // statusResolved term rather than riding on the Drive flag's.
+            assertFalse(unresolved.cloudUploadBlockedByPlan)
 
             statusResolved.value = true
 
-            assertTrue(awaitItem().driveSyncBlockedByPlan)
+            val resolved = awaitItem()
+            assertTrue(resolved.driveSyncBlockedByPlan)
+            assertTrue(resolved.cloudUploadBlockedByPlan)
 
             cancelAndIgnoreRemainingEvents()
         }

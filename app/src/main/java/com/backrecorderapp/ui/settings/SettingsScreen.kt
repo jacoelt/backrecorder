@@ -183,11 +183,9 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // The stored mode is deliberately kept when the plan lapses, for the same reason the
-            // Drive grant is - it resumes on re-subscribe. So the selection stays where the user
-            // left it and is dimmed instead, because "Always on" at full strength is the same
-            // claim the Drive row above just stopped making. The options stay tappable: a tap
-            // raises the upgrade offer, which is the way back.
+            // The stored mode is kept on lapse (it is restored on re-subscribe), so it is dimmed
+            // rather than reset: "Always on" at full strength repeats the claim the Drive row
+            // above just stopped making. Still tappable - a tap is what raises the upgrade offer.
             if (state.cloudUploadBlockedByPlan) {
                 Text(
                     text = stringResource(R.string.settings_cloud_upload_paused),
@@ -355,14 +353,18 @@ private fun DriveAccountRow(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
             )
-            if (needsReauth) {
+            // Both are latched by CloudSyncManager and cleared only by a tick that succeeds, which
+            // the gate now refuses every time - so a 401 or a full Drive from before the lapse
+            // would otherwise stay on screen forever, giving a second, wrong reason for the same
+            // stopped uploads and sending the user off to fix it. The plan is the operative one.
+            if (needsReauth && !syncBlockedByPlan) {
                 Text(
                     text = stringResource(R.string.settings_drive_connect_prompt),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
             }
-            if (storageFull) {
+            if (storageFull && !syncBlockedByPlan) {
                 Text(
                     text = stringResource(R.string.settings_drive_storage_full),
                     style = MaterialTheme.typography.bodySmall,
@@ -371,7 +373,9 @@ private fun DriveAccountRow(
             }
         }
 
-        if (!connected || needsReauth) {
+        // A latched reauth would otherwise put Connect next to a row reading "Connected", and
+        // reconnecting fixes nothing while the plan is what is blocking uploads.
+        if (!connected || (needsReauth && !syncBlockedByPlan)) {
             Button(onClick = onConnect) {
                 Text(stringResource(R.string.settings_drive_connect))
             }
@@ -401,9 +405,12 @@ private fun CloudUploadOption(
         RadioButton(
             selected = selected,
             onClick = onClick,
+            // Both slots, or the blocked options dim inconsistently: the selected one fades
+            // while the other keeps a full-strength ring.
             colors = if (dimmed) {
                 RadioButtonDefaults.colors(
-                    selectedColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    selectedColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
                 RadioButtonDefaults.colors()

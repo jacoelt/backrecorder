@@ -100,10 +100,8 @@ class SettingsViewModel @Inject constructor(
         driveProblems
     ) { recording, cloudMode, entitlementState, driveConnected, problems ->
         val (subStatus, statusResolved) = entitlementState
-        // Only once billing has answered. Before that the status is merely its FREE default, and
-        // acting on that default would tell a paying subscriber at every launch that the account
-        // they are paying for cannot upload - the same mistake the app-launch resume is gated
-        // indirectly to avoid.
+        // Before billing answers the status is only its FREE default; acting on it would tell a
+        // paying subscriber at every launch that the account they pay for cannot upload.
         val planCoversUploads = !statusResolved || SubscriptionGate.isPremium(subStatus)
         SettingsUiState(
             recordingEnabled = recording,

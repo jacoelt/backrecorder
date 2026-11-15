@@ -20,6 +20,7 @@ import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.FakeBillingRepository
 import com.backrecorderapp.data.billing.PurchaseFailure
 import com.backrecorderapp.data.billing.SubscriptionStatus
+import com.backrecorderapp.data.cloud.DriveAuthManager
 import com.backrecorderapp.data.cloud.FakeDriveAuthorizationClient
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.preferences.CloudUploadMode
@@ -68,6 +69,7 @@ class SubscriptionGateFlowTest {
     @Inject lateinit var subscriptionGate: SubscriptionGate
     @Inject lateinit var saveRecordingUseCase: SaveRecordingUseCase
     @Inject lateinit var authorizationClient: FakeDriveAuthorizationClient
+    @Inject lateinit var driveAuthManager: DriveAuthManager
 
     private val preferences = PreferenceSnapshot()
 
@@ -84,6 +86,10 @@ class SubscriptionGateFlowTest {
     @get:Rule(order = 1)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
         runBlocking { preferences.restoreAll() }
+        // The grant is the one piece of state a test here now creates that is not a preference,
+        // and DriveAuthManager is a @Singleton like the fake behind it.
+        authorizationClient.reset()
+        runBlocking { driveAuthManager.signOut() }
     }
 
     /**
