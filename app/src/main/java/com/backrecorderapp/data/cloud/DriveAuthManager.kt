@@ -138,6 +138,8 @@ class DriveAuthManager @Inject constructor(
     private val sessionMutex = Mutex()
 
     private val tokenMutex = Mutex()
+    /** Read without [tokenMutex] by the late pin only - see `pinWhateverTheOrphanResolves`. */
+    @Volatile
     private var cachedToken: String? = null
     private var cachedTokenAt = 0L
 
@@ -385,20 +387,35 @@ class DriveAuthManager @Inject constructor(
      * Only ever *adds* a pin that is missing, under the lock, and only while the token it asked
      * about is still the live one — so a sign-out, a re-grant, or a pin recorded in the meantime
      * all leave it with nothing to say. The token is the right identity to compare, not the
-     * grant generation: the adoption this lookup belongs to bumps that generation itself.
+     * grant generation: the adoption this lookup belongs to bumps that generation itself. An
+     * access token belongs to exactly one grant for one account, so an unchanged token means an
+     * unchanged account; every teardown path nulls it under [tokenMutex].
+     *
+     * The token is read [Volatile] rather than under [tokenMutex], because taking that lock from
+     * inside [sessionMutex] would park a Connect or Disconnect tap behind a token refresh for as
+     * long as `PLAY_SERVICES_TIMEOUT_MS` — a narrower version of the very stall #102 is about.
+     * Losing the race against a concurrent refresh costs a pin that the next connect records.
      */
     private fun pinWhateverTheOrphanResolves(
         token: String,
         lookup: Deferred<DriveAccountIdentity?>
     ) {
         applicationScope.launch {
-            val identity = lookup.await() ?: return@launch
-            sessionMutex.withLock {
-                if (pinnedAccountId != null) return@withLock
-                if (tokenMutex.withLock { cachedToken } != token) return@withLock
-                appPreferences.setDriveAccount(identity.accountId, identity.email)
-                pinnedAccountId = identity.accountId
-                pinnedEmail = identity.email
+            // Guarded because this scope has a SupervisorJob and no exception handler: an
+            // uncaught throw here - setDriveAccount is a DataStore write, which throws on an
+            // unreadable file - takes the whole process down, from work the user never started.
+            try {
+                val identity = lookup.await() ?: return@launch
+                sessionMutex.withLock {
+                    if (pinnedAccountId != null || cachedToken != token) return@withLock
+                    appPreferences.setDriveAccount(identity.accountId, identity.email)
+                    pinnedAccountId = identity.accountId
+                    pinnedEmail = identity.email
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not record the Drive account pin", e)
             }
         }
     }
@@ -411,7 +428,8 @@ class DriveAuthManager @Inject constructor(
      * token Drive has already rejected for the rest of the 45-minute TTL, while the UI still
      * reported the account as connected.
      */
-    private suspend fun validToken(forceRefresh: Boolean): String? = tokenMutex.withLock {
+    /** `internal` only so the Play Services bound below is testable; no production caller. */
+    internal suspend fun validToken(forceRefresh: Boolean): String? = tokenMutex.withLock {
         // Refuse to mint a token for a session that has been signed out. Without this a request
         // already in flight when the user disconnects would quietly re-authorize and complete.
         if (driveService == null) return@withLock null

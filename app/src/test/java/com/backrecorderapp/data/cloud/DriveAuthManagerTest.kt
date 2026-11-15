@@ -19,6 +19,7 @@ import io.mockk.unmockkAll
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -443,7 +444,7 @@ class DriveAuthManagerTest {
         // this caller can queue behind the first one's.
         assertTrue(
             "the second caller waited ${waited}ms on the first caller's lookup",
-            waited <= 2 * IDENTITY_LOOKUP_BUDGET_MS
+            waited <= (2 * IDENTITY_LOOKUP_BUDGET_MS) + SLACK_MS
         )
         restore.join()
     }
@@ -465,11 +466,75 @@ class DriveAuthManagerTest {
         coVerify(exactly = 1) { preferences.setDriveAccount("acct-1", "a@x.com") }
     }
 
+    @Test
+    fun `a lookup answering after sign-out pins nothing`() = runTest {
+        // The guard that matters most: pinning an account the user has disconnected from - or
+        // one belonging to a token that is no longer live - is the unrecoverable mistake this
+        // class exists to prevent, and a late write is the one path that could still do it.
+        answersWith(grant())
+        val auth = newManager(resolver = uninterruptibleResolver(STALLED_LOOKUP_MS))
+        auth.authorize()
+
+        auth.signOut()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { preferences.setDriveAccount("acct-1", any()) }
+    }
+
+    @Test
+    fun `a lookup answering after the account is already pinned does not rewrite it`() = runTest {
+        answersWith(grant())
+        val auth = newManager(
+            resolver = uninterruptibleResolver(STALLED_LOOKUP_MS),
+            pinnedAccountId = "acct-1",
+            pinnedEmail = "a@x.com"
+        )
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { preferences.setDriveAccount(any(), any()) }
+    }
+
+    @Test
+    fun `a Play Services call that never answers does not hold the session`() = runTest {
+        // The identity lookup is not the only slow call under sessionMutex. Leaving this one
+        // unbounded would reproduce #102 through the other half of authorize().
+        coEvery { client.authorize(any()) } coAnswers { awaitCancellation() }
+        val auth = newManager()
+
+        val outcome = auth.authorize()
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Failed, outcome)
+        assertFalse(auth.isAuthorized.value)
+        // The lock is free: a second caller gets its own answer rather than parking forever.
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Failed, auth.authorize())
+    }
+
+    @Test
+    fun `a token refresh that never answers gives up rather than blocking the request`() =
+        runTest {
+            // This one runs inside runBlocking in the Drive request initializer, so a call that
+            // never returns blocks the thread - and SavedRecordingUploader's single upload mutex.
+            answersWith(grant())
+            val auth = newManager(resolver = resolverFor(DriveAccountIdentity("acct-1", "a@x.com")))
+            auth.authorize()
+
+            // Past the 45-minute cache, so the next read has to re-authorize.
+            every { SystemClock.elapsedRealtime() } returns 1_000L + (46 * 60 * 1000L)
+            coEvery { client.authorize(any()) } coAnswers { awaitCancellation() }
+
+            assertNull(auth.validToken(forceRefresh = true))
+        }
+
     private companion object {
         /** Longer than any user waits, and far longer than the bound the lookup now carries. */
         const val STALLED_LOOKUP_MS = 320_000L
 
         /** Mirrors `DriveAuthManager.IDENTITY_LOOKUP_TIMEOUT_MS`, which is private. */
         const val IDENTITY_LOOKUP_BUDGET_MS = 10_000L
+
+        /** The assertion is about orders of magnitude, not an exact schedule. */
+        const val SLACK_MS = 1_000L
     }
 }

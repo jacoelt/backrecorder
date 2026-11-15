@@ -151,6 +151,13 @@ class DriveConnectFlowTest {
             awaitUntil("cloud upload mode was not promoted off OFF") {
                 appPreferences.cloudUploadMode.first() == CloudUploadMode.WIFI_ONLY
             }
+            // The identity lookup really ran against the fake Drive and its answer was recorded.
+            // Without this the row would flip and the mode promote identically on a lookup that
+            // returned nothing at all, which is the one thing this test is placed here to see.
+            // Polled because a slow lookup pins late, from the abandoned call.
+            awaitUntil("the Drive account was never pinned") {
+                appPreferences.driveAccountId.first() == FakeDriveServer.DEFAULT_ACCOUNT_ID
+            }
         }
     }
 }

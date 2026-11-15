@@ -229,10 +229,17 @@ class SettingsViewModel @Inject constructor(
 
             appPreferences.setCloudUploadMode(mode)
 
-            // Uploads cannot work without the Drive grant, so ask for it as part of turning
-            // the mode on rather than silently queueing segments that will never leave. The mode
-            // is written either way: a grant request refused because one is already running is
-            // not a reason to ignore the option the user just chose.
+            // An account already connected needs no grant request, so the loop starts without
+            // going near the claim - otherwise a mode chosen while some other grant operation
+            // was running would be persisted and then never acted on.
+            if (driveAuthManager.isAuthorized.value) {
+                cloudSyncManager.startSync()
+                return@launch
+            }
+
+            // Uploads cannot work without the grant, so ask for it as part of turning the mode
+            // on rather than silently queueing segments that will never leave. If another grant
+            // request is already running, that one starts the loop when it finishes.
             claimingDriveConnect {
                 if (requestDriveAccess()) cloudSyncManager.startSync()
             }
