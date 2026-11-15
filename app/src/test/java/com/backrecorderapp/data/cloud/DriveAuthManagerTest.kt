@@ -16,8 +16,16 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -102,15 +110,25 @@ class DriveAuthManagerTest {
     /**
      * By default nothing is pinned and the account cannot be resolved, which is the shape the
      * pre-pinning tests were written against.
+     *
+     * An extension on [TestScope] so the manager's application scope shares this test's
+     * scheduler: the identity lookup runs on that scope and is awaited under a timeout, so a
+     * scope on any other scheduler would make every lookup here look like it timed out.
      */
-    private fun newManager(
+    private fun TestScope.newManager(
         resolver: DriveAccountIdentityResolver = resolverFor(null),
         pinnedAccountId: String? = null,
         pinnedEmail: String? = null
     ): DriveAuthManager {
         every { preferences.driveAccountId } returns flowOf(pinnedAccountId)
         every { preferences.driveAccountEmail } returns flowOf(pinnedEmail)
-        return DriveAuthManager(preferences, resolver, client, driveServiceFactory)
+        return DriveAuthManager(
+            preferences,
+            resolver,
+            client,
+            driveServiceFactory,
+            CoroutineScope(StandardTestDispatcher(testScheduler))
+        )
     }
 
     @Test
@@ -388,5 +406,48 @@ class DriveAuthManagerTest {
 
         assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
         coVerify { preferences.setDriveAccount("acct-2", "b@x.com") }
+    }
+
+    /**
+     * A lookup that takes [durationMs] and **cannot be cancelled**, which is what the real one is:
+     * `DriveAboutIdentityResolver` ends in a blocking `execute()` on a socket, so a `withTimeout`
+     * wrapped around the call itself would not return until that call finished of its own accord.
+     * A cancellable fake would let a fix that cannot work in production pass this test.
+     */
+    private fun uninterruptibleResolver(durationMs: Long) =
+        object : DriveAccountIdentityResolver {
+            override suspend fun resolve(accessToken: String): DriveAccountIdentity? =
+                withContext(NonCancellable) {
+                    delay(durationMs)
+                    DriveAccountIdentity("acct-1", "a@x.com")
+                }
+        }
+
+    @Test
+    fun `a stalled identity lookup does not park the next authorize behind it`() = runTest {
+        // #102: the Settings screen's init-time restoreSession() held sessionMutex across an
+        // unbounded Drive about.get - 320s on the reporter's device - so the Connect tap that
+        // followed suspended on the mutex and drew nothing at all. The button looked dead.
+        answersWith(grant())
+        val auth = newManager(resolver = uninterruptibleResolver(STALLED_LOOKUP_MS))
+
+        val restore = launch { auth.restoreSession() }
+        runCurrent()
+
+        val tappedAt = testScheduler.currentTime
+        val outcome = auth.authorize()
+        val waited = testScheduler.currentTime - tappedAt
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, outcome)
+        assertTrue(
+            "the second caller waited ${waited}ms on the first caller's lookup",
+            waited < STALLED_LOOKUP_MS
+        )
+        restore.join()
+    }
+
+    private companion object {
+        /** Longer than any user waits, and far longer than the bound the lookup now carries. */
+        const val STALLED_LOOKUP_MS = 320_000L
     }
 }

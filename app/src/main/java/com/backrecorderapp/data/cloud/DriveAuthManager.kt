@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.backrecorderapp.data.preferences.AppPreferences
+import com.backrecorderapp.di.ApplicationScope
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.common.api.Scope
@@ -14,6 +15,9 @@ import com.google.api.client.http.HttpRequestInitializer
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.DriveScopes
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +25,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -49,7 +54,8 @@ class DriveAuthManager @Inject constructor(
     private val appPreferences: AppPreferences,
     private val identityResolver: DriveAccountIdentityResolver,
     private val authorizationClient: DriveAuthorizationClient,
-    private val driveServiceFactory: DriveServiceFactory
+    private val driveServiceFactory: DriveServiceFactory,
+    @ApplicationScope private val applicationScope: CoroutineScope
 ) {
     companion object {
         private const val TAG = "DriveAuthManager"
@@ -62,6 +68,16 @@ class DriveAuthManager @Inject constructor(
          * granted, so expire early rather than risk racing the real expiry mid-upload.
          */
         private const val TOKEN_TTL_MS = 45 * 60 * 1000L
+
+        /**
+         * How long [accountMatchesPin] waits for the identity lookup before giving up on it.
+         *
+         * The lookup is one small metadata call, so this is generous on any working network. It
+         * exists for the networks where the call neither succeeds nor fails: google-http-client's
+         * 20s default applies per resolved address rather than per request, so a blackholed
+         * connect to googleapis.com took 320s to throw on the device in #102.
+         */
+        private const val IDENTITY_LOOKUP_TIMEOUT_MS = 10_000L
     }
 
     /** Outcome of asking for authorization without showing UI ourselves. */
@@ -292,7 +308,7 @@ class DriveAuthManager @Inject constructor(
      */
     private suspend fun accountMatchesPin(token: String): Boolean {
         loadPin()
-        val identity = identityResolver.resolve(token)
+        val identity = resolveIdentityWithinBudget(token)
         val pinned = pinnedAccountId
 
         if (identity == null) {
@@ -315,6 +331,34 @@ class DriveAuthManager @Inject constructor(
             pinnedEmail = identity.email
         }
         return true
+    }
+
+    /**
+     * The identity lookup, bounded - and **abandoned rather than cancelled** when the bound is
+     * reached.
+     *
+     * The distinction is the whole point. [DriveAboutIdentityResolver] ends in a blocking
+     * `execute()` on a socket, which no cancellation can cut short, so a `withTimeout` wrapped
+     * around the call would not return until the call returned anyway. What has to stop is this
+     * coroutine *waiting* on it, because it waits while holding [sessionMutex]: in #102 an
+     * init-time `restoreSession()` held the lock for 320s that way, and the user's Connect tap
+     * suspended behind it with nothing at all on screen.
+     *
+     * The orphan runs on to completion on the application scope and its answer is discarded. That
+     * costs at worst a pin not recorded this time round, which the next connect records - and a
+     * lookup that does not answer is already treated as "unknown, never different" by the caller,
+     * so a timeout needs no separate handling there.
+     */
+    private suspend fun resolveIdentityWithinBudget(token: String): DriveAccountIdentity? {
+        val lookup = applicationScope.async { identityResolver.resolve(token) }
+        return try {
+            withTimeout(IDENTITY_LOOKUP_TIMEOUT_MS) { lookup.await() }
+        } catch (e: TimeoutCancellationException) {
+            // Caught by its own type, not as CancellationException: a caller cancelled from
+            // outside must still unwind rather than be reported as a slow lookup.
+            Log.w(TAG, "Drive identity lookup did not answer within ${IDENTITY_LOOKUP_TIMEOUT_MS}ms")
+            null
+        }
     }
 
     /**

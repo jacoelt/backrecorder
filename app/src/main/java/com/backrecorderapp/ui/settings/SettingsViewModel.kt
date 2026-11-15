@@ -185,6 +185,18 @@ class SettingsViewModel @Inject constructor(
     /** Why the last Upgrade tap never reached Play, or null. */
     val purchaseError: StateFlow<PurchaseFailure?> = _purchaseError.asStateFlow()
 
+    private val _driveConnecting = MutableStateFlow(false)
+
+    /**
+     * True while a Connect tap is in flight, so the button can say so.
+     *
+     * Connecting is a multi-second wait even when everything works - it crosses Play Services and,
+     * on a first connect, a Drive round-trip - and it queues behind any other grant operation on
+     * `DriveAuthManager`'s session lock. #102 was that wait rendered as nothing whatsoever: the
+     * tap was swallowed and the button stayed live, so it was indistinguishable from dead.
+     */
+    val driveConnecting: StateFlow<Boolean> = _driveConnecting.asStateFlow()
+
     private val _driveError = MutableStateFlow<DriveError?>(null)
 
     /** The Drive problem to show, or null. */
@@ -230,9 +242,20 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun connectDrive() {
+        // A second tap is discarded rather than queued: two connects would serialize on the
+        // session lock and the later one would act on a grant the first had already settled.
+        if (_driveConnecting.value) return
+        _driveConnecting.value = true
         viewModelScope.launch {
-            if (!isCloudAccessAllowed()) return@launch
-            if (requestDriveAccess()) startSyncEnablingUploads()
+            try {
+                if (!isCloudAccessAllowed()) return@launch
+                if (requestDriveAccess()) startSyncEnablingUploads()
+            } finally {
+                // Cleared unconditionally by the call that set it, never by the user leaving:
+                // see the generation counters below for why freeing a busy flag from outside
+                // the call it guards is what lets a second one start over the top of the first.
+                _driveConnecting.value = false
+            }
         }
     }
 
@@ -303,24 +326,35 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onConsentResult(data: Intent?) {
+        // The second half of a connect, and silent for as long as the first: adopting the grant
+        // crosses the same session lock and identity lookup. Shown as busy for the same reason.
+        _driveConnecting.value = true
         viewModelScope.launch {
-            val outcome = driveAuthManager.handleAuthorizationResult(data)
-            if (outcome !is DriveAuthManager.AuthorizationOutcome.Authorized) {
-                // Backing out of the consent sheet is a routine cancel, so the chosen upload mode
-                // is left alone. Without a grant the sync loop simply never becomes active.
-                _driveError.value =
-                    if (outcome is DriveAuthManager.AuthorizationOutcome.AccountMismatch) {
-                        DriveError.ACCOUNT_MISMATCH
-                    } else {
-                        DriveError.SIGN_IN_FAILED
-                    }
-                cloudSyncManager.stopSync()
-                return@launch
+            try {
+                completeConsent(data)
+            } finally {
+                _driveConnecting.value = false
             }
-
-            onDriveConnected()
-            startSyncEnablingUploads()
         }
+    }
+
+    private suspend fun completeConsent(data: Intent?) {
+        val outcome = driveAuthManager.handleAuthorizationResult(data)
+        if (outcome !is DriveAuthManager.AuthorizationOutcome.Authorized) {
+            // Backing out of the consent sheet is a routine cancel, so the chosen upload mode
+            // is left alone. Without a grant the sync loop simply never becomes active.
+            _driveError.value =
+                if (outcome is DriveAuthManager.AuthorizationOutcome.AccountMismatch) {
+                    DriveError.ACCOUNT_MISMATCH
+                } else {
+                    DriveError.SIGN_IN_FAILED
+                }
+            cloudSyncManager.stopSync()
+            return
+        }
+
+        onDriveConnected()
+        startSyncEnablingUploads()
     }
 
     fun disconnectDrive() {

@@ -207,6 +207,29 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `connectDrive reports itself busy and discards a second tap`() = runTest {
+        // #102: the connect queues behind any other grant operation on the session lock, and the
+        // tap used to render as nothing at all while it waited - a button indistinguishable from
+        // a dead one. A second tap must be dropped, not queued behind the first.
+        val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+        coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.driveConnecting.value)
+
+        viewModel.connectDrive()
+        advanceUntilIdle()
+        authorizing.complete(DriveAuthManager.AuthorizationOutcome.Authorized)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+        assertFalse(viewModel.driveConnecting.value)
+    }
+
+    @Test
     fun `connectDrive starts sync and clears the disconnect flag once authorized`() = runTest {
         coEvery { driveAuthManager.authorize() } returns
             DriveAuthManager.AuthorizationOutcome.Authorized
