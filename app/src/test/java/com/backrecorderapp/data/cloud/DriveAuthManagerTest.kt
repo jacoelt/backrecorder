@@ -471,6 +471,9 @@ class DriveAuthManagerTest {
         // The guard that matters most: pinning an account the user has disconnected from - or
         // one belonging to a token that is no longer live - is the unrecoverable mistake this
         // class exists to prevent, and a late write is the one path that could still do it.
+        //
+        // This is the *token* guard specifically: signOut clears the pin too, so the refusal
+        // cannot be coming from the already-pinned check.
         answersWith(grant())
         val auth = newManager(resolver = uninterruptibleResolver(STALLED_LOOKUP_MS))
         auth.authorize()
@@ -479,6 +482,21 @@ class DriveAuthManagerTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { preferences.setDriveAccount("acct-1", any()) }
+    }
+
+    @Test
+    fun `a pin write that fails does not take the process down`() = runTest {
+        // The late pin runs on the application scope, which has no exception handler: an
+        // unreadable preferences file would otherwise kill the app from work nobody started.
+        answersWith(grant())
+        coEvery { preferences.setDriveAccount(any(), any()) } throws IOException("unwritable")
+        val auth = newManager(resolver = uninterruptibleResolver(STALLED_LOOKUP_MS))
+
+        assertEquals(DriveAuthManager.AuthorizationOutcome.Authorized, auth.authorize())
+        advanceUntilIdle()
+
+        // The session is untouched by the failed pin; reaching here at all is the assertion.
+        assertTrue(auth.isAuthorized.value)
     }
 
     @Test

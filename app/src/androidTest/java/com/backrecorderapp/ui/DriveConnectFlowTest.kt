@@ -27,6 +27,7 @@ import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.ExternalResource
@@ -72,7 +73,10 @@ class DriveConnectFlowTest {
     @get:Rule(order = 1)
     val cleanUpAfterwards = cleanUpRule(hiltRule) {
         cloudSyncManager.stopSync()
-        runBlocking { driveAuthManager.signOut() }
+        // Bounded: signOut takes the session lock, which a bounded-but-slow grant operation can
+        // still hold. A cleanup that hangs stalls the whole orchestrator run, and this check is
+        // required with no bypass, so it has to fail fast rather than wedge.
+        runBlocking { withTimeoutOrNull(SIGN_OUT_TIMEOUT_MS) { driveAuthManager.signOut() } }
         server.stop()
         server.reset()
         driveAuthorization.reset()
@@ -112,6 +116,11 @@ class DriveConnectFlowTest {
 
     @get:Rule(order = 3)
     val composeRule = createAndroidComposeRule<MainActivity>()
+
+    private companion object {
+        /** Long enough for any bounded grant operation to let the session lock go. */
+        const val SIGN_OUT_TIMEOUT_MS = 45_000L
+    }
 
     private fun string(id: Int) = composeRule.activity.getString(id)
 

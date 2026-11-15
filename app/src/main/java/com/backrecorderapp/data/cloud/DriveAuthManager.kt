@@ -427,8 +427,9 @@ class DriveAuthManager @Inject constructor(
      * Every failure path drops the session. Leaving the cache populated would mean replaying a
      * token Drive has already rejected for the rest of the 45-minute TTL, while the UI still
      * reported the account as connected.
+     *
+     * `internal` only so the Play Services bound below is testable; no caller outside this class.
      */
-    /** `internal` only so the Play Services bound below is testable; no production caller. */
     internal suspend fun validToken(forceRefresh: Boolean): String? = tokenMutex.withLock {
         // Refuse to mint a token for a session that has been signed out. Without this a request
         // already in flight when the user disconnects would quietly re-authorize and complete.
