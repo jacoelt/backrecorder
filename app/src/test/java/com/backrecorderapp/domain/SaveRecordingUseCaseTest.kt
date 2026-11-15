@@ -3,8 +3,10 @@ package com.backrecorderapp.domain
 import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.billing.SubscriptionStatus
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.service.FlushAbandonedException
@@ -12,27 +14,42 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class SaveRecordingUseCaseTest {
 
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
+
     private lateinit var context: Context
+    private lateinit var contentResolver: ContentResolver
     private lateinit var segmentManager: SegmentManager
     private lateinit var trimUseCase: TrimSegmentUseCase
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
     private lateinit var recordingFlusher: RecordingFlusher
+    private lateinit var savedRecordingUploader: SavedRecordingUploader
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
 
     @Before
     fun setup() {
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>(), any()) } returns 0
+
         context = mockk(relaxed = true)
         segmentManager = mockk(relaxed = true)
         trimUseCase = mockk(relaxed = true)
@@ -40,11 +57,24 @@ class SaveRecordingUseCaseTest {
         subscriptionGate = SubscriptionGate(billingRepository)
         recordingFlusher = mockk(relaxed = true)
 
-        every { context.contentResolver } returns mockk<ContentResolver>(relaxed = true)
+        contentResolver = mockk(relaxed = true)
+        every { context.contentResolver } returns contentResolver
+
+        savedRecordingUploader = mockk(relaxed = true)
 
         saveRecordingUseCase = SaveRecordingUseCase(
-            context, segmentManager, trimUseCase, subscriptionGate, recordingFlusher
+            context,
+            segmentManager,
+            trimUseCase,
+            subscriptionGate,
+            recordingFlusher,
+            savedRecordingUploader
         )
+    }
+
+    @After
+    fun tearDown() {
+        unmockkStatic(Log::class)
     }
 
     @Test
@@ -103,6 +133,76 @@ class SaveRecordingUseCaseTest {
 
         // Result will be Error because file doesn't exist, but NOT UpgradeRequired
         assertTrue(result !is SaveResult.UpgradeRequired)
+    }
+
+    /**
+     * The wiring behind issue #84. Asserted at this level because it is the only place that knows
+     * the save succeeded *and* still holds the finished file - the uploader can only be handed
+     * something that exists, and a save that reported success without offering it would leave the
+     * Drive copy quietly unimplemented.
+     */
+    @Test
+    fun `hands the finished recording to the Drive upload under the name the user chose`() =
+        runTest {
+            coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+            every { context.cacheDir } returns temporaryFolder.root
+            every { trimUseCase.trim(any(), any(), any(), any()) } answers {
+                secondArg<File>().writeBytes(ByteArray(8))
+            }
+            every { contentResolver.query(any(), any(), any(), any(), any()) } returns null
+
+            val now = System.currentTimeMillis()
+            val segment = SegmentEntity(
+                id = "1",
+                filePath = "/nonexistent/file.m4a",
+                waveformPath = "/test/waveform.bin",
+                startTime = now - (5 * 60 * 1000),
+                endTime = now,
+                durationMs = 300_000,
+                isComplete = true
+            )
+            coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(segment)
+
+            val result = saveRecordingUseCase.execute(
+                startTime = now - (5 * 60 * 1000),
+                endTime = now,
+                outputUri = mockk()
+            )
+
+            assertTrue(result is SaveResult.Success)
+            verify(exactly = 1) { savedRecordingUploader.enqueue(any(), any()) }
+        }
+
+    /** A save must never be reported as failed because the bonus Drive copy could not be queued. */
+    @Test
+    fun `still reports success when the Drive upload cannot be queued`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        every { context.cacheDir } returns temporaryFolder.root
+        every { trimUseCase.trim(any(), any(), any(), any()) } answers {
+            secondArg<File>().writeBytes(ByteArray(8))
+        }
+        every { contentResolver.query(any(), any(), any(), any(), any()) } returns null
+        every { savedRecordingUploader.enqueue(any(), any()) } throws RuntimeException("no room")
+
+        val now = System.currentTimeMillis()
+        val segment = SegmentEntity(
+            id = "1",
+            filePath = "/nonexistent/file.m4a",
+            waveformPath = "/test/waveform.bin",
+            startTime = now - (5 * 60 * 1000),
+            endTime = now,
+            durationMs = 300_000,
+            isComplete = true
+        )
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(segment)
+
+        val result = saveRecordingUseCase.execute(
+            startTime = now - (5 * 60 * 1000),
+            endTime = now,
+            outputUri = mockk()
+        )
+
+        assertTrue(result is SaveResult.Success)
     }
 
     @Test

@@ -4,8 +4,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.backrecorderapp.BackRecorderApp
@@ -408,15 +406,6 @@ class CloudSyncManager @Inject constructor(
         notificationManager.notify(RECOVERY_NOTIFICATION_ID, notification)
     }
 
-    private fun isNetworkAvailable(mode: CloudUploadMode): Boolean {
-        val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-
-        return when (mode) {
-            CloudUploadMode.WIFI_ONLY -> capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-            CloudUploadMode.ALWAYS_ON -> capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            CloudUploadMode.OFF -> false
-        }
-    }
+    private fun isNetworkAvailable(mode: CloudUploadMode): Boolean =
+        isCloudNetworkAvailable(context, mode)
 }

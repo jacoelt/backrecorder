@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
@@ -46,6 +47,7 @@ class MainViewModelSaveTest {
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
     private lateinit var appPreferences: AppPreferences
     private lateinit var cloudSyncManager: CloudSyncManager
+    private lateinit var savedRecordingUploader: SavedRecordingUploader
     private lateinit var billingRepository: BillingRepository
     private lateinit var subscriptionGate: SubscriptionGate
 
@@ -67,6 +69,9 @@ class MainViewModelSaveTest {
         cloudSyncManager = mockk(relaxed = true)
         every { cloudSyncManager.recoveryMessage } returns MutableStateFlow(null)
 
+        savedRecordingUploader = mockk(relaxed = true)
+        every { savedRecordingUploader.uploadFailure } returns MutableStateFlow(null)
+
         billingRepository = mockk(relaxed = true)
         subscriptionGate = mockk(relaxed = true)
     }
@@ -83,6 +88,7 @@ class MainViewModelSaveTest {
         saveRecordingUseCase,
         appPreferences,
         cloudSyncManager,
+        savedRecordingUploader,
         billingRepository,
         subscriptionGate
     )

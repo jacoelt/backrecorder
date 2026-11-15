@@ -6,6 +6,9 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Log
+import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,10 +34,13 @@ class SaveRecordingUseCase @Inject constructor(
     private val segmentManager: SegmentManager,
     private val trimUseCase: TrimSegmentUseCase,
     private val subscriptionGate: SubscriptionGate,
-    private val recordingFlusher: RecordingFlusher
+    private val recordingFlusher: RecordingFlusher,
+    private val savedRecordingUploader: SavedRecordingUploader
 ) {
 
     companion object {
+        private const val TAG = "SaveRecordingUseCase"
+
         /**
          * Upper bound on the flush handshake. The service normally answers in well under
          * a second; this only bounds the cases where it never answers at all, turning a
@@ -121,7 +127,7 @@ class SaveRecordingUseCase @Inject constructor(
         val tempFile = File(context.cacheDir, "temp_save_${System.currentTimeMillis()}.m4a")
         try {
             trimUseCase.trim(inputFile, tempFile, startUs, endUs)
-            copyToUri(tempFile, outputUri)
+            deliver(tempFile, outputUri)
         } finally {
             tempFile.delete()
         }
@@ -163,7 +169,7 @@ class SaveRecordingUseCase @Inject constructor(
             val mergedFile = File(context.cacheDir, "merged_${System.currentTimeMillis()}.m4a")
             try {
                 concatenateM4aFiles(tempFiles, mergedFile)
-                copyToUri(mergedFile, outputUri)
+                deliver(mergedFile, outputUri)
             } finally {
                 mergedFile.delete()
             }
@@ -238,6 +244,39 @@ class SaveRecordingUseCase @Inject constructor(
             if (mime.startsWith("audio/")) return i
         }
         return null
+    }
+
+    /**
+     * Writes the finished recording to where the user pointed the picker, then hands the same
+     * file to the Drive copy (issue #84).
+     *
+     * The hand-off comes last and cannot throw into the save: the local file is what the user
+     * asked for, and a save that reported failure because a backup copy could not be queued
+     * would be a worse outcome than no copy at all. [SavedRecordingUploader.enqueue] takes the
+     * file over from here, which is why nothing below may read it again.
+     */
+    private fun deliver(sourceFile: File, destUri: Uri) {
+        copyToUri(sourceFile, destUri)
+        try {
+            savedRecordingUploader.enqueue(sourceFile, displayNameOf(destUri, sourceFile))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not queue the saved recording for upload", e)
+        }
+    }
+
+    /** The name the user gave the file in the picker, so the Drive copy matches what they saved. */
+    private fun displayNameOf(uri: Uri, fallback: File): String {
+        val name = try {
+            context.contentResolver
+                .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not read the saved file's display name", e)
+            null
+        }
+        return name?.takeIf { it.isNotBlank() } ?: fallback.name
     }
 
     private fun copyToUri(sourceFile: File, destUri: Uri) {

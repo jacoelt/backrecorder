@@ -127,6 +127,13 @@ fun MainScreen(
         }
     }
 
+    LaunchedEffect(state.cloudUploadError) {
+        state.cloudUploadError?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.dismissCloudUploadError()
+        }
+    }
+
     // Launch file picker after subscription gate passes
     LaunchedEffect(state.launchSavePicker) {
         if (state.launchSavePicker) {
