@@ -2,6 +2,7 @@ package com.backrecorderapp.ui.settings
 
 import android.app.Activity
 import android.app.PendingIntent
+import app.cash.turbine.ReceiveTurbine
 import app.cash.turbine.test
 import com.backrecorderapp.data.billing.BillingPeriod
 import com.backrecorderapp.data.billing.BillingRepository
@@ -46,6 +47,19 @@ import org.junit.Test
  * silent: a blocked subscription that still authorizes, a failed consent that leaves the app in a
  * mode it cannot upload in, and a disconnect that the OAuth grant quietly undoes.
  */
+/**
+ * Waits for a state satisfying [predicate] rather than for a fixed number of emissions, so a test
+ * that changes two sources does not depend on whether the combine coalesced them.
+ */
+private suspend fun ReceiveTurbine<SettingsUiState>.awaitUntil(
+    predicate: (SettingsUiState) -> Boolean
+): SettingsUiState {
+    while (true) {
+        val item = awaitItem()
+        if (predicate(item)) return item
+    }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModelTest {
 
@@ -283,10 +297,43 @@ class SettingsViewModelTest {
             assertTrue(awaitItem().driveConnected)
 
             needsReauth.value = true
-            assertTrue(awaitItem().driveNeedsReauth)
+            assertTrue(awaitItem().showDriveReauthPrompt)
 
             storageFull.value = true
-            assertTrue(awaitItem().driveStorageFull)
+            assertTrue(awaitItem().showDriveStorageFull)
+
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    /**
+     * Both problems are latched by `CloudSyncManager` and cleared only by a tick the gate allows,
+     * a disconnect or a re-grant - none of which can happen while the plan blocks every tick. So
+     * a 401 from before the lapse would otherwise sit on the row permanently, giving a second and
+     * wrong reason for the same stopped uploads, with Connect next to a row reading "Connected".
+     */
+    @Test
+    fun `the plan takes precedence over a latched drive problem`() = runTest {
+        subscriptionStatus.value = SubscriptionStatus.ACTIVE
+
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            awaitItem() // initial default, emitted before the sources are collected
+
+            driveAuthorized.value = true
+            awaitItem()
+            needsReauth.value = true
+            storageFull.value = true
+
+            val premium = awaitUntil { it.showDriveReauthPrompt && it.showDriveStorageFull }
+            assertFalse("precondition: the plan is not blocking", premium.driveSyncBlockedByPlan)
+
+            subscriptionStatus.value = SubscriptionStatus.EXPIRED
+
+            val lapsed = awaitUntil { it.driveSyncBlockedByPlan }
+            assertFalse(lapsed.showDriveReauthPrompt)
+            assertFalse(lapsed.showDriveStorageFull)
 
             cancelAndIgnoreRemainingEvents()
         }

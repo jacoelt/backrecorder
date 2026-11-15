@@ -49,8 +49,16 @@ data class SettingsUiState(
     val subscriptionStatus: SubscriptionStatus = SubscriptionStatus.FREE,
     val trialDaysRemaining: Int = 0,
     val driveConnected: Boolean = false,
-    val driveNeedsReauth: Boolean = false,
-    val driveStorageFull: Boolean = false,
+    /**
+     * Whether to offer reconnecting, and whether to report Drive as full. Both are latched by
+     * `CloudSyncManager` and cleared only by a tick the gate allows, a disconnect or a re-grant -
+     * so once the plan blocks every tick, a 401 or a full Drive from before the lapse would stay
+     * on screen giving a second, wrong reason for the same stopped uploads. The plan is the
+     * operative one, so these yield to [driveSyncBlockedByPlan]. The precedence lives here rather
+     * than in the composable so it can be tested.
+     */
+    val showDriveReauthPrompt: Boolean = false,
+    val showDriveStorageFull: Boolean = false,
     /**
      * The Drive grant exists but the subscription no longer covers uploads. The grant outlives
      * the subscription that was required to obtain it (#85), so [driveConnected] alone reads
@@ -103,16 +111,17 @@ class SettingsViewModel @Inject constructor(
         // Before billing answers the status is only its FREE default; acting on it would tell a
         // paying subscriber at every launch that the account they pay for cannot upload.
         val planCoversUploads = !statusResolved || SubscriptionGate.isPremium(subStatus)
+        val driveSyncBlockedByPlan = driveConnected && !planCoversUploads
         SettingsUiState(
             recordingEnabled = recording,
             cloudUploadMode = cloudMode,
             subscriptionStatus = subStatus,
             trialDaysRemaining = billingRepository.getTrialDaysRemaining(),
             driveConnected = driveConnected,
-            driveSyncBlockedByPlan = driveConnected && !planCoversUploads,
+            driveSyncBlockedByPlan = driveSyncBlockedByPlan,
             cloudUploadBlockedByPlan = cloudMode != CloudUploadMode.OFF && !planCoversUploads,
-            driveNeedsReauth = problems.first,
-            driveStorageFull = problems.second
+            showDriveReauthPrompt = problems.first && !driveSyncBlockedByPlan,
+            showDriveStorageFull = problems.second && !driveSyncBlockedByPlan
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 

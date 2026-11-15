@@ -175,8 +175,8 @@ fun SettingsScreen(
             DriveAccountRow(
                 connected = state.driveConnected,
                 syncBlockedByPlan = state.driveSyncBlockedByPlan,
-                needsReauth = state.driveNeedsReauth,
-                storageFull = state.driveStorageFull,
+                showReauthPrompt = state.showDriveReauthPrompt,
+                showStorageFull = state.showDriveStorageFull,
                 onConnect = { viewModel.connectDrive() },
                 onDisconnect = { viewModel.disconnectDrive() }
             )
@@ -319,8 +319,8 @@ fun SettingsScreen(
 private fun DriveAccountRow(
     connected: Boolean,
     syncBlockedByPlan: Boolean,
-    needsReauth: Boolean,
-    storageFull: Boolean,
+    showReauthPrompt: Boolean,
+    showStorageFull: Boolean,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit
 ) {
@@ -353,18 +353,14 @@ private fun DriveAccountRow(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
             )
-            // Both are latched by CloudSyncManager and cleared only by a tick that succeeds, which
-            // the gate now refuses every time - so a 401 or a full Drive from before the lapse
-            // would otherwise stay on screen forever, giving a second, wrong reason for the same
-            // stopped uploads and sending the user off to fix it. The plan is the operative one.
-            if (needsReauth && !syncBlockedByPlan) {
+            if (showReauthPrompt) {
                 Text(
                     text = stringResource(R.string.settings_drive_connect_prompt),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
             }
-            if (storageFull && !syncBlockedByPlan) {
+            if (showStorageFull) {
                 Text(
                     text = stringResource(R.string.settings_drive_storage_full),
                     style = MaterialTheme.typography.bodySmall,
@@ -373,9 +369,7 @@ private fun DriveAccountRow(
             }
         }
 
-        // A latched reauth would otherwise put Connect next to a row reading "Connected", and
-        // reconnecting fixes nothing while the plan is what is blocking uploads.
-        if (!connected || (needsReauth && !syncBlockedByPlan)) {
+        if (!connected || showReauthPrompt) {
             Button(onClick = onConnect) {
                 Text(stringResource(R.string.settings_drive_connect))
             }
