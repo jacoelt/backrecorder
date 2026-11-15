@@ -140,7 +140,7 @@ class ComplimentaryAccessStoreTest {
 
     /** A throw here would escape `viewModelScope` in `redeemCode` and take the app down. */
     @Test
-    fun `a failed write is reported as a refused redemption`() = runTest {
+    fun `a failed write is reported apart from a refused code`() = runTest {
         val readOnly = mockk<DataStore<Preferences>>()
         every { readOnly.data } returns flow { throw IOException("read-only") }
         coEvery { readOnly.updateData(any()) } throws IOException("read-only")

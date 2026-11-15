@@ -184,14 +184,18 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    } else if (state.subscriptionStatus == SubscriptionStatus.FREE ||
-                        state.subscriptionStatus == SubscriptionStatus.EXPIRED
-                    ) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        UpgradeButton(
-                            busy = upgradeBusy,
-                            onClick = { viewModel.showPlanChooser() }
-                        )
+                    } else {
+                        if (state.subscriptionStatus == SubscriptionStatus.FREE ||
+                            state.subscriptionStatus == SubscriptionStatus.EXPIRED
+                        ) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            UpgradeButton(
+                                busy = upgradeBusy,
+                                onClick = { viewModel.showPlanChooser() }
+                            )
+                        }
+                        // Offered on any plan that is not already complimentary: a code handed to
+                        // someone mid-trial must not wait for the trial to lapse to be usable.
                         Spacer(modifier = Modifier.height(8.dp))
                         TextButton(onClick = { viewModel.showRedeemDialog() }) {
                             Text(stringResource(R.string.settings_redeem_code))
@@ -390,7 +394,10 @@ private fun RedeemCodeDialog(
     // re-created activity that silently emptied the field would make the code look rejected.
     var code by rememberSaveable { mutableStateOf("") }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        // Dismissing mid-write bumps the generation and throws away an ACCEPTED for a grant that
+        // did land, leaving no confirmation and a busy button over a code already redeemed. The
+        // plan chooser holds its Cancel shut for the same reason.
+        onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.settings_redeem_code)) },
         text = {
             Column {
@@ -439,7 +446,7 @@ private fun RedeemCodeDialog(
             )
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss, enabled = !busy) {
                 Text(stringResource(R.string.cancel))
             }
         }
