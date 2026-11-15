@@ -20,7 +20,7 @@ import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.di.TEST_COMPLIMENTARY_CODE
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SubscriptionGate
-import com.backrecorderapp.ui.settings.REDEEM_CODE_FIELD_TAG
+import com.backrecorderapp.ui.settings.REDEEM_CODE_FIELD_TEST_TAG
 import com.backrecorderapp.testing.PreferenceSnapshot
 import com.backrecorderapp.testing.cleanUpRule
 import com.backrecorderapp.testing.createNotificationChannels
@@ -43,8 +43,8 @@ import javax.inject.Inject
  * complimentary grant must never move it - a faked ACTIVE would send the acknowledge path hunting
  * for a purchase token that does not exist.
  *
- * The grant itself needs no cleanup rule: it lives in its own DataStore, and the orchestrator
- * clears package data between tests.
+ * The grant has no cleanup rule because it has no revoke API; isolation rests entirely on the
+ * orchestrator's `clearPackageData`, which each test's precondition assertion also re-checks.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -68,6 +68,10 @@ class ComplimentaryAccessFlowTest {
     val seedPreferences = object : ExternalResource() {
         override fun before() {
             createNotificationChannels()
+            // Billing is seeded here, not in the test body: the compose rule launches the
+            // activity before the body runs, so a status set there would land after the first
+            // composition had already read the unresolved FREE default.
+            billing.setStatus(SubscriptionStatus.FREE)
             runBlocking {
                 preferences.capture(
                     appPreferences.disclaimerAccepted,
@@ -99,17 +103,27 @@ class ComplimentaryAccessFlowTest {
         composeRule.onNodeWithText(string(R.string.settings_redeem_code))
             .performScrollTo().performClick()
         composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithTag(REDEEM_CODE_FIELD_TAG)
+            composeRule.onAllNodesWithTag(REDEEM_CODE_FIELD_TEST_TAG)
                 .fetchSemanticsNodes().isNotEmpty()
         }
-        composeRule.onNodeWithTag(REDEEM_CODE_FIELD_TAG).performTextInput(code)
+        composeRule.onNodeWithTag(REDEEM_CODE_FIELD_TEST_TAG).performTextInput(code)
         composeRule.onNodeWithText(string(R.string.settings_redeem_confirm)).performClick()
     }
 
     @Test
     fun redeemingAValidCodeUnlocksPremiumWhileBillingStaysFree() {
-        billing.setStatus(SubscriptionStatus.FREE)
         openSettings()
+
+        // Asserted, not assumed: without it the "Upgrade is gone" wait below would pass on a
+        // button that was never there, and a grant leaked from an earlier run would go unseen.
+        composeRule.onNodeWithText(string(R.string.upgrade_button))
+            .performScrollTo().assertIsDisplayed()
+        val before = System.currentTimeMillis()
+        assertTrue(
+            runBlocking {
+                subscriptionGate.checkSaveAccess(before - (2 * 60 * 60 * 1000), before)
+            } is GateResult.Blocked
+        )
 
         enterCode(TEST_COMPLIMENTARY_CODE)
 
@@ -120,14 +134,12 @@ class ComplimentaryAccessFlowTest {
         composeRule.onNodeWithText(string(R.string.settings_complimentary_access))
             .assertIsDisplayed()
 
-        // The Upgrade affordance is gone, because there is nothing left to buy.
         composeRule.waitUntil(timeoutMillis = 10_000) {
             composeRule.onAllNodesWithText(string(R.string.upgrade_button))
                 .fetchSemanticsNodes().isEmpty()
         }
 
-        // And the grant reaches the gate itself, not only the card above it: a save well outside
-        // the free window is what a free user is refused.
+        // The grant reaches the gate itself, not only the card above it.
         val now = System.currentTimeMillis()
         val result = runBlocking {
             subscriptionGate.checkSaveAccess(now - (2 * 60 * 60 * 1000), now)
@@ -138,7 +150,6 @@ class ComplimentaryAccessFlowTest {
 
     @Test
     fun anUnknownCodeIsRefusedAndGrantsNothing() {
-        billing.setStatus(SubscriptionStatus.FREE)
         openSettings()
 
         enterCode("ZZZZ-ZZZZ-ZZZZ")

@@ -904,6 +904,8 @@ class SettingsViewModelTest {
 
         assertEquals(RedeemOutcome.ACCEPTED, viewModel.redeemOutcome.value)
         assertFalse(viewModel.redeemDialogVisible.value)
+        // The typed code must reach the store verbatim; normalisation is the validator's job.
+        coVerify(exactly = 1) { complimentaryAccessStore.redeem("TEST-AAAA-BBBB") }
         viewModel.uiState.test {
             assertTrue(awaitUntil { it.complimentaryAccess }.complimentaryAccess)
             cancelAndIgnoreRemainingEvents()
@@ -943,6 +945,43 @@ class SettingsViewModelTest {
             assertFalse(state.cloudUploadBlockedByPlan)
             cancelAndIgnoreRemainingEvents()
         }
+    }
+
+    /**
+     * An ACCEPTED published after the user left is the render condition for the confirmation
+     * dialog, so it would be waiting on screen the next time Settings opened - the #74
+     * dialog-with-no-tap-behind-it defect in a new place.
+     */
+    @Test
+    fun `an acceptance landing after the user left is discarded`() = runTest {
+        val parked = CompletableDeferred<Boolean>()
+        coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        viewModel.onScreenLeft()
+
+        parked.complete(true)
+        advanceUntilIdle()
+
+        assertNull(viewModel.redeemOutcome.value)
+    }
+
+    @Test
+    fun `a second redeem is refused while one is already running`() = runTest {
+        val parked = CompletableDeferred<Boolean>()
+        coEvery { complimentaryAccessStore.redeem(any()) } coAnswers { parked.await() }
+
+        val viewModel = createViewModel()
+        viewModel.showRedeemDialog()
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+        viewModel.redeemCode("TEST-AAAA-BBBB")
+
+        parked.complete(false)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { complimentaryAccessStore.redeem(any()) }
     }
 
     @Test

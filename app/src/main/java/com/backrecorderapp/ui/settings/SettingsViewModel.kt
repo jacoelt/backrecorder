@@ -72,14 +72,10 @@ data class SettingsUiState(
      * happening whether or not an account was ever connected.
      */
     val cloudUploadBlockedByPlan: Boolean = false,
-    /**
-     * Entitlement granted by a redeem code rather than by Play (#98). Replaces the plan card's
-     * contents and removes the Upgrade affordance: there is nothing to buy.
-     */
+    /** Replaces the plan card and removes the Upgrade affordance: there is nothing to buy (#98). */
     val complimentaryAccess: Boolean = false
 )
 
-/** The outcome of the last redeem attempt, or null when nothing has been tried. */
 enum class RedeemOutcome { ACCEPTED, REJECTED }
 
 /**
@@ -351,8 +347,12 @@ class SettingsViewModel @Inject constructor(
 
     private val _redeemOutcome = MutableStateFlow<RedeemOutcome?>(null)
 
-    /** The result of the last redeem attempt, or null while nothing is to be reported. */
     val redeemOutcome: StateFlow<RedeemOutcome?> = _redeemOutcome.asStateFlow()
+
+    /** See [planLoadGeneration]; the acceptance dialog is raised by the answer, not by a tap. */
+    private var redeemGeneration = 0
+
+    private val _redeemInFlight = MutableStateFlow(false)
 
     fun showRedeemDialog() {
         _redeemOutcome.value = null
@@ -368,16 +368,27 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Validation is offline and the write is local, so this is fast enough to need no busy state.
      * The dialog closes only on acceptance - a rejected code leaves the field up to be corrected
      * rather than making the user find the entry point again.
+     *
+     * An answer that arrives after the user has left is discarded rather than published: an
+     * ACCEPTED landing then is the render condition for the confirmation dialog, which would
+     * otherwise be waiting on the screen the next time Settings is opened.
      */
     fun redeemCode(code: String) {
+        if (_redeemInFlight.value) return
+        val issued = redeemGeneration
+        _redeemInFlight.value = true
         viewModelScope.launch {
-            val accepted = complimentaryAccessStore.redeem(code)
-            _redeemOutcome.value =
-                if (accepted) RedeemOutcome.ACCEPTED else RedeemOutcome.REJECTED
-            if (accepted) _redeemDialogVisible.value = false
+            try {
+                val accepted = complimentaryAccessStore.redeem(code)
+                if (issued != redeemGeneration) return@launch
+                _redeemOutcome.value =
+                    if (accepted) RedeemOutcome.ACCEPTED else RedeemOutcome.REJECTED
+                if (accepted) _redeemDialogVisible.value = false
+            } finally {
+                _redeemInFlight.value = false
+            }
         }
     }
 
@@ -480,6 +491,7 @@ class SettingsViewModel @Inject constructor(
         _purchaseError.value = null
         // Same reason: a half-typed code and its last rejection would be waiting on the screen
         // on the way back from the disclaimer.
+        redeemGeneration++
         _redeemDialogVisible.value = false
         _redeemOutcome.value = null
     }

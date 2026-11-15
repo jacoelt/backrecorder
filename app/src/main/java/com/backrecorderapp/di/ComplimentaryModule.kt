@@ -8,11 +8,8 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 /**
- * Its own module, on the same pattern as [RecorderModule] and [BillingModule], so instrumented
- * tests can replace just this binding with a validator holding a code they know.
- *
- * The seam is what keeps real codes out of the repository: an end-to-end test of redemption has
- * to type a code that is accepted, and a code written down here is one anyone can redeem.
+ * Its own module so instrumented tests can swap in a validator holding a code they know; a real
+ * code written into a test would be redeemable by anyone with the repository.
  */
 @Module
 @InstallIn(SingletonComponent::class)

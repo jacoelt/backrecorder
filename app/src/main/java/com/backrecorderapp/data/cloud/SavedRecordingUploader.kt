@@ -79,7 +79,8 @@ class SavedRecordingUploader @Inject constructor(
          * Billing often has not answered yet when the user saves, and [SubscriptionGate.isPremium]
          * reports FREE until it does. Refusing on that would deny a paying subscriber the copy for
          * no better reason than Play being slow, so the upload waits - it is already asynchronous,
-         * and nothing is on screen waiting for it.
+         * and nothing is on screen waiting for it. A complimentary grant (#98) satisfies the same
+         * wait without Play answering at all.
          */
         private const val STATUS_RESOLVE_TIMEOUT_MS = 30_000L
 

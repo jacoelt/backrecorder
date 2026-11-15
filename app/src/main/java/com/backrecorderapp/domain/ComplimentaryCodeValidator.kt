@@ -9,7 +9,12 @@ import java.util.Locale
  * Only salted digests are compiled in, never the codes themselves: this source is in the
  * repository, and a code published there is a code anyone can redeem. The salt buys nothing
  * against someone holding the APK - the accepted digests sit beside it - but it does stop a
- * generic rainbow table, which is all a 12-character code needs on top of its own ~59 bits.
+ * generic rainbow table.
+ *
+ * What it cannot stop is an offline attack on a *weak* code, and that is a different threat from
+ * the one #98 accepts: patching the gate needs the APK and a rebuild, while a cracked code can be
+ * typed in by anyone it is passed to. So codes must be long and random - see [MIN_CODE_LENGTH] -
+ * and [accepts] refuses anything shorter rather than trusting whoever generates the next batch.
  *
  * [blocked] is subtracted rather than [accepted] being edited, so a leaked code is retired in a
  * later release by adding one line, and the digest it leaked as stays on record.
@@ -22,13 +27,28 @@ class ComplimentaryCodeValidator(
     private val blocked: Set<String> = BLOCKED_CODE_DIGESTS
 ) {
 
-    fun accepts(code: String): Boolean {
-        val digest = digestOf(code)
-        return digest in accepted && digest !in blocked
-    }
+    fun accepts(code: String): Boolean =
+        normalize(code).length >= MIN_CODE_LENGTH && acceptsDigest(digestOf(code))
+
+    /**
+     * Re-checks a grant that was stored earlier, which is what makes [blocked] able to *revoke*
+     * rather than only refuse the next redemption. Without this, the one scenario the per-person
+     * split exists for - a code gets passed around and several installs redeem it - would leave
+     * every one of them premium forever, and the later release retiring the digest would change
+     * nothing for them.
+     */
+    fun acceptsDigest(digest: String): Boolean = digest in accepted && digest !in blocked
 
     companion object {
         private const val SALT = "backrecorder.complimentary.v1"
+
+        /**
+         * Codes are generated as 12 characters from a 31-symbol alphabet (A-Z and 2-9, with the
+         * pairs that are misread off paper removed) - about 59 bits, which is what makes an
+         * offline search over the digests below pointless. Generate the next batch the same way;
+         * a short or guessable code would be crackable from a shipped APK.
+         */
+        const val MIN_CODE_LENGTH = 12
 
         /**
          * Digests of the codes handed out for #98. Each entry is one person, so a code that
@@ -47,13 +67,15 @@ class ComplimentaryCodeValidator(
             "69fdaa340a957767a987cb760650fb6a93312ee6e5e9900b5d278b5788682bb5"
         )
 
-        /** Digests of codes that have been withdrawn. Checked after [ACCEPTED_CODE_DIGESTS]. */
         internal val BLOCKED_CODE_DIGESTS = emptySet<String>()
 
         /**
          * Codes are read off paper or a message, so the separators and the case a person types
          * are not part of the secret. Everything outside the code alphabet is dropped, which
          * also covers a trailing space pasted in from a chat message.
+         *
+         * `Locale.ROOT` is load-bearing: under a Turkish default locale `i` would uppercase to
+         * `İ`, and the digest with it - refusing a code that person was actually issued.
          */
         fun normalize(code: String): String =
             code.filter { it.isLetterOrDigit() }.uppercase(Locale.ROOT)

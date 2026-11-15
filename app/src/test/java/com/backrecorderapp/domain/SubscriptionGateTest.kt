@@ -147,6 +147,21 @@ class SubscriptionGateTest {
         assertTrue(result is GateResult.Allowed)
     }
 
+    /**
+     * The pure overload is what SettingsScreen and SettingsViewModel call directly, so the whole
+     * truth table is pinned here rather than only the paths the suspending gate happens to take.
+     */
+    @Test
+    fun `the pure rule ORs the complimentary term over every status`() {
+        SubscriptionStatus.entries.forEach { status ->
+            assertTrue(status.name, SubscriptionGate.isPremium(status, complimentary = true))
+        }
+        assertTrue(SubscriptionGate.isPremium(SubscriptionStatus.ACTIVE, complimentary = false))
+        assertTrue(SubscriptionGate.isPremium(SubscriptionStatus.TRIAL, complimentary = false))
+        assertFalse(SubscriptionGate.isPremium(SubscriptionStatus.FREE, complimentary = false))
+        assertFalse(SubscriptionGate.isPremium(SubscriptionStatus.EXPIRED, complimentary = false))
+    }
+
     @Test
     fun `complimentary access saves any time range while billing still reads FREE`() = runTest {
         coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE

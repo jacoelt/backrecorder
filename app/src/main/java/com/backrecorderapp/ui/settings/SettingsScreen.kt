@@ -65,7 +65,7 @@ import com.backrecorderapp.util.messageRes
  * A tag rather than the label text: a Material 3 text field does not reliably expose its label in
  * the semantics tree, and the instrumented redemption test has to type into this exact field.
  */
-const val REDEEM_CODE_FIELD_TAG = "redeem_code_field"
+const val REDEEM_CODE_FIELD_TEST_TAG = "redeem_code_field"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -329,6 +329,7 @@ fun SettingsScreen(
         RedeemCodeDialog(
             rejected = redeemOutcome == RedeemOutcome.REJECTED,
             onRedeem = { viewModel.redeemCode(it) },
+            onEdited = { viewModel.dismissRedeemOutcome() },
             onDismiss = { viewModel.dismissRedeemDialog() }
         )
     }
@@ -376,6 +377,7 @@ fun SettingsScreen(
 private fun RedeemCodeDialog(
     rejected: Boolean,
     onRedeem: (String) -> Unit,
+    onEdited: () -> Unit,
     onDismiss: () -> Unit
 ) {
     // Survives rotation: orientation cannot be restricted at this target on large screens, and a
@@ -390,8 +392,12 @@ private fun RedeemCodeDialog(
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
                     value = code,
-                    onValueChange = { code = it },
-                    modifier = Modifier.testTag(REDEEM_CODE_FIELD_TAG),
+                    // Clearing the rejection on edit is what makes a second refusal visible: the
+                    // outcome is a conflated StateFlow value, so re-reporting REJECTED over a
+                    // REJECTED that was never cleared recomposes to nothing and the tap looks
+                    // like it was dropped.
+                    onValueChange = { code = it; if (rejected) onEdited() },
+                    modifier = Modifier.testTag(REDEEM_CODE_FIELD_TEST_TAG),
                     singleLine = true,
                     isError = rejected,
                     label = { Text(stringResource(R.string.settings_redeem_code_label)) }

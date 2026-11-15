@@ -50,16 +50,55 @@ class ComplimentaryCodeValidatorTest {
         assertTrue(validator.accepts("TeSt-AaAa-BbBb"))
     }
 
+    /**
+     * The one assertion that pins the algorithm itself. Everything else here derives its expected
+     * value through `digestOf`, so changing the salt or the normalization would keep every other
+     * test green while invalidating all ten digests in the shipping build - and the only symptom
+     * would be a real person being refused a code that was issued to them.
+     */
     @Test
-    fun `a one character difference changes the digest`() {
+    fun `digestOf is pinned to a known vector`() {
         assertEquals(
-            ComplimentaryCodeValidator.digestOf(accepted),
+            "dd821a31abc16a5cc8d09721e08aa93fb6389ce776118c00fcb6b4e552135091",
             ComplimentaryCodeValidator.digestOf(accepted)
         )
+    }
+
+    @Test
+    fun `a normalisation-equivalent spelling hashes to the same pinned vector`() {
+        assertEquals(
+            ComplimentaryCodeValidator.digestOf(accepted),
+            ComplimentaryCodeValidator.digestOf("  testaaaabbbb ")
+        )
+    }
+
+    @Test
+    fun `a one character difference changes the digest`() {
         assertFalse(
             ComplimentaryCodeValidator.digestOf(accepted) ==
                 ComplimentaryCodeValidator.digestOf("TEST-AAAA-BBBC")
         )
+    }
+
+    /**
+     * A short code would be crackable offline from the digests that ship in the APK, which is a
+     * different threat from the APK-patching one #98 accepts: a cracked code can simply be typed
+     * in by anyone it reaches.
+     */
+    @Test
+    fun `rejects a code shorter than the minimum even if its digest is listed`() {
+        val short = "ABC"
+        val lenient = ComplimentaryCodeValidator(
+            accepted = setOf(ComplimentaryCodeValidator.digestOf(short)),
+            blocked = emptySet()
+        )
+        assertFalse(lenient.accepts(short))
+    }
+
+    @Test
+    fun `acceptsDigest refuses a stored digest once it is retired`() {
+        assertTrue(validator.acceptsDigest(ComplimentaryCodeValidator.digestOf(accepted)))
+        assertFalse(validator.acceptsDigest(ComplimentaryCodeValidator.digestOf(retired)))
     }
 
     @Test
