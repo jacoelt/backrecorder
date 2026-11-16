@@ -26,6 +26,7 @@ import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.service.RecordingService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -321,6 +322,11 @@ class MainViewModel @Inject constructor(
     }
 
     fun requestSave() {
+        // The in-flight guard belongs here, not only on [saveRecording]: the picker creates its
+        // 0-byte file the moment it returns a URI, so refusing a save after that point would
+        // leave exactly the empty recording issue #23 exists to prevent. Refusing before the
+        // picker opens is what makes the second tap cost nothing.
+        if (_uiState.value.saveInProgress) return
         viewModelScope.launch {
             // Read once for the *inputs* below, but never written back wholesale: the calls in
             // this function suspend, and `state.copy(...)` would restore every field as of this
@@ -377,7 +383,15 @@ class MainViewModel @Inject constructor(
      * A second save can now start while the first is still running - the Save affordance is live
      * again the moment the body suspends - and two of them each force a flush rotation of the
      * live recording and race to write `saveInProgress` and the outcome message. The in-flight
-     * flag refuses the second tap, as it does for the upgrade hand-off under #74.
+     * flag refuses it, as it does for the upgrade hand-off under #74. [requestSave] carries the
+     * same guard and is the one that matters, since it runs before the picker exists; this one
+     * covers a picker result that was already on its way, and deletes the file that result
+     * created rather than leaving it behind.
+     *
+     * The flag is claimed synchronously, before the launch, and cleared in an unconditional
+     * `finally`, for the reason #74 gives: `getSegmentsInRange` and `checkSaveAccess` sit outside
+     * the use case's own `try`, so a Room or DataStore failure escapes `execute`, and a flag left
+     * set would make Save a permanently disabled spinner that both guards then refuse forever.
      *
      * `NonCancellable` keeps the save and its cleanup together. A cancelled `viewModelScope` -
      * the user leaving while the spinner is up - would otherwise discard the result at the
@@ -388,50 +402,59 @@ class MainViewModel @Inject constructor(
      * half-written one, and deleting the wrong one destroys the recording.
      */
     fun saveRecording(outputUri: Uri) {
-        if (_uiState.value.saveInProgress) return
+        if (_uiState.value.saveInProgress) {
+            viewModelScope.launch { withContext(NonCancellable) { deleteOutputUri(outputUri) } }
+            return
+        }
+        val state = _uiState.value
+        _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
+
+        // When recording is active and the selection end is at the buffer edge,
+        // snap to current wall-clock time so the in-progress segment is included.
+        // bufferEndTime is stale between segment rotations (~60 s); without this
+        // the most recent audio would be silently excluded.
+        val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
+            System.currentTimeMillis()
+        } else {
+            state.selectionEndTime
+        }
+
         viewModelScope.launch {
-            val state = _uiState.value
-            _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
-
-            // When recording is active and the selection end is at the buffer edge,
-            // snap to current wall-clock time so the in-progress segment is included.
-            // bufferEndTime is stale between segment rotations (~60 s); without this
-            // the most recent audio would be silently excluded.
-            val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
-                System.currentTimeMillis()
-            } else {
-                state.selectionEndTime
-            }
-
             withContext(NonCancellable) {
-                val result = saveRecordingUseCase.execute(
-                    startTime = state.selectionStartTime,
-                    endTime = endTime,
-                    outputUri = outputUri
-                )
+                try {
+                    val result = saveRecordingUseCase.execute(
+                        startTime = state.selectionStartTime,
+                        endTime = endTime,
+                        outputUri = outputUri
+                    )
 
-                when (result) {
-                    is SaveResult.Success -> {
-                        _uiState.value = _uiState.value.copy(
-                            saveInProgress = false,
-                            successMessage = "Recording saved successfully"
-                        )
+                    when (result) {
+                        is SaveResult.Success -> {
+                            _uiState.value = _uiState.value.copy(
+                                successMessage = "Recording saved successfully"
+                            )
+                        }
+                        is SaveResult.UpgradeRequired -> {
+                            deleteOutputUri(outputUri)
+                            _uiState.value = _uiState.value.copy(
+                                showUpgradeDialog = true,
+                                upgradeReason = result.reason
+                            )
+                        }
+                        is SaveResult.Error -> {
+                            deleteOutputUri(outputUri)
+                            _uiState.value = _uiState.value.copy(errorMessage = result.message)
+                        }
                     }
-                    is SaveResult.UpgradeRequired -> {
-                        deleteOutputUri(outputUri)
-                        _uiState.value = _uiState.value.copy(
-                            saveInProgress = false,
-                            showUpgradeDialog = true,
-                            upgradeReason = result.reason
-                        )
-                    }
-                    is SaveResult.Error -> {
-                        deleteOutputUri(outputUri)
-                        _uiState.value = _uiState.value.copy(
-                            saveInProgress = false,
-                            errorMessage = result.message
-                        )
-                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    deleteOutputUri(outputUri)
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = e.message ?: "Could not save the recording"
+                    )
+                } finally {
+                    _uiState.value = _uiState.value.copy(saveInProgress = false)
                 }
             }
         }
