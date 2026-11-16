@@ -18,8 +18,8 @@ import io.mockk.mockkStatic
 import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,10 +104,8 @@ class SaveRecordingUseCaseTest {
     }
 
     /**
-     * Issue #93: trimming, muxing and the SAF stream copy ran on whatever thread the caller was
-     * on, and the only caller is `MainViewModel.saveRecording` on `Dispatchers.Main.immediate` -
-     * seconds of main-thread work on a multi-segment save. Asserted by thread name rather than by
-     * the dispatcher the use case was handed, since only the thread shows where the blocking work
+     * Issue #93: the blocking work must leave the caller's thread. Asserted by thread name rather
+     * than by the dispatcher the use case was handed, since only the thread shows where the work
      * actually ran.
      */
     @Test

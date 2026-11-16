@@ -120,7 +120,8 @@ class MainViewModelPurchaseTest {
         cloudSyncManager,
         savedRecordingUploader,
         billingRepository,
-        subscriptionGate
+        subscriptionGate,
+        UnconfinedTestDispatcher()
     )
 
     @Test

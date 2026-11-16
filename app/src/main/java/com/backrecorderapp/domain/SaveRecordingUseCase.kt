@@ -59,11 +59,9 @@ class SaveRecordingUseCase @Inject constructor(
     }
 
     /**
-     * Trimming, [concatenateM4aFiles] and the SAF stream copy are seconds of blocking work on a
-     * multi-segment save, and the only caller is `MainViewModel.saveRecording` on
-     * `Dispatchers.Main.immediate` - so the whole body moves to the IO dispatcher (issue #93).
-     * `withContext` resumes the caller on its own dispatcher, which is what lets the view model
-     * go on writing `_uiState` from the result without a hop of its own.
+     * Trimming, [concatenateM4aFiles] and the SAF copy are seconds of blocking work and must not
+     * run on the caller's thread, which is the main one for the view model (issue #93).
+     * `withContext` resumes the caller on its own dispatcher, so no caller needs a hop back.
      */
     suspend fun execute(startTime: Long, endTime: Long, outputUri: Uri): SaveResult =
         withContext(ioDispatcher) { performSave(startTime, endTime, outputUri) }

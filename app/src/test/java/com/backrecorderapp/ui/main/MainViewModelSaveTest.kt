@@ -21,6 +21,7 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -37,6 +38,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -95,7 +97,8 @@ class MainViewModelSaveTest {
         cloudSyncManager,
         savedRecordingUploader,
         billingRepository,
-        subscriptionGate
+        subscriptionGate,
+        UnconfinedTestDispatcher()
     )
 
     @Test
@@ -171,6 +174,32 @@ class MainViewModelSaveTest {
         assertNotNull("error message must be shown", state.errorMessage)
         // Subscription gate must not be consulted — we never even get that far.
         coVerify(exactly = 0) { subscriptionGate.checkSaveAccess(any(), any()) }
+    }
+
+    /**
+     * The save suspends since #93, so the Save affordance is live again while one is still
+     * running. Two concurrent saves each force a flush rotation of the live recording and race to
+     * write the outcome message, so the second tap is discarded.
+     */
+    @Test
+    fun `refuses a second save while one is still in flight (issue 93)`() = runTest {
+        val uri = mockk<Uri>()
+        val firstSave = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.saveInProgress)
+
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
+
+        firstSave.complete(SaveResult.Success)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { saveRecordingUseCase.execute(any(), any(), any()) }
+        assertEquals("Recording saved successfully", viewModel.uiState.value.successMessage)
     }
 
     @Test
