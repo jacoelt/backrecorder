@@ -11,9 +11,12 @@ import android.util.Log
 import com.backrecorderapp.data.cloud.SavedRecordingUploader
 import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.segment.SegmentManager
+import com.backrecorderapp.di.IoDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.io.IOException
@@ -36,7 +39,8 @@ class SaveRecordingUseCase @Inject constructor(
     private val trimUseCase: TrimSegmentUseCase,
     private val subscriptionGate: SubscriptionGate,
     private val recordingFlusher: RecordingFlusher,
-    private val savedRecordingUploader: SavedRecordingUploader
+    private val savedRecordingUploader: SavedRecordingUploader,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) {
 
     companion object {
@@ -54,7 +58,17 @@ class SaveRecordingUseCase @Inject constructor(
         const val FLUSH_TIMEOUT_MS = 10_000L
     }
 
-    suspend fun execute(startTime: Long, endTime: Long, outputUri: Uri): SaveResult {
+    /**
+     * Trimming, [concatenateM4aFiles] and the SAF stream copy are seconds of blocking work on a
+     * multi-segment save, and the only caller is `MainViewModel.saveRecording` on
+     * `Dispatchers.Main.immediate` - so the whole body moves to the IO dispatcher (issue #93).
+     * `withContext` resumes the caller on its own dispatcher, which is what lets the view model
+     * go on writing `_uiState` from the result without a hop of its own.
+     */
+    suspend fun execute(startTime: Long, endTime: Long, outputUri: Uri): SaveResult =
+        withContext(ioDispatcher) { performSave(startTime, endTime, outputUri) }
+
+    private suspend fun performSave(startTime: Long, endTime: Long, outputUri: Uri): SaveResult {
         // Check subscription gate
         val gateResult = subscriptionGate.checkSaveAccess(startTime, endTime)
         if (gateResult is GateResult.Blocked) {
