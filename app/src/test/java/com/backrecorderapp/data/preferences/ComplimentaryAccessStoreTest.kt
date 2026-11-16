@@ -171,7 +171,7 @@ class ComplimentaryAccessStoreTest {
         }
     }
 
-    /** And the collection is still live afterwards, rather than having survived only that read. */
+    /** Guards the half a recovered first emission would not catch: a retry that then ends anyway. */
     @Test
     fun `the grant keeps tracking writes after a transient read failure`() = runTest {
         val file = fileStore("retry-tracking")
