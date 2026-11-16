@@ -203,7 +203,10 @@ class CloudSyncManagerTest {
 
         verify(exactly = 1) { Log.w(any(), "Cloud sync gates passed; syncing") }
         verify(exactly = 1) { Log.w(any(), any<String>()) }
+
         sync.stopSync()
+        sync.stopSync()
+        verify(exactly = 1) { Log.w(any(), "Cloud sync stopped") }
     }
 
     @Test

@@ -119,7 +119,11 @@ class CloudSyncManager @Inject constructor(
     }
 
     fun stopSync() {
-        syncJob.getAndSet(null)?.cancel()
+        syncJob.getAndSet(null)?.let { job ->
+            job.cancel()
+            // Otherwise a release log's last word stays "gates passed; syncing" after a disconnect.
+            Log.w(TAG, "Cloud sync stopped")
+        }
         // Nothing is going to clear these later: without a running loop they would keep stale
         // prompts on screen for an account the user has already disconnected.
         _needsReauth.value = false
