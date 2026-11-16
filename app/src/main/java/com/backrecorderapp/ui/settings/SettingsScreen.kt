@@ -166,13 +166,16 @@ fun SettingsScreen(
                             stringResource(R.string.settings_complimentary_access)
                         } else {
                             when (state.subscriptionStatus) {
-                                SubscriptionStatus.FREE -> "Free plan"
+                                SubscriptionStatus.FREE ->
+                                    stringResource(R.string.settings_plan_free)
                                 SubscriptionStatus.TRIAL -> stringResource(
                                     R.string.trial_active,
                                     state.trialDaysRemaining
                                 )
-                                SubscriptionStatus.ACTIVE -> "Premium"
-                                SubscriptionStatus.EXPIRED -> "Subscription expired"
+                                SubscriptionStatus.ACTIVE ->
+                                    stringResource(R.string.settings_plan_premium)
+                                SubscriptionStatus.EXPIRED ->
+                                    stringResource(R.string.settings_plan_expired)
                             }
                         },
                         style = MaterialTheme.typography.bodyMedium,
