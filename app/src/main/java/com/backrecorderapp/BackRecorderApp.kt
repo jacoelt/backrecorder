@@ -60,8 +60,9 @@ class BackRecorderApp : Application() {
 
             if (!driveAuthManager.restoreSession()) {
                 // Nothing to upload with. Starting the loop anyway would spin against an
-                // unauthorized client every thirty seconds for the life of the process.
-                Log.i(TAG, "Drive grant could not be restored; leaving sync stopped")
+                // unauthorized client every thirty seconds for the life of the process. Log.w
+                // because release strips Log.i, and this is the only trace sync never started.
+                Log.w(TAG, "Drive grant could not be restored; leaving sync stopped")
                 return@launch
             }
 

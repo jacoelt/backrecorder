@@ -260,6 +260,37 @@ class SavedRecordingUploaderTest {
         assertEquals(1, reported.size)
     }
 
+    /** Silent to the user, but not to a release build's logs: nobody chose this decline (#107). */
+    @Test
+    fun `leaves a release-visible log line when no grant blocks the copy`() = runTest {
+        isAuthorized.value = false
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        withFailureCollector(uploader) { uploader.enqueue(sourceFile(), "My Recording.m4a") }
+
+        verify(exactly = 1) { Log.w(any(), match<String> { it.contains("No Drive grant") }) }
+    }
+
+    @Test
+    fun `leaves a release-visible log line when billing never answers`() = runTest {
+        statusResolved.value = false
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        withFailureCollector(uploader) { uploader.enqueue(sourceFile(), "My Recording.m4a") }
+
+        verify(exactly = 1) { Log.w(any(), match<String> { it.contains("never resolved") }) }
+    }
+
+    @Test
+    fun `logs nothing when the user turned uploads off`() = runTest {
+        every { appPreferences.cloudUploadMode } returns flowOf(CloudUploadMode.OFF)
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        withFailureCollector(uploader) { uploader.enqueue(sourceFile(), "My Recording.m4a") }
+
+        verify(exactly = 0) { Log.w(any(), any<String>()) }
+    }
+
     @Test
     fun `waits for billing to answer rather than refusing a subscriber Play was slow about`() =
         runTest {

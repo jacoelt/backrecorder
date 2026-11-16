@@ -92,6 +92,9 @@ class CloudSyncManager @Inject constructor(
     /** SimpleDateFormat is not thread-safe, so it is per-instance and only touched by the loop. */
     private val recoveryDateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
 
+    /** Touched only by the running loop; each new loop starts by clearing it. */
+    private var lastRefusal: SyncRefusal? = null
+
     private val _recoveryMessage = MutableStateFlow<String?>(null)
     val recoveryMessage: StateFlow<String?> = _recoveryMessage.asStateFlow()
 
@@ -140,6 +143,7 @@ class CloudSyncManager @Inject constructor(
         var staleScanDone = false
         var consecutiveFailures = 0
         var ticksSinceCleanup = CLEANUP_EVERY_N_TICKS
+        lastRefusal = null
 
         while (isActive) {
             var failed = false
@@ -208,13 +212,36 @@ class CloudSyncManager @Inject constructor(
      * wipe a paying subscriber's configuration on every launch.
      */
     private suspend fun canSyncNow(mode: CloudUploadMode): Boolean {
-        if (mode == CloudUploadMode.OFF) return false
-        if (!subscriptionGate.statusResolved.value) return false
-        if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return false
-        if (!driveCloudStorage.isInitialized) return false
+        val refusal = syncRefusal(mode)
+        if (refusal != lastRefusal) {
+            logRefusalChange(refusal)
+            lastRefusal = refusal
+        }
+        return refusal == null
+    }
+
+    private suspend fun syncRefusal(mode: CloudUploadMode): SyncRefusal? = when {
+        mode == CloudUploadMode.OFF -> SyncRefusal.UPLOADS_OFF
+        !subscriptionGate.statusResolved.value -> SyncRefusal.BILLING_UNRESOLVED
+        subscriptionGate.checkCloudAccess() is GateResult.Blocked -> SyncRefusal.NOT_ENTITLED
+        !driveCloudStorage.isInitialized -> SyncRefusal.DRIVE_NOT_AUTHORIZED
         // Cleanup and the stale scan paginate the whole staging folder, so they respect the
         // transport choice exactly as uploads do.
-        return isNetworkAvailable(mode)
+        !isNetworkAvailable(mode) -> SyncRefusal.NO_SUITABLE_NETWORK
+        else -> null
+    }
+
+    /**
+     * Level-triggered rather than per tick, so a gate that refuses for weeks costs one line. It is
+     * `Log.w` because release strips everything below it (#107): a loop refusing every tick was
+     * otherwise indistinguishable from one that was working.
+     */
+    private fun logRefusalChange(refusal: SyncRefusal?) {
+        if (refusal == null) {
+            Log.w(TAG, "Cloud sync gates passed; syncing")
+        } else {
+            Log.w(TAG, "Cloud sync paused: ${refusal.name}")
+        }
     }
 
     /**
@@ -388,4 +415,12 @@ class CloudSyncManager @Inject constructor(
 
     private fun isNetworkAvailable(mode: CloudUploadMode): Boolean =
         isCloudNetworkAvailable(context, mode)
+}
+
+internal enum class SyncRefusal {
+    UPLOADS_OFF,
+    BILLING_UNRESOLVED,
+    NOT_ENTITLED,
+    DRIVE_NOT_AUTHORIZED,
+    NO_SUITABLE_NETWORK,
 }
