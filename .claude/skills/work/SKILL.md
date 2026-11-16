@@ -29,7 +29,7 @@ One issue in, a build on the Play **internal** track out (or a merged PR, when t
 
 Repo: `jacoelt/backrecorder`, trunk `main`, Android app `com.backrecorderapp`. `CLAUDE.md` is the architecture contract. CI is `.github/workflows/ci.yml` (unit tests + minified release build on every PR); the release is `.github/workflows/release.yml` (`workflow_dispatch`, builds a signed AAB and uploads it to Play).
 
-**Pipeline:** Step 0 guards · 1 read the issue (+ label this session) · 2 classify · 3 branch (+ 3b diagnose on the device when the cause is unknown) · 4 implement (+ failing test first from a debug report, + e2e when a sensitive flow is touched) · 5 local gate · 6 review loop · 7 version bump · 8 PR · 9 CI · 10 merge · 11 release · 12 close out (+ comment the manual test steps on the issue, move the session to Testing) · 13 report (+ the same walkthrough).
+**Pipeline:** Step 0 guards · 1 read the issue (+ label this session) · 2 classify · 3 branch (+ 3b diagnose on the device when the cause is unknown) · 4 implement (+ failing test first from a debug report, + e2e when a sensitive flow is touched) · 5 local gate · 6 review loop · 7 version bump · 8 PR · 9 CI · 10 merge · 11 release · 12 close out (+ comment the manual test steps on the issue, move the session to Testing) · 13 report (+ the same walkthrough, then the four-line "test this" box).
 
 **Flags**
 
@@ -520,6 +520,27 @@ Rules for it:
 - **Say what cannot be tested from the internal track at all** — anything needing a production purchase, a long elapsed time (the 24h staging buffer), or a device the user doesn't have.
 - **Three to six scenarios.** A list nobody reads verifies nothing; if the change genuinely needs more, say which two or three matter most and mark the rest optional.
 - Keep it in the terminal report **and** on the issue (Step 12.3). Beyond those two, don't write it to a file or an artifact unless the user asks.
+
+### The last word — what to test, in four lines
+
+The walkthrough above is thorough, which is exactly why it is not the last thing the run says. Someone coming back to a finished session scrolls to the bottom and reads what is there. Close with a short block that answers one question — *what do I actually go and do in the app now?*
+
+```
+▶ Test this — #<N> <short title>
+  Build:    <version name> (<versionCode>) · internal track   # or: debug install, nothing shipped
+  Do:       <the one sequence that exercises what this issue changed, in a sentence>
+  Expect:   <what proves it worked>
+  Also try: <the one regression most likely to have broken>
+  Can't be tested here: <the thing the internal track can't show — or omit this line>
+```
+
+Rules, all of them about keeping it short enough to be read:
+
+- **Four or five lines. No scenarios, no setup blocks, no numbering.** It is a pointer to the walkthrough, not a second copy of it. If it grows past the box above, cut it rather than adding a line.
+- **Specific to this issue.** "Test the recording flow" is worthless; "start a recording, lock the phone for 5 minutes, unlock and stop it — the saved file should be 5 minutes, not 30 seconds" is the whole point.
+- **It must agree with the walkthrough**, because it is distilled from it: `Do` is scenario 1, `Also try` is the regression scenario. If writing this reveals that scenario 1 wasn't the heart of the issue, fix the walkthrough — it is the one that is wrong.
+- **Print it last**, after everything else in Step 13, with nothing following it. Not on the issue, where Step 12.3's full version already lives.
+- **On a stopped run, no box.** There is no build to test. The last line is where the run stopped and the single next action, and nothing should look like a green light.
 
 ---
 
