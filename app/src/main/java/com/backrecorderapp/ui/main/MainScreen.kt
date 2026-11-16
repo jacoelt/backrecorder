@@ -186,8 +186,11 @@ fun MainScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
                 .verticalScroll(rememberScrollState())
+                // Inside the scroll container, not outside it: paddingValues.top is the
+                // collapsing bar's measured height, so applying it outside resized the scroll
+                // viewport on every frame of a drag instead of translating the content.
+                .padding(paddingValues)
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
