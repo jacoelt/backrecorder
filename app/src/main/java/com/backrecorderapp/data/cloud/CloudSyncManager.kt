@@ -119,7 +119,11 @@ class CloudSyncManager @Inject constructor(
     }
 
     fun stopSync() {
-        syncJob.getAndSet(null)?.cancel()
+        syncJob.getAndSet(null)?.let { job ->
+            job.cancel()
+            // Otherwise a release log's last word stays "gates passed; syncing" after a disconnect.
+            Log.w(TAG, "Cloud sync stopped")
+        }
         // Nothing is going to clear these later: without a running loop they would keep stale
         // prompts on screen for an account the user has already disconnected.
         _needsReauth.value = false
@@ -140,13 +144,16 @@ class CloudSyncManager @Inject constructor(
         var staleScanDone = false
         var consecutiveFailures = 0
         var ticksSinceCleanup = CLEANUP_EVERY_N_TICKS
+        // Local, not a field: a replaced loop can still be finishing a tick while its successor
+        // starts, and shared state would let the two interleave their transition lines.
+        val gateLog = GateTransitionLog()
 
         while (isActive) {
             var failed = false
             try {
                 val mode = appPreferences.cloudUploadMode.first()
 
-                if (canSyncNow(mode)) {
+                if (canSyncNow(mode, gateLog)) {
                     if (!staleScanDone) {
                         driveCloudStorage.ensureFolderStructure()
                         staleScanDone = handleStaleFiles()
@@ -207,14 +214,42 @@ class CloudSyncManager @Inject constructor(
      * billing has not answered yet and reports FREE for everyone, so persisting OFF here would
      * wipe a paying subscriber's configuration on every launch.
      */
-    private suspend fun canSyncNow(mode: CloudUploadMode): Boolean {
-        if (mode == CloudUploadMode.OFF) return false
-        if (!subscriptionGate.statusResolved.value) return false
-        if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return false
-        if (!driveCloudStorage.isInitialized) return false
+    private suspend fun canSyncNow(mode: CloudUploadMode, gateLog: GateTransitionLog): Boolean {
+        val refusal = syncRefusal(mode)
+        gateLog.record(refusal)
+        return refusal == null
+    }
+
+    private suspend fun syncRefusal(mode: CloudUploadMode): SyncRefusal? = when {
+        mode == CloudUploadMode.OFF -> SyncRefusal.UPLOADS_OFF
+        !subscriptionGate.statusResolved.value -> SyncRefusal.BILLING_UNRESOLVED
+        subscriptionGate.checkCloudAccess() is GateResult.Blocked -> SyncRefusal.NOT_ENTITLED
+        !driveCloudStorage.isInitialized -> SyncRefusal.DRIVE_NOT_AUTHORIZED
         // Cleanup and the stale scan paginate the whole staging folder, so they respect the
         // transport choice exactly as uploads do.
-        return isNetworkAvailable(mode)
+        !isNetworkAvailable(mode) -> SyncRefusal.NO_SUITABLE_NETWORK
+        else -> null
+    }
+
+    /**
+     * Logged on a change of reason, not per tick, and always on a loop's first evaluation - so a
+     * restart that passes straight away still overwrites an earlier "paused" line. `Log.w` because
+     * release strips everything below it (#107).
+     */
+    private class GateTransitionLog {
+        private var evaluated = false
+        private var last: SyncRefusal? = null
+
+        fun record(refusal: SyncRefusal?) {
+            if (evaluated && refusal == last) return
+            evaluated = true
+            last = refusal
+            if (refusal == null) {
+                Log.w(TAG, "Cloud sync gates passed; syncing")
+            } else {
+                Log.w(TAG, "Cloud sync paused: ${refusal.name}")
+            }
+        }
     }
 
     /**
@@ -388,4 +423,12 @@ class CloudSyncManager @Inject constructor(
 
     private fun isNetworkAvailable(mode: CloudUploadMode): Boolean =
         isCloudNetworkAvailable(context, mode)
+}
+
+internal enum class SyncRefusal {
+    UPLOADS_OFF,
+    BILLING_UNRESOLVED,
+    NOT_ENTITLED,
+    DRIVE_NOT_AUTHORIZED,
+    NO_SUITABLE_NETWORK,
 }

@@ -198,7 +198,12 @@ class SavedRecordingUploader @Inject constructor(
         val resolved = withTimeoutOrNull(STATUS_RESOLVE_TIMEOUT_MS) {
             subscriptionGate.statusResolved.first { it }
         }
-        if (resolved == null) return Eligibility.DECLINED
+        if (resolved == null) {
+            // Logged, unlike the user's own choices: this decline is not one they made, and
+            // release keeps only Log.w and up (#107).
+            Log.w(TAG, "Entitlement never resolved; saved-recording copy not uploaded")
+            return Eligibility.DECLINED
+        }
         if (subscriptionGate.checkCloudAccess() is GateResult.Blocked) return Eligibility.DECLINED
 
         // Awaited, not read once, for the same reason billing is: at launch the grant is restored
@@ -207,7 +212,10 @@ class SavedRecordingUploader @Inject constructor(
         val authorized = withTimeoutOrNull(GRANT_RESTORE_TIMEOUT_MS) {
             driveAuthManager.isAuthorized.first { it }
         }
-        if (authorized == null) return Eligibility.DECLINED
+        if (authorized == null) {
+            Log.w(TAG, "No Drive grant with uploads on; saved-recording copy not uploaded")
+            return Eligibility.DECLINED
+        }
 
         return if (isCloudNetworkAvailable(context, mode)) {
             Eligibility.UPLOAD

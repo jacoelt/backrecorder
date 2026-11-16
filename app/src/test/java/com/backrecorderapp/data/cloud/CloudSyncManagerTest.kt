@@ -19,6 +19,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -163,6 +164,92 @@ class CloudSyncManagerTest {
         // Critically, a blocked gate must not rewrite the user's preference: at launch billing
         // has not answered yet, and persisting OFF there erased paying subscribers' settings.
         coVerify(exactly = 0) { appPreferences.setCloudUploadMode(any()) }
+        sync.stopSync()
+    }
+
+    /**
+     * A loop refusing every tick must be visible in a release build (#107), but as one line per
+     * change of reason rather than one per tick.
+     */
+    @Test
+    fun `logs each change in why sync is refused once, at a level release keeps`() = runTest {
+        every { driveCloudStorage.isInitialized } returns false
+
+        val sync = manager(testScheduler)
+        sync.startSync()
+        advanceTimeBy(TICK_MS * 5)
+
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: DRIVE_NOT_AUTHORIZED") }
+
+        onCellular()
+        every { driveCloudStorage.isInitialized } returns true
+        advanceTimeBy(TICK_MS * 5)
+
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: NO_SUITABLE_NETWORK") }
+
+        onWifi()
+        advanceTimeBy(TICK_MS * 5)
+
+        verify(exactly = 1) { Log.w(any(), "Cloud sync gates passed; syncing") }
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: DRIVE_NOT_AUTHORIZED") }
+        sync.stopSync()
+    }
+
+    @Test
+    fun `logs once that the gates passed, and nothing more while sync runs normally`() = runTest {
+        val sync = manager(testScheduler)
+        sync.startSync()
+        advanceTimeBy(TICK_MS * 5)
+
+        verify(exactly = 1) { Log.w(any(), "Cloud sync gates passed; syncing") }
+        verify(exactly = 1) { Log.w(any(), any<String>()) }
+
+        sync.stopSync()
+        sync.stopSync()
+        verify(exactly = 1) { Log.w(any(), "Cloud sync stopped") }
+    }
+
+    @Test
+    fun `names each gate that can refuse`() = runTest {
+        val sync = manager(testScheduler)
+
+        uploadMode.value = CloudUploadMode.OFF
+        sync.startSync()
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: UPLOADS_OFF") }
+
+        uploadMode.value = CloudUploadMode.WIFI_ONLY
+        statusResolved.value = false
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: BILLING_UNRESOLVED") }
+
+        statusResolved.value = true
+        coEvery { subscriptionGate.checkCloudAccess() } returns
+            GateResult.Blocked(BlockReason.CLOUD_STORAGE_PREMIUM_ONLY)
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: NOT_ENTITLED") }
+        sync.stopSync()
+    }
+
+    /**
+     * A restart that passes immediately - the user connecting Drive - must still log, or the
+     * release log's last word stays the earlier loop's "paused" while sync is in fact running.
+     */
+    @Test
+    fun `a restarted loop logs its first evaluation again`() = runTest {
+        every { driveCloudStorage.isInitialized } returns false
+        val sync = manager(testScheduler)
+        sync.startSync()
+        advanceTimeBy(TICK_MS)
+
+        sync.startSync()
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 2) { Log.w(any(), "Cloud sync paused: DRIVE_NOT_AUTHORIZED") }
+
+        every { driveCloudStorage.isInitialized } returns true
+        sync.startSync()
+        advanceTimeBy(1)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync gates passed; syncing") }
         sync.stopSync()
     }
 
