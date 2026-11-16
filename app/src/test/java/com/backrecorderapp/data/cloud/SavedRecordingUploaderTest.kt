@@ -288,7 +288,7 @@ class SavedRecordingUploaderTest {
 
         withFailureCollector(uploader) { uploader.enqueue(sourceFile(), "My Recording.m4a") }
 
-        verify(exactly = 0) { Log.w(any(), any<String>()) }
+        assertDeclinedWithoutLogging()
     }
 
     @Test
@@ -298,7 +298,15 @@ class SavedRecordingUploaderTest {
 
         withFailureCollector(uploader) { uploader.enqueue(sourceFile(), "My Recording.m4a") }
 
+        assertDeclinedWithoutLogging()
+    }
+
+    /** Staged and then dropped proves the decline path ran, so the silence is not vacuous. */
+    private fun assertDeclinedWithoutLogging() {
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        assertTrue(stagingDir().listFiles().orEmpty().isEmpty())
         verify(exactly = 0) { Log.w(any(), any<String>()) }
+        verify(exactly = 0) { Log.w(any(), any<String>(), any()) }
     }
 
     @Test
