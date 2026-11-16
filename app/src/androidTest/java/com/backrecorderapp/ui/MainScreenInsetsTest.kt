@@ -1,9 +1,12 @@
 package com.backrecorderapp.ui
 
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.backrecorderapp.MainActivity
 import com.backrecorderapp.R
@@ -19,14 +22,17 @@ import org.junit.Test
 import org.junit.rules.ExternalResource
 import org.junit.runner.RunWith
 import javax.inject.Inject
+import kotlin.math.abs
 
 /**
  * `MainScreen` applies the scaffold's inset padding *inside* its scroll container, so the
  * collapsing top bar translates the content instead of remeasuring the scroll viewport (#71).
- * Nothing in Compose's semantics tree can see a viewport remeasure, so what is pinned here is the
- * half that a wrong version of that move would break: at rest the content must still clear the
- * bar rather than start at the top of the window. Dropping `paddingValues` altogether passes a
- * visual glance on a gesture-navigation device and fails this.
+ *
+ * Both halves of that are pinned here, and the first one is only reachable because a semantics
+ * node reports the bounds of the coordinator its own modifier sits at, not of the whole layout
+ * node (`SemanticsNode.findCoordinatorToGetBounds`): the scroll node's bounds therefore *are* the
+ * viewport, and the two modifier orders put it in different places. Padding ahead of the scroll
+ * starts the viewport below the bar; padding behind it leaves the viewport spanning the window.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -60,7 +66,29 @@ class MainScreenInsetsTest {
     val composeRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun scrolledContentStartsBelowTheTopAppBar() {
+    fun theScrollViewportSpansTheWholeWindow() {
+        FirstLaunchScreens.awaitMainScreen(composeRule)
+
+        val root = composeRule.onRoot().getUnclippedBoundsInRoot()
+        val viewport = composeRule.onNode(hasScrollAction()).getUnclippedBoundsInRoot()
+
+        assertTrue(
+            "Scroll viewport starts at ${viewport.top}, so the inset padding is ahead of the " +
+                "scroll and the collapsing bar will resize it mid-gesture",
+            abs(viewport.top.value) < 1f
+        )
+        assertTrue(
+            "Scroll viewport is ${viewport.height} tall against a ${root.height} window",
+            abs(viewport.height.value - root.height.value) < 1f
+        )
+    }
+
+    /**
+     * The other half of the move: dropping `paddingValues` rather than relocating it would leave
+     * the viewport correct and the content under the bar.
+     */
+    @Test
+    fun contentAtRestClearsTheTopAppBar() {
         FirstLaunchScreens.awaitMainScreen(composeRule)
 
         val settingsBottom = composeRule
