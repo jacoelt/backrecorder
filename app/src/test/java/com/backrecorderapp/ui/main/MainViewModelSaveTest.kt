@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
@@ -43,6 +44,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModelSaveTest {
@@ -62,6 +64,8 @@ class MainViewModelSaveTest {
     @Before
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
+        mockkStatic(Log::class)
+        every { Log.e(any(), any<String>(), any()) } returns 0
 
         context = mockk(relaxed = true)
         contentResolver = mockk(relaxed = true)
@@ -87,6 +91,7 @@ class MainViewModelSaveTest {
 
     @After
     fun tearDown() {
+        unmockkStatic(Log::class)
         Dispatchers.resetMain()
     }
 
@@ -205,6 +210,55 @@ class MainViewModelSaveTest {
         assertFalse(viewModel.uiState.value.saveInProgress)
     }
 
+    /**
+     * The guard that matters: refusing before the picker opens is what costs nothing. A refusal
+     * after it would leave the 0-byte file the picker had already created.
+     */
+    @Test
+    fun `will not open the picker while a save is in flight (issue 93)`() = runTest {
+        val firstSave = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.saveRecording(mockk())
+        advanceUntilIdle()
+
+        viewModel.requestSave()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.launchSavePicker)
+        coVerify(exactly = 0) { subscriptionGate.checkSaveAccess(any(), any()) }
+
+        firstSave.complete(SaveResult.Success)
+        advanceUntilIdle()
+    }
+
+    /**
+     * `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try`, so a Room
+     * or DataStore failure escapes `execute`. A flag left set by that would make Save a
+     * permanently disabled spinner both guards then refuse for the life of the view model.
+     */
+    @Test
+    fun `clears the in-flight flag and cleans up when the save throws (issue 93)`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } throws IOException("boom")
+
+        mockkStatic(DocumentsContract::class)
+        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
+
+        try {
+            val viewModel = buildViewModel()
+            viewModel.saveRecording(uri)
+            advanceUntilIdle()
+
+            assertFalse(viewModel.uiState.value.saveInProgress)
+            assertEquals("Could not save the recording", viewModel.uiState.value.errorMessage)
+            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        } finally {
+            unmockkStatic(DocumentsContract::class)
+        }
+    }
+
     /** A refusal that arrives after the picker ran must not leave its 0-byte file behind. */
     @Test
     fun `a save refused while one is in flight deletes the file its picker created`() = runTest {
@@ -257,6 +311,8 @@ class MainViewModelSaveTest {
             advanceUntilIdle()
 
             verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+            assertFalse(viewModel.uiState.value.saveInProgress)
+            assertEquals("no data", viewModel.uiState.value.errorMessage)
         } finally {
             unmockkStatic(DocumentsContract::class)
         }

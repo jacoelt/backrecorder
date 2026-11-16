@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
@@ -40,6 +41,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
+
+private const val TAG = "MainViewModel"
 
 private const val MINUTE_MS = 60_000L
 
@@ -372,6 +375,9 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /** The destination the running save is writing to, so a refused one never deletes it. */
+    private var inFlightOutputUri: Uri? = null
+
     fun onSavePickerLaunched() {
         _uiState.value = _uiState.value.copy(launchSavePicker = false)
     }
@@ -403,10 +409,16 @@ class MainViewModel @Inject constructor(
      */
     fun saveRecording(outputUri: Uri) {
         if (_uiState.value.saveInProgress) {
-            viewModelScope.launch { withContext(NonCancellable) { deleteOutputUri(outputUri) } }
+            // Never the file the running save is writing: both pickers are opened with the same
+            // suggested name, and a provider that overwrites rather than uniquifies hands back
+            // the same document - deleting it would destroy the recording instead of a stray.
+            if (outputUri != inFlightOutputUri) {
+                viewModelScope.launch { withContext(NonCancellable) { deleteOutputUri(outputUri) } }
+            }
             return
         }
         val state = _uiState.value
+        inFlightOutputUri = outputUri
         _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
 
         // When recording is active and the selection end is at the buffer edge,
@@ -449,11 +461,18 @@ class MainViewModel @Inject constructor(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // The only handler for a throw out of `checkSaveAccess` or
+                    // `getSegmentsInRange`, which sit outside the use case's own `try`. Logged
+                    // because a release build keeps nothing below `Log.w`, and reported with a
+                    // fixed message because raw SQLite or DataStore text means nothing to the
+                    // person reading the snackbar.
+                    Log.e(TAG, "Save failed", e)
                     deleteOutputUri(outputUri)
                     _uiState.value = _uiState.value.copy(
-                        errorMessage = e.message ?: "Could not save the recording"
+                        errorMessage = "Could not save the recording"
                     )
                 } finally {
+                    inFlightOutputUri = null
                     _uiState.value = _uiState.value.copy(saveInProgress = false)
                 }
             }
