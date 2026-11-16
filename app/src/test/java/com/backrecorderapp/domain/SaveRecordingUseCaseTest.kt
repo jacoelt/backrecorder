@@ -19,9 +19,15 @@ import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -30,9 +36,15 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.Executors
 
 class SaveRecordingUseCaseTest {
+
+    private companion object {
+        const val IO_THREAD_NAME = "save-recording-io-test"
+    }
 
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -47,8 +59,17 @@ class SaveRecordingUseCaseTest {
     private lateinit var savedRecordingUploader: SavedRecordingUploader
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
 
+    /**
+     * The flush timeout's `delay` is now intercepted by the use case's own dispatcher rather than
+     * by the one `runTest` installs, so the two must share a scheduler or the timeout leaves
+     * virtual time and waits ten wall-clock seconds. Bare `runTest` adopts the scheduler of a
+     * `TestDispatcher` set as `Dispatchers.Main`, which is what makes that sharing possible here.
+     */
+    private val scheduler = TestCoroutineScheduler()
+
     @Before
     fun setup() {
+        Dispatchers.setMain(StandardTestDispatcher(scheduler))
         mockkStatic(Log::class)
         every { Log.w(any(), any<String>(), any()) } returns 0
 
@@ -71,13 +92,62 @@ class SaveRecordingUseCaseTest {
             trimUseCase,
             subscriptionGate,
             recordingFlusher,
-            savedRecordingUploader
+            savedRecordingUploader,
+            StandardTestDispatcher(scheduler)
         )
     }
 
     @After
     fun tearDown() {
         unmockkStatic(Log::class)
+        Dispatchers.resetMain()
+    }
+
+    /**
+     * Issue #93: the blocking work must leave the caller's thread. Asserted by thread name rather
+     * than by the dispatcher the use case was handed, since only the thread shows where the work
+     * actually ran.
+     */
+    @Test
+    fun `runs the blocking save work off the caller's thread (issue 93)`() = runTest {
+        val ioExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, IO_THREAD_NAME)
+        }
+        try {
+            coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+            every { context.cacheDir } returns temporaryFolder.root
+            coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns
+                listOf(completeSegment())
+            every { contentResolver.query(any(), any(), any(), any(), any()) } returns null
+
+            val workThreads = mutableListOf<String>()
+            every { trimUseCase.trim(any(), any(), any(), any()) } answers {
+                workThreads += Thread.currentThread().name
+                secondArg<File>().writeBytes(ByteArray(8))
+            }
+            every { contentResolver.openOutputStream(any()) } answers {
+                workThreads += Thread.currentThread().name
+                ByteArrayOutputStream()
+            }
+
+            val useCase = SaveRecordingUseCase(
+                context,
+                segmentManager,
+                trimUseCase,
+                subscriptionGate,
+                recordingFlusher,
+                savedRecordingUploader,
+                ioExecutor.asCoroutineDispatcher()
+            )
+
+            val now = System.currentTimeMillis()
+            val result = useCase.execute(now - (5 * 60 * 1000), now, mockk())
+
+            assertTrue(result is SaveResult.Success)
+            assertEquals(listOf(IO_THREAD_NAME, IO_THREAD_NAME), workThreads)
+        } finally {
+            ioExecutor.shutdown()
+        }
     }
 
     @Test

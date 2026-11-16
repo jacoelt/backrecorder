@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
@@ -13,6 +14,7 @@ import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
+import com.backrecorderapp.di.IoDispatcher
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.domain.SaveRecordingUseCase
@@ -25,6 +27,9 @@ import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.service.RecordingService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,8 +38,11 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
+
+private const val TAG = "MainViewModel"
 
 private const val MINUTE_MS = 60_000L
 
@@ -128,7 +136,8 @@ class MainViewModel @Inject constructor(
     private val cloudSyncManager: CloudSyncManager,
     private val savedRecordingUploader: SavedRecordingUploader,
     private val billingRepository: BillingRepository,
-    private val subscriptionGate: SubscriptionGate
+    private val subscriptionGate: SubscriptionGate,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : ViewModel() {
 
     /**
@@ -316,6 +325,12 @@ class MainViewModel @Inject constructor(
     }
 
     fun requestSave() {
+        // The in-flight guard belongs here, not only on [saveRecording]: the picker creates its
+        // 0-byte file the moment it returns a URI, so refusing a save after that point would
+        // leave exactly the empty recording issue #23 exists to prevent. It covers a tap made
+        // while a save is running, not two taps before the first picker returns - `saveInProgress`
+        // is not set until then, which is part of #111.
+        if (_uiState.value.saveInProgress) return
         viewModelScope.launch {
             // Read once for the *inputs* below, but never written back wholesale: the calls in
             // this function suspend, and `state.copy(...)` would restore every field as of this
@@ -361,52 +376,95 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /** The destination the running save is writing to, so a refused one never deletes it. */
+    private var inFlightOutputUri: Uri? = null
+
     fun onSavePickerLaunched() {
         _uiState.value = _uiState.value.copy(launchSavePicker = false)
     }
 
+    /**
+     * Everything here exists because the save suspends since #93; before that it blocked this
+     * thread from the tap to the result, which made each case unreachable rather than impossible.
+     * The reasoning is in CLAUDE.md's #93 bullet; the three decisions are:
+     *
+     * [requestSave] carries the guard that matters, since it runs before the picker exists. This
+     * one only covers a picker result already on its way, and deletes that result's file.
+     *
+     * The flag is claimed synchronously and cleared in an unconditional `finally`, because
+     * `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try` and a flag
+     * left set makes Save a permanently disabled spinner (#74).
+     *
+     * `NonCancellable` keeps the save and its cleanup together: a cancelled scope would otherwise
+     * strand the picker's empty file, which is #23 reopened.
+     */
     fun saveRecording(outputUri: Uri) {
-        viewModelScope.launch {
-            val state = _uiState.value
-            _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
-
-            // When recording is active and the selection end is at the buffer edge,
-            // snap to current wall-clock time so the in-progress segment is included.
-            // bufferEndTime is stale between segment rotations (~60 s); without this
-            // the most recent audio would be silently excluded.
-            val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
-                System.currentTimeMillis()
-            } else {
-                state.selectionEndTime
+        if (_uiState.value.saveInProgress) {
+            // Never the file the running save is writing: both pickers are opened with the same
+            // suggested name, and a provider that overwrites rather than uniquifies hands back
+            // the same document - deleting it would destroy the recording instead of a stray.
+            if (outputUri != inFlightOutputUri) {
+                viewModelScope.launch { withContext(NonCancellable) { deleteOutputUri(outputUri) } }
             }
+            return
+        }
+        val state = _uiState.value
+        inFlightOutputUri = outputUri
+        _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
 
-            val result = saveRecordingUseCase.execute(
-                startTime = state.selectionStartTime,
-                endTime = endTime,
-                outputUri = outputUri
-            )
+        // When recording is active and the selection end is at the buffer edge,
+        // snap to current wall-clock time so the in-progress segment is included.
+        // bufferEndTime is stale between segment rotations (~60 s); without this
+        // the most recent audio would be silently excluded.
+        val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
+            System.currentTimeMillis()
+        } else {
+            state.selectionEndTime
+        }
 
-            when (result) {
-                is SaveResult.Success -> {
-                    _uiState.value = _uiState.value.copy(
-                        saveInProgress = false,
-                        successMessage = "Recording saved successfully"
+        viewModelScope.launch {
+            withContext(NonCancellable) {
+                try {
+                    val result = saveRecordingUseCase.execute(
+                        startTime = state.selectionStartTime,
+                        endTime = endTime,
+                        outputUri = outputUri
                     )
-                }
-                is SaveResult.UpgradeRequired -> {
+
+                    when (result) {
+                        is SaveResult.Success -> {
+                            _uiState.value = _uiState.value.copy(
+                                successMessage = "Recording saved successfully"
+                            )
+                        }
+                        is SaveResult.UpgradeRequired -> {
+                            deleteOutputUri(outputUri)
+                            _uiState.value = _uiState.value.copy(
+                                showUpgradeDialog = true,
+                                upgradeReason = result.reason
+                            )
+                        }
+                        is SaveResult.Error -> {
+                            deleteOutputUri(outputUri)
+                            _uiState.value = _uiState.value.copy(errorMessage = result.message)
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // The only handler for a throw out of `checkSaveAccess` or
+                    // `getSegmentsInRange`, which sit outside the use case's own `try`. Logged
+                    // because a release build keeps nothing below `Log.w`, and reported with a
+                    // fixed message because raw SQLite or DataStore text means nothing to the
+                    // person reading the snackbar.
+                    Log.e(TAG, "Save failed", e)
                     deleteOutputUri(outputUri)
                     _uiState.value = _uiState.value.copy(
-                        saveInProgress = false,
-                        showUpgradeDialog = true,
-                        upgradeReason = result.reason
+                        errorMessage = "Could not save the recording"
                     )
-                }
-                is SaveResult.Error -> {
-                    deleteOutputUri(outputUri)
-                    _uiState.value = _uiState.value.copy(
-                        saveInProgress = false,
-                        errorMessage = result.message
-                    )
+                } finally {
+                    inFlightOutputUri = null
+                    _uiState.value = _uiState.value.copy(saveInProgress = false)
                 }
             }
         }
@@ -414,8 +472,10 @@ class MainViewModel @Inject constructor(
 
     // SAF creates a 0-byte destination file as soon as the picker returns a URI.
     // If the save fails for any reason, delete that empty file so we never leave
-    // empty recordings on the user's storage (issue #23).
-    private fun deleteOutputUri(uri: Uri) {
+    // empty recordings on the user's storage (issue #23). The delete is a binder call into
+    // whatever provider the user picked - possibly a cloud-backed one - so it goes off the main
+    // thread with the rest of the save path (#93).
+    private suspend fun deleteOutputUri(uri: Uri) = withContext(ioDispatcher) {
         try {
             DocumentsContract.deleteDocument(context.contentResolver, uri)
         } catch (_: Exception) {

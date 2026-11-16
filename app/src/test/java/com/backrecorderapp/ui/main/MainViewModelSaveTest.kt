@@ -4,6 +4,8 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.Log
+import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.SavedRecordingUploader
@@ -21,7 +23,9 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,8 +41,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModelSaveTest {
@@ -58,6 +64,8 @@ class MainViewModelSaveTest {
     @Before
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
+        mockkStatic(Log::class)
+        every { Log.e(any(), any<String>(), any()) } returns 0
 
         context = mockk(relaxed = true)
         contentResolver = mockk(relaxed = true)
@@ -83,6 +91,7 @@ class MainViewModelSaveTest {
 
     @After
     fun tearDown() {
+        unmockkStatic(Log::class)
         Dispatchers.resetMain()
     }
 
@@ -95,7 +104,8 @@ class MainViewModelSaveTest {
         cloudSyncManager,
         savedRecordingUploader,
         billingRepository,
-        subscriptionGate
+        subscriptionGate,
+        UnconfinedTestDispatcher()
     )
 
     @Test
@@ -173,6 +183,141 @@ class MainViewModelSaveTest {
         coVerify(exactly = 0) { subscriptionGate.checkSaveAccess(any(), any()) }
     }
 
+    /**
+     * The save suspends since #93, so the Save affordance is live again while one is still
+     * running. Two concurrent saves each force a flush rotation of the live recording and race to
+     * write the outcome message, so the second tap is discarded.
+     */
+    @Test
+    fun `refuses a second save while one is still in flight (issue 93)`() = runTest {
+        val uri = mockk<Uri>()
+        val firstSave = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.saveInProgress)
+
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
+
+        firstSave.complete(SaveResult.Success)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { saveRecordingUseCase.execute(any(), any(), any()) }
+        assertEquals("Recording saved successfully", viewModel.uiState.value.successMessage)
+        assertFalse(viewModel.uiState.value.saveInProgress)
+    }
+
+    /**
+     * The guard that matters: refusing before the picker opens is what costs nothing. A refusal
+     * after it would leave the 0-byte file the picker had already created.
+     */
+    @Test
+    fun `will not open the picker while a save is in flight (issue 93)`() = runTest {
+        val firstSave = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.saveRecording(mockk())
+        advanceUntilIdle()
+
+        viewModel.requestSave()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.uiState.value.launchSavePicker)
+        coVerify(exactly = 0) { subscriptionGate.checkSaveAccess(any(), any()) }
+
+        firstSave.complete(SaveResult.Success)
+        advanceUntilIdle()
+    }
+
+    /**
+     * `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try`, so a Room
+     * or DataStore failure escapes `execute`. A flag left set by that would make Save a
+     * permanently disabled spinner both guards then refuse for the life of the view model.
+     */
+    @Test
+    fun `clears the in-flight flag and cleans up when the save throws (issue 93)`() = runTest {
+        val uri = mockk<Uri>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } throws IOException("boom")
+
+        mockkStatic(DocumentsContract::class)
+        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
+
+        try {
+            val viewModel = buildViewModel()
+            viewModel.saveRecording(uri)
+            advanceUntilIdle()
+
+            assertFalse(viewModel.uiState.value.saveInProgress)
+            assertEquals("Could not save the recording", viewModel.uiState.value.errorMessage)
+            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        } finally {
+            unmockkStatic(DocumentsContract::class)
+        }
+    }
+
+    /** A refusal that arrives after the picker ran must not leave its 0-byte file behind. */
+    @Test
+    fun `a save refused while one is in flight deletes the file its picker created`() = runTest {
+        val firstUri = mockk<Uri>()
+        val strayUri = mockk<Uri>()
+        val firstSave = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
+
+        mockkStatic(DocumentsContract::class)
+        every { DocumentsContract.deleteDocument(contentResolver, strayUri) } returns true
+
+        try {
+            val viewModel = buildViewModel()
+            viewModel.saveRecording(firstUri)
+            advanceUntilIdle()
+
+            viewModel.saveRecording(strayUri)
+            advanceUntilIdle()
+
+            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, strayUri) }
+
+            firstSave.complete(SaveResult.Success)
+            advanceUntilIdle()
+        } finally {
+            unmockkStatic(DocumentsContract::class)
+        }
+    }
+
+    /**
+     * The save and its cleanup run under `NonCancellable` (#93). Without it the result is
+     * discarded at the resume boundary while the uninterruptible trim and copy run on, so the
+     * empty SAF file is left on the user's storage - issue #23, reopened.
+     */
+    @Test
+    fun `cleans up the output uri even when the scope is cancelled mid-save (issue 93)`() = runTest {
+        val uri = mockk<Uri>()
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        mockkStatic(DocumentsContract::class)
+        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
+
+        try {
+            val viewModel = buildViewModel()
+            viewModel.saveRecording(uri)
+            advanceUntilIdle()
+
+            viewModel.viewModelScope.cancel()
+            save.complete(SaveResult.Error("no data"))
+            advanceUntilIdle()
+
+            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+            assertFalse(viewModel.uiState.value.saveInProgress)
+            assertEquals("no data", viewModel.uiState.value.errorMessage)
+        } finally {
+            unmockkStatic(DocumentsContract::class)
+        }
+    }
+
     @Test
     fun `saveRecording error path deletes empty output uri (issue 23)`() = runTest {
         val uri = mockk<Uri>()
@@ -189,6 +334,7 @@ class MainViewModelSaveTest {
 
             verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
             assertEquals("no data", viewModel.uiState.value.errorMessage)
+            assertFalse("a stuck flag leaves Save dead", viewModel.uiState.value.saveInProgress)
         } finally {
             unmockkStatic(DocumentsContract::class)
         }
