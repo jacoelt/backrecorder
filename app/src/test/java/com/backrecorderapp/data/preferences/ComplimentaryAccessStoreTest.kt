@@ -3,6 +3,7 @@ package com.backrecorderapp.data.preferences
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import app.cash.turbine.test
 import com.backrecorderapp.domain.ComplimentaryCodeValidator
 import io.mockk.coEvery
 import io.mockk.every
@@ -10,7 +11,10 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -147,4 +151,64 @@ class ComplimentaryAccessStoreTest {
 
         assertEquals(RedeemResult.STORAGE_FAILED, store(readOnly).redeem(issued))
     }
+
+    /**
+     * The retry half of the read, which the `catch` test above cannot reach. `catch` alone is
+     * terminal, so without `retryWhen` one transient IOException would leave `granted` false for
+     * the life of the process even though a valid grant is sitting on disk - the settings card
+     * reading "Free plan" while `isGranted()`, which collects afresh, answered true.
+     */
+    @Test
+    fun `a transient read failure is retried rather than freezing the grant at false`() = runTest {
+        val file = fileStore("retry-recovers")
+        assertEquals(RedeemResult.ACCEPTED, store(file).redeem(issued))
+
+        val subject = ComplimentaryAccessStore(failingOnce(file), sharedClockScope(), acceptingBoth)
+
+        subject.granted.test {
+            assertFalse(awaitItem())
+            assertTrue(awaitItem())
+        }
+    }
+
+    /** And the collection is still live afterwards, rather than having survived only that read. */
+    @Test
+    fun `the grant keeps tracking writes after a transient read failure`() = runTest {
+        val file = fileStore("retry-tracking")
+        val subject = ComplimentaryAccessStore(failingOnce(file), sharedClockScope(), acceptingBoth)
+
+        subject.granted.test {
+            assertFalse(awaitItem())
+            assertEquals(RedeemResult.ACCEPTED, subject.redeem(issued))
+            assertTrue(awaitItem())
+        }
+    }
+
+    /**
+     * Shares the test's virtual clock, so the retry's backoff costs no wall-clock time, and dies
+     * with the test rather than outliving it as the eagerly-started collection otherwise would.
+     */
+    private fun TestScope.sharedClockScope() =
+        CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler))
+
+    /**
+     * Fails the first collection of `data` and delegates every later one. The counter is per
+     * [DataStore] rather than per collector because `retryWhen` re-collects the same upstream.
+     */
+    private fun failingOnce(delegate: DataStore<Preferences>): DataStore<Preferences> =
+        object : DataStore<Preferences> {
+            private var failed = false
+
+            override val data: Flow<Preferences> = flow {
+                if (!failed) {
+                    failed = true
+                    throw IOException("transient")
+                }
+                emitAll(delegate.data)
+            }
+
+            override suspend fun updateData(
+                transform: suspend (Preferences) -> Preferences
+            ): Preferences = delegate.updateData(transform)
+        }
 }
