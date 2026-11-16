@@ -196,12 +196,57 @@ class CloudSyncManagerTest {
     }
 
     @Test
-    fun `logs nothing about the gates while sync runs normally`() = runTest {
+    fun `logs once that the gates passed, and nothing more while sync runs normally`() = runTest {
         val sync = manager(testScheduler)
         sync.startSync()
         advanceTimeBy(TICK_MS * 5)
 
-        verify(exactly = 0) { Log.w(any(), any<String>()) }
+        verify(exactly = 1) { Log.w(any(), "Cloud sync gates passed; syncing") }
+        verify(exactly = 1) { Log.w(any(), any<String>()) }
+        sync.stopSync()
+    }
+
+    @Test
+    fun `names each gate that can refuse`() = runTest {
+        val sync = manager(testScheduler)
+
+        uploadMode.value = CloudUploadMode.OFF
+        sync.startSync()
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: UPLOADS_OFF") }
+
+        uploadMode.value = CloudUploadMode.WIFI_ONLY
+        statusResolved.value = false
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: BILLING_UNRESOLVED") }
+
+        statusResolved.value = true
+        coEvery { subscriptionGate.checkCloudAccess() } returns
+            GateResult.Blocked(BlockReason.CLOUD_STORAGE_PREMIUM_ONLY)
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync paused: NOT_ENTITLED") }
+        sync.stopSync()
+    }
+
+    /**
+     * A restart that passes immediately - the user connecting Drive - must still log, or the
+     * release log's last word stays the earlier loop's "paused" while sync is in fact running.
+     */
+    @Test
+    fun `a restarted loop logs its first evaluation again`() = runTest {
+        every { driveCloudStorage.isInitialized } returns false
+        val sync = manager(testScheduler)
+        sync.startSync()
+        advanceTimeBy(TICK_MS)
+
+        sync.startSync()
+        advanceTimeBy(TICK_MS)
+        verify(exactly = 2) { Log.w(any(), "Cloud sync paused: DRIVE_NOT_AUTHORIZED") }
+
+        every { driveCloudStorage.isInitialized } returns true
+        sync.startSync()
+        advanceTimeBy(1)
+        verify(exactly = 1) { Log.w(any(), "Cloud sync gates passed; syncing") }
         sync.stopSync()
     }
 

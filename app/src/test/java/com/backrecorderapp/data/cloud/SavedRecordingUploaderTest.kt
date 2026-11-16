@@ -292,6 +292,16 @@ class SavedRecordingUploaderTest {
     }
 
     @Test
+    fun `logs nothing for a user who is not entitled`() = runTest {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.FREE
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+
+        withFailureCollector(uploader) { uploader.enqueue(sourceFile(), "My Recording.m4a") }
+
+        verify(exactly = 0) { Log.w(any(), any<String>()) }
+    }
+
+    @Test
     fun `waits for billing to answer rather than refusing a subscriber Play was slow about`() =
         runTest {
             statusResolved.value = false

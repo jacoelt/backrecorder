@@ -92,9 +92,6 @@ class CloudSyncManager @Inject constructor(
     /** SimpleDateFormat is not thread-safe, so it is per-instance and only touched by the loop. */
     private val recoveryDateFormat = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
 
-    /** Touched only by the running loop; each new loop starts by clearing it. */
-    private var lastRefusal: SyncRefusal? = null
-
     private val _recoveryMessage = MutableStateFlow<String?>(null)
     val recoveryMessage: StateFlow<String?> = _recoveryMessage.asStateFlow()
 
@@ -143,14 +140,16 @@ class CloudSyncManager @Inject constructor(
         var staleScanDone = false
         var consecutiveFailures = 0
         var ticksSinceCleanup = CLEANUP_EVERY_N_TICKS
-        lastRefusal = null
+        // Local, not a field: a replaced loop can still be finishing a tick while its successor
+        // starts, and shared state would let the two interleave their transition lines.
+        val gateLog = GateTransitionLog()
 
         while (isActive) {
             var failed = false
             try {
                 val mode = appPreferences.cloudUploadMode.first()
 
-                if (canSyncNow(mode)) {
+                if (canSyncNow(mode, gateLog)) {
                     if (!staleScanDone) {
                         driveCloudStorage.ensureFolderStructure()
                         staleScanDone = handleStaleFiles()
@@ -211,12 +210,9 @@ class CloudSyncManager @Inject constructor(
      * billing has not answered yet and reports FREE for everyone, so persisting OFF here would
      * wipe a paying subscriber's configuration on every launch.
      */
-    private suspend fun canSyncNow(mode: CloudUploadMode): Boolean {
+    private suspend fun canSyncNow(mode: CloudUploadMode, gateLog: GateTransitionLog): Boolean {
         val refusal = syncRefusal(mode)
-        if (refusal != lastRefusal) {
-            logRefusalChange(refusal)
-            lastRefusal = refusal
-        }
+        gateLog.record(refusal)
         return refusal == null
     }
 
@@ -232,15 +228,23 @@ class CloudSyncManager @Inject constructor(
     }
 
     /**
-     * Level-triggered rather than per tick, so a gate that refuses for weeks costs one line. It is
-     * `Log.w` because release strips everything below it (#107): a loop refusing every tick was
-     * otherwise indistinguishable from one that was working.
+     * Logged on a change of reason, not per tick, and always on a loop's first evaluation - so a
+     * restart that passes straight away still overwrites an earlier "paused" line. `Log.w` because
+     * release strips everything below it (#107).
      */
-    private fun logRefusalChange(refusal: SyncRefusal?) {
-        if (refusal == null) {
-            Log.w(TAG, "Cloud sync gates passed; syncing")
-        } else {
-            Log.w(TAG, "Cloud sync paused: ${refusal.name}")
+    private class GateTransitionLog {
+        private var evaluated = false
+        private var last: SyncRefusal? = null
+
+        fun record(refusal: SyncRefusal?) {
+            if (evaluated && refusal == last) return
+            evaluated = true
+            last = refusal
+            if (refusal == null) {
+                Log.w(TAG, "Cloud sync gates passed; syncing")
+            } else {
+                Log.w(TAG, "Cloud sync paused: ${refusal.name}")
+            }
         }
     }
 
