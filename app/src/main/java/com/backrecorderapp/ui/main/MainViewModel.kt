@@ -327,8 +327,9 @@ class MainViewModel @Inject constructor(
     fun requestSave() {
         // The in-flight guard belongs here, not only on [saveRecording]: the picker creates its
         // 0-byte file the moment it returns a URI, so refusing a save after that point would
-        // leave exactly the empty recording issue #23 exists to prevent. Refusing before the
-        // picker opens is what makes the second tap cost nothing.
+        // leave exactly the empty recording issue #23 exists to prevent. It covers a tap made
+        // while a save is running, not two taps before the first picker returns - `saveInProgress`
+        // is not set until then, which is part of #111.
         if (_uiState.value.saveInProgress) return
         viewModelScope.launch {
             // Read once for the *inputs* below, but never written back wholesale: the calls in
@@ -383,29 +384,19 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Both guards exist because the save suspends since #93; before that it blocked this thread
-     * from the tap to the result, which made each of them unreachable rather than unnecessary.
+     * Everything here exists because the save suspends since #93; before that it blocked this
+     * thread from the tap to the result, which made each case unreachable rather than impossible.
+     * The reasoning is in CLAUDE.md's #93 bullet; the three decisions are:
      *
-     * A second save can now start while the first is still running - the Save affordance is live
-     * again the moment the body suspends - and two of them each force a flush rotation of the
-     * live recording and race to write `saveInProgress` and the outcome message. The in-flight
-     * flag refuses it, as it does for the upgrade hand-off under #74. [requestSave] carries the
-     * same guard and is the one that matters, since it runs before the picker exists; this one
-     * covers a picker result that was already on its way, and deletes the file that result
-     * created rather than leaving it behind.
+     * [requestSave] carries the guard that matters, since it runs before the picker exists. This
+     * one only covers a picker result already on its way, and deletes that result's file.
      *
-     * The flag is claimed synchronously, before the launch, and cleared in an unconditional
-     * `finally`, for the reason #74 gives: `getSegmentsInRange` and `checkSaveAccess` sit outside
-     * the use case's own `try`, so a Room or DataStore failure escapes `execute`, and a flag left
-     * set would make Save a permanently disabled spinner that both guards then refuse forever.
+     * The flag is claimed synchronously and cleared in an unconditional `finally`, because
+     * `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try` and a flag
+     * left set makes Save a permanently disabled spinner (#74).
      *
-     * `NonCancellable` keeps the save and its cleanup together. A cancelled `viewModelScope` -
-     * the user leaving while the spinner is up - would otherwise discard the result at the
-     * resume boundary while the uninterruptible trim and copy ran on regardless, so the empty
-     * SAF file the picker created would be left on the user's storage with nothing to delete it:
-     * issue #23 reopened by the dispatcher move. Cancelling for real is not the alternative it
-     * looks like, because at that boundary nothing here can tell a finished save from a
-     * half-written one, and deleting the wrong one destroys the recording.
+     * `NonCancellable` keeps the save and its cleanup together: a cancelled scope would otherwise
+     * strand the picker's empty file, which is #23 reopened.
      */
     fun saveRecording(outputUri: Uri) {
         if (_uiState.value.saveInProgress) {
