@@ -25,7 +25,17 @@ enum class PurchaseFailure {
     PRODUCT_UNAVAILABLE,
 
     /** Play refused to show the purchase sheet, or there was no live screen to show it over. */
-    LAUNCH_FAILED
+    LAUNCH_FAILED,
+
+    /**
+     * Another billing operation — a hand-off, or a plan load — held the one Play client for too
+     * long, so this one never asked Play anything.
+     *
+     * Its own outcome rather than [BILLING_UNAVAILABLE] because the two send the user somewhere
+     * different: nothing is wrong with billing, and trying again in a moment works. Both screens
+     * offer the upgrade over one `@Singleton` repository, so queueing is ordinary.
+     */
+    BILLING_BUSY
 }
 
 /**

@@ -97,6 +97,7 @@
     <string name="upgrade_error_billing_unavailable">Google Play billing isn\'t available right now. Check your connection and that you\'re signed in to the Play Store, then try again.</string>
     <string name="upgrade_error_product_unavailable">The Premium subscription isn\'t available for this account right now. Please try again later.</string>
     <string name="upgrade_error_launch_failed">Google Play couldn\'t open the purchase screen. Please try again.</string>
+    <string name="upgrade_error_billing_busy">Google Play billing is busy with another request. Please try again in a moment.</string>
     <string name="trial_active">Trial active — %d days remaining</string>
     <string name="cancel">Cancel</string>
     <string name="ok">OK</string>

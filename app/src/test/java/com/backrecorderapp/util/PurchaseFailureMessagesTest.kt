@@ -31,6 +31,10 @@ class PurchaseFailureMessagesTest {
             R.string.upgrade_error_launch_failed,
             PurchaseFailure.LAUNCH_FAILED.messageRes()
         )
+        assertEquals(
+            R.string.upgrade_error_billing_busy,
+            PurchaseFailure.BILLING_BUSY.messageRes()
+        )
     }
 
     @Test
