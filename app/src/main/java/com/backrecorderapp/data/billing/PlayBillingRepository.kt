@@ -57,17 +57,14 @@ class PlayBillingRepository @Inject constructor(
         /**
          * How long a caller may wait for [purchaseMutex] before reporting that billing is busy.
          *
-         * Timed apart from [PREPARE_TIMEOUT_MS] because the two mean different things to the
-         * user: Play never answering is "billing unavailable", while queueing behind the other
-         * screen's hand-off is "something else is in progress, try again in a moment". Sharing
-         * one budget meant a plan load could spend all of it on the lock and report the first
-         * over a Play it never asked anything (#78).
+         * Timed apart from [PREPARE_TIMEOUT_MS] so that busy and unavailable stay different
+         * answers; [PurchaseFailure.BILLING_BUSY] says why that matters.
          *
          * Deliberately shorter than [PREPARE_TIMEOUT_MS]. A hand-off holds the client for at
          * most one prepare, so an equal bound would make this outcome a dead heat that never
          * fires - and a waiter stuck behind a Play that is not answering gains nothing by
-         * waiting out the full prepare only to be refused anyway. A healthy round trip is
-         * seconds, so this is generous for a queue worth joining and short for one that is not.
+         * waiting out the full prepare only to be refused anyway. The pair puts the worst case a
+         * user can see at 30s, up from 20s, which is the price of not lying about the reason.
          */
         private const val LOCK_WAIT_TIMEOUT_MS = 10_000L
 
@@ -274,10 +271,7 @@ class PlayBillingRepository @Inject constructor(
 
     override suspend fun loadSubscriptionPlans(): PlanQuery =
         try {
-            // The lock wait is bounded separately from the Play round trip rather than sharing
-            // one budget with it: a load queued behind the other screen's hand-off could burn
-            // the whole of a shared budget waiting and then report "billing unavailable" over a
-            // Play that was never asked anything, which is the wrong word for "busy" (#78).
+            // The lock wait is bounded apart from the Play round trip; see [LOCK_WAIT_TIMEOUT_MS].
             if (!acquirePurchaseLock()) {
                 PlanQuery.Unavailable(busyFailure())
             } else {
@@ -306,11 +300,30 @@ class PlayBillingRepository @Inject constructor(
     /**
      * Takes [purchaseMutex] within [LOCK_WAIT_TIMEOUT_MS], false when the wait expired.
      *
-     * `Mutex.lock` releases the lock itself if cancellation lands after it was acquired, so a
-     * caller that times out here cannot leave it held.
+     * The flag, not `withTimeoutOrNull`'s return value, decides. Acquiring a resource inside a
+     * timeout and releasing it outside is the documented way to leak one: the timeout "may happen
+     * at any time, even right before the return from inside of the timeout block", so a `lock()`
+     * that already returned can still surface as null here. `held` is written only once `lock()`
+     * has returned without throwing, so it says what this call actually owns. Cancellation landing
+     * *while* `lock()` is suspended needs nothing - the mutex releases itself - but the caller's
+     * own cancellation landing after the acquire would unwind above the `finally` that unlocks,
+     * hence the `catch`. The leak would be permanent and process-wide: the repository is a
+     * `@Singleton`, so every later hand-off and plan load on both screens would report
+     * [PurchaseFailure.BILLING_BUSY] for the life of the process - the dead Upgrade button again.
      */
-    private suspend fun acquirePurchaseLock(): Boolean =
-        withTimeoutOrNull(LOCK_WAIT_TIMEOUT_MS) { purchaseMutex.lock() } != null
+    private suspend fun acquirePurchaseLock(): Boolean {
+        var held = false
+        try {
+            withTimeoutOrNull(LOCK_WAIT_TIMEOUT_MS) {
+                purchaseMutex.lock()
+                held = true
+            }
+        } catch (e: CancellationException) {
+            if (held) purchaseMutex.unlock()
+            throw e
+        }
+        return held
+    }
 
     private fun busyFailure(): PurchaseFailure = reportFailure(
         PurchaseFailure.BILLING_BUSY,
@@ -341,9 +354,7 @@ class PlayBillingRepository @Inject constructor(
         plan: SubscriptionPlan
     ): PurchaseFailure? {
         // Bounding the lock wait is safe here for the same reason wrapping the launch is not:
-        // this expires strictly before anything of Play's is on screen. Unbounded, a Continue
-        // tap queued behind the other screen's hand-off waited however long that one took, with
-        // nothing to tell the user it was waiting on (#78).
+        // this expires strictly before anything of Play's is on screen.
         if (!acquirePurchaseLock()) return busyFailure()
 
         return try {
@@ -432,10 +443,17 @@ class PlayBillingRepository @Inject constructor(
             if (!connection.compareAndSet(existing, attempt)) continue
 
             try {
-                // Inside the try: a throw out of the Play client would otherwise leave this
-                // attempt published and never completed, which is the very stranding the
-                // finally below exists to prevent.
-                startConnection(attempt)
+                try {
+                    startConnection(attempt)
+                } catch (e: Exception) {
+                    // A throw here is the one case where no callback was ever registered, so
+                    // nothing else can ever answer this attempt. Anyone already awaiting it -
+                    // typically the resolve ladder - would otherwise wait out its whole budget
+                    // for a connection that was never attempted.
+                    attempt.complete(
+                        reportFailure(PurchaseFailure.BILLING_UNAVAILABLE, "startConnection threw: $e")
+                    )
+                }
                 return attempt.await()
             } finally {
                 // Unpublished, never answered. This caller giving up - a timeout, or its screen
@@ -460,7 +478,7 @@ class PlayBillingRepository @Inject constructor(
                     pending.complete(null)
                 } else {
                     pending.complete(
-                        reportFailure(
+                        answerWaiters(
                             PurchaseFailure.BILLING_UNAVAILABLE,
                             "billing setup failed: ${result.responseCode} ${result.debugMessage}"
                         )
@@ -475,12 +493,24 @@ class PlayBillingRepository @Inject constructor(
                 // too - that one answers nobody and must not be logged as a hand-off failure.
                 if (pending.isCompleted) return
                 pending.complete(
-                    reportFailure(
+                    answerWaiters(
                         PurchaseFailure.BILLING_UNAVAILABLE,
                         "billing service disconnected before setup finished"
                     )
                 )
             }
+
+            /**
+             * [reportFailure], but silent once this attempt has been abandoned.
+             *
+             * Since #78 an abandoned attempt is left uncompleted, so the first ordinary Play
+             * service restart afterwards lands in the disconnect callback above and would log a
+             * hand-off failure for a hand-off nobody made. `Log.w` survives `-assumenosideeffects`
+             * in release and is the only evidence a field diagnosis has, so a phantom entry there
+             * costs more than the missing one.
+             */
+            fun answerWaiters(failure: PurchaseFailure, detail: String): PurchaseFailure =
+                if (connection.get() === pending) reportFailure(failure, detail) else failure
         })
     }
 

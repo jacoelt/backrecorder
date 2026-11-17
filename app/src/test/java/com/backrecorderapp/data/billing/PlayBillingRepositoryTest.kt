@@ -537,9 +537,12 @@ class PlayBillingRepositoryTest {
             runCurrent()
             verify(exactly = 1) { client.startConnection(any()) }
 
-            // The ladder's attempt expires and it backs off, leaving the tap still waiting.
+            // The ladder's attempt expires at 20s and it backs off. Stop short of
+            // RESOLVE_BACKOFF_START_MS after that, so the ladder has not yet started a second
+            // connection and `listener` is still the first attempt's.
             advanceTimeBy(16_000)
             assertTrue(tap.isActive)
+            verify(exactly = 1) { client.startConnection(any()) }
 
             // Play answers the connection that was outstanding all along.
             every { client.isReady } returns true
@@ -548,6 +551,7 @@ class PlayBillingRepositoryTest {
 
             assertNull(tap.await())
             verify(exactly = 1) { client.launchBillingFlow(activity, any()) }
+            verify(exactly = 1) { client.startConnection(any()) }
         }
 
     /**
@@ -638,6 +642,10 @@ class PlayBillingRepositoryTest {
     /**
      * A lock wait that expires must not leave the lock held: a leak would make every later
      * upgrade on either screen report busy for the life of the process.
+     *
+     * This pins the waiter that never acquired and the holder's own `finally`. The narrower race
+     * - a timeout landing after `lock()` has returned - is what `acquirePurchaseLock`'s `held`
+     * flag covers, and no JVM test can schedule it.
      */
     @Test
     fun `a lock wait that expires leaves the client usable`() =
