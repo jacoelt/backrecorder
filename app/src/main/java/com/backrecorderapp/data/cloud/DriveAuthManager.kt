@@ -293,12 +293,6 @@ class DriveAuthManager @Inject constructor(
     /** Caller must hold [sessionMutex]. */
     private suspend fun clearLocked() {
         tokenMutex.withLock { resetTokenLocked() }
-        // An answered lookup holds an account's address and id - a stranger's, on the mismatch
-        // path, which is the one place this app ever learns one - keyed by its access token.
-        // Teardown is where that stops being ours to keep. Only answered ones: dropping an
-        // outstanding entry would not stop the orphan, which holds all of it anyway, and would
-        // let a disconnect-reconnect cycle stack the second lookup this map exists to prevent.
-        lookupsInFlight.values.removeAll { it.deferred.isCompleted }
         invalidateSession()
     }
 
@@ -471,9 +465,18 @@ class DriveAuthManager @Inject constructor(
             // uncaught throw here - setDriveAccount is a DataStore write, which throws on an
             // unreadable file - takes the whole process down, from work the user never started.
             try {
-                val identity = lookup.await() ?: return@launch
+                val identity = lookup.await()
                 sessionMutex.withLock {
-                    if (pinnedAccountId != null || cachedToken != token) return@withLock
+                    // An answered lookup is nobody's to keep: it holds an account's address and
+                    // id - a stranger's where the pin refused this grant - under its access
+                    // token. `sharedLookupFor` would drop it too, but only when some later
+                    // adoption happens by, and on the network this is written for the answer
+                    // arrives minutes after the user gave up and left.
+                    if (lookupsInFlight[token]?.deferred === lookup) lookupsInFlight.remove(token)
+
+                    if (identity == null || pinnedAccountId != null || cachedToken != token) {
+                        return@withLock
+                    }
                     appPreferences.setDriveAccount(identity.accountId, identity.email)
                     pinnedAccountId = identity.accountId
                     pinnedEmail = identity.email

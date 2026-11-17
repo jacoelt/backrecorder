@@ -549,8 +549,8 @@ class DriveAuthManagerTest {
     fun `the consent result shares the lookup an earlier authorize left outstanding`() = runTest {
         // The consent path reaches accountMatchesPin too, and a connect attempt that timed out
         // is exactly what the user answers by granting consent - so it is the likeliest pair of
-        // callers to stack two orphans. The pin is also written once rather than once per
-        // caller, since each timed-out caller leaves its own watcher on the shared lookup.
+        // callers to stack two orphans. The pin is also written once, however many watchers the
+        // shared lookup ends up with.
         answersWith(grant())
         val resolver = CountingResolver(STALLED_LOOKUP_MS)
         val auth = newManager(resolver = resolver)
