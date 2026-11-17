@@ -107,6 +107,9 @@ class FakeDriveServer @Inject constructor() {
     private val uploadSessions = Collections.synchronizedMap(mutableMapOf<String, JSONObject>())
 
     @Volatile
+    private var failNextUploadResponse: Boolean = false
+
+    @Volatile
     private var accountId: String = DEFAULT_ACCOUNT_ID
 
     @Volatile
@@ -193,6 +196,7 @@ class FakeDriveServer @Inject constructor() {
         calls.clear()
         revoked.clear()
         uploadSessions.clear()
+        failNextUploadResponse = false
         accountId = DEFAULT_ACCOUNT_ID
         accountEmail = DEFAULT_ACCOUNT_EMAIL
     }
@@ -207,6 +211,18 @@ class FakeDriveServer @Inject constructor() {
         uploadSessions.clear()
         this.accountId = accountId
         this.accountEmail = email
+    }
+
+    /**
+     * Models the failure behind #92: Drive accepts and stores the bytes, then the client never
+     * sees the response. The entry is created exactly as a successful upload would create it and
+     * the uploader is told the attempt failed, so its retry runs against a Drive that already
+     * holds the file.
+     *
+     * One-shot, so the attempt after it can succeed.
+     */
+    fun failAfterNextUpload() {
+        failNextUploadResponse = true
     }
 
     /** Makes the server answer 401 to [token], as Drive does once a token is no longer good. */
@@ -372,7 +388,7 @@ class FakeDriveServer @Inject constructor() {
             val parts = multipartBodies(request)
             val meta = parts.firstOrNull()?.let { JSONObject(String(it, Charsets.UTF_8)) }
                 ?: JSONObject()
-            return created(createFromMetadata(meta, parts.getOrNull(1)))
+            return completedUpload(createFromMetadata(meta, parts.getOrNull(1)))
         }
 
         val metadata = JSONObject(request.bodyText().ifBlank { "{}" })
@@ -392,7 +408,17 @@ class FakeDriveServer @Inject constructor() {
             ?: return Response(400, error(400, "no upload_id"))
         val metadata = uploadSessions.remove(uploadId)
             ?: return Response(404, error(404, "unknown upload session"))
-        return created(createFromMetadata(metadata, request.body))
+        return completedUpload(createFromMetadata(metadata, request.body))
+    }
+
+    /**
+     * The response to a stored upload — 500 instead of the entry when [failAfterNextUpload] armed
+     * it, leaving the file on the server and the client believing the attempt failed.
+     */
+    private fun completedUpload(entry: Entry): Response {
+        if (!failNextUploadResponse) return created(entry)
+        failNextUploadResponse = false
+        return Response(500, error(500, "the connection dropped after the bytes landed"))
     }
 
     private fun createFromMetadata(metadata: JSONObject, content: ByteArray?): Entry {
@@ -478,6 +504,9 @@ class FakeDriveServer @Inject constructor() {
 
     private fun entryJson(entry: Entry): JSONObject = JSONObject()
         .put("id", entry.id)
+        // Drive reports a byte size for anything with content, and `findSavedRecording` matches
+        // on it (#92) — a fake that omitted it would make that lookup silently never match.
+        .put("size", entry.content?.size?.toString())
         .put("name", entry.name)
         .put("mimeType", entry.mimeType)
         .put("trashed", entry.trashed)

@@ -95,6 +95,9 @@ class SavedRecordingUploaderTest {
 
         driveCloudStorage = mockk(relaxed = true)
         every { driveCloudStorage.isInitialized } returns true
+        // Explicit because a relaxed mock answers a String? with "", which the uploader would
+        // read as a copy a previous attempt had landed and every retry test would stop at one.
+        coEvery { driveCloudStorage.findSavedRecording(any(), any()) } returns null
 
         driveAuthManager = mockk(relaxed = true)
         isAuthorized = MutableStateFlow(true)
@@ -674,6 +677,79 @@ class SavedRecordingUploaderTest {
             assertFalse("the abandoned staged file must be swept", abandoned.exists())
             assertTrue("a recent staged file belongs to a live upload", recent.exists())
         }
+
+    /**
+     * Issue #92. A connection dropping after Drive accepted the bytes fails the attempt while
+     * the copy exists there, and Drive does not dedupe by name - so a blind retry left the user
+     * paying quota for two or three copies of one recording.
+     */
+    @Test
+    fun `does not re-upload a copy a dropped connection had already landed`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            RuntimeException("connection reset after the bytes were accepted")
+        coEvery {
+            driveCloudStorage.findSavedRecording("My Recording.m4a", RECORDING_BYTES.size.toLong())
+        } returns "drive-id"
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        assertTrue("a copy that did land is a success, not a failure", reported.isEmpty())
+        verify(exactly = 0) { uploadFailureNotifier.notifyUploadFailed(any()) }
+    }
+
+    @Test
+    fun `does not look for an earlier copy before the first attempt`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        uploader.enqueue(sourceFile(), "My Recording.m4a")
+        advanceUntilIdle()
+
+        // A match here would be an earlier recording saved under the same name, and skipping on
+        // it would drop this one's backup entirely.
+        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any(), any()) }
+    }
+
+    @Test
+    fun `retries normally when no earlier copy is on Drive`() = runTest {
+        var attempts = 0
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+            attempts++
+            throw RuntimeException("transient")
+        }
+        coEvery { driveCloudStorage.findSavedRecording(any(), any()) } returns null
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        assertEquals(SavedRecordingUploader.MAX_ATTEMPTS, attempts)
+        assertEquals(1, reported.size)
+    }
+
+    @Test
+    fun `uploads anyway when the check for an earlier copy cannot be answered`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            RuntimeException("transient")
+        coEvery { driveCloudStorage.findSavedRecording(any(), any()) } throws
+            RuntimeException("the listing failed too")
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        // A missing backup is worse for the user than a duplicate, so not knowing uploads.
+        coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
+            driveCloudStorage.uploadSavedRecording(any(), any())
+        }
+        assertEquals(1, reported.size)
+    }
 
     private companion object {
         val RECORDING_BYTES = ByteArray(16) { it.toByte() }

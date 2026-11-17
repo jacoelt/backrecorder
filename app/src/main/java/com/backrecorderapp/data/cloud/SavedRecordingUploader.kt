@@ -269,6 +269,9 @@ class SavedRecordingUploader @Inject constructor(
     private suspend fun attemptUpload(file: File, displayName: String, attempt: Int): Attempt =
         uploadMutex.withLock {
             try {
+                if (attempt > 1) {
+                    alreadyOnDrive(file, displayName)?.let { return@withLock Attempt.UPLOADED }
+                }
                 val uploadedId = withTimeout(UPLOAD_TIMEOUT_MS) {
                     driveCloudStorage.uploadSavedRecording(file, displayName)
                 }
@@ -297,6 +300,33 @@ class SavedRecordingUploader @Inject constructor(
                 Log.e(TAG, "Saved-recording upload attempt $attempt failed", e)
                 Attempt.RETRYABLE
             }
+        }
+
+    /**
+     * The id of a copy a previous attempt landed after all, or null.
+     *
+     * A connection that drops *after* Drive accepted the bytes but before the response reached
+     * the client fails the attempt here while the file exists there (#92). Drive does not dedupe
+     * by name, so retrying blind adds a second copy under the same name and spends the user's
+     * quota - two or three of one recording, with nothing in the app able to tell them apart
+     * afterwards. A resumable upload would not fix this: the client cannot resume a session
+     * across a new `execute()`, so a dropped one is abandoned and the retry starts a fresh
+     * session, which is the same duplicate.
+     *
+     * A probe that cannot be answered falls through to the upload rather than skipping it: a
+     * duplicate costs quota, a missing backup costs the copy, and the copy is what the user was
+     * promised.
+     */
+    private suspend fun alreadyOnDrive(file: File, displayName: String): String? =
+        try {
+            driveCloudStorage.findSavedRecording(displayName, file.length())?.also {
+                Log.w(TAG, "A previous attempt had already uploaded this recording")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not check whether a previous attempt landed", e)
+            null
         }
 
     /**

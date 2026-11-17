@@ -97,6 +97,32 @@ class DriveCloudStorage @Inject constructor(
         return withContext(Dispatchers.IO) { uploadFile(file, folders.rootId, displayName) }
     }
 
+    /**
+     * The id of a recording already sitting in `BackRecorder/` under [displayName] and exactly
+     * [sizeBytes] long, or null.
+     *
+     * Size as well as name, because the name alone cannot tell the copy a dropped retry left
+     * behind from a different recording the user saved under the same name earlier - and reading
+     * that one as "already uploaded" would silently drop the new recording's backup. A partial
+     * transfer Drive never committed is not listed at all, so a short file cannot match either.
+     */
+    suspend fun findSavedRecording(displayName: String, sizeBytes: Long): String? =
+        withContext(Dispatchers.IO) {
+            val folders = ensureFolderStructure() ?: return@withContext null
+            val drive = drive ?: return@withContext null
+
+            val result = drive.files().list()
+                .setQ(
+                    "name = '${escapeQueryLiteral(displayName)}' and " +
+                        "'${folders.rootId}' in parents and trashed = false " +
+                        "and mimeType != '$FOLDER_MIME_TYPE'"
+                )
+                .setFields("files(id, size)")
+                .execute()
+
+            result.files?.firstOrNull { it.getSize() == sizeBytes }?.id
+        }
+
     private fun uploadFile(file: File, parentFolderId: String, displayName: String): String? {
         val drive = drive ?: return null
 

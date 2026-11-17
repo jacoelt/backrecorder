@@ -449,6 +449,46 @@ class DriveSyncE2eTest {
         )
     }
 
+    /**
+     * A retry after Drive accepted the bytes but lost the response leaves **one** copy, not two
+     * (#92).
+     *
+     * No unit test can establish this: what it turns on is the real [DriveCloudStorage] asking a
+     * real Drive API for a file by name and size, against a server that genuinely holds the one
+     * the dropped attempt stored. Drive does not dedupe by name, so before the fix the retry
+     * added a second copy of the recording to the user's quota with nothing able to tell them
+     * apart afterwards.
+     */
+    @Test
+    fun aRetryAfterADroppedResponseDoesNotLeaveASecondCopy() = runBlocking {
+        authorize()
+        appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        val folders = requireNotNull(driveCloudStorage.ensureFolderStructure())
+
+        server.failAfterNextUpload()
+        val saved = File(appContext.cacheDir, "Dropped Response.m4a").apply {
+            writeBytes(ByteArray(96) { it.toByte() })
+        }
+        savedRecordingUploader.enqueue(saved, "Dropped Response.m4a")
+
+        awaitUntil("The saved recording never reached the fake Drive", LOOP_TIMEOUT_MS) {
+            server.entries().any { it.name == "Dropped Response.m4a" }
+        }
+        awaitDriveQuiet()
+
+        val copies = server.entries().filter { it.name == "Dropped Response.m4a" }
+        assertEquals(
+            "A retried upload must not add a second copy: $copies",
+            1,
+            copies.size
+        )
+        assertEquals(
+            "The one copy must still be in $ROOT_FOLDER",
+            listOf(folders.rootId),
+            copies.single().parents.toList()
+        )
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private suspend fun authorize() {
