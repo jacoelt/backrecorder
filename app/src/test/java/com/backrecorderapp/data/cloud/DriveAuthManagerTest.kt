@@ -567,15 +567,31 @@ class DriveAuthManagerTest {
     }
 
     @Test
-    fun `a disconnect forgets the lookup holding the account's token and address`() = runTest {
-        // A disconnect is the user asking the app to forget the account, and the shared lookup
-        // holds its access token as a map key and its address in the answer it is waiting on.
+    fun `a disconnect and reconnect rejoins the lookup still outstanding`() = runTest {
+        // Disconnect-reconnect is what a user does when a connect appears to hang, so it is the
+        // likeliest way to stack orphans. Teardown drops answered lookups, never running ones:
+        // dropping those would not stop the orphan and would restart it on the next tap.
         answersWith(grant())
         val resolver = CountingResolver(STALLED_LOOKUP_MS)
         val auth = newManager(resolver = resolver)
         auth.authorize()
 
         auth.signOut()
+        auth.authorize()
+
+        assertEquals(listOf("token-1"), resolver.tokensAsked)
+    }
+
+    @Test
+    fun `a lookup outstanding past the reuse window is asked again`() = runTest {
+        // The bound on rejoining: an orphan can outlive its usefulness by minutes, and a
+        // network that recovered meanwhile can only pin if something asks on a fresh socket.
+        answersWith(grant())
+        val resolver = CountingResolver(STALLED_LOOKUP_MS)
+        val auth = newManager(resolver = resolver)
+        auth.authorize()
+
+        every { SystemClock.elapsedRealtime() } returns 1_000L + LOOKUP_REUSE_WINDOW_MS
         auth.authorize()
 
         assertEquals(listOf("token-1", "token-1"), resolver.tokensAsked)
@@ -649,6 +665,9 @@ class DriveAuthManagerTest {
 
         /** Mirrors `DriveAuthManager.IDENTITY_LOOKUP_TIMEOUT_MS`, which is private. */
         const val IDENTITY_LOOKUP_BUDGET_MS = 10_000L
+
+        /** Mirrors `DriveAuthManager.LOOKUP_REUSE_WINDOW_MS`, which is private. */
+        const val LOOKUP_REUSE_WINDOW_MS = 60_000L
 
         /** The assertion is about orders of magnitude, not an exact schedule. */
         const val SLACK_MS = 1_000L

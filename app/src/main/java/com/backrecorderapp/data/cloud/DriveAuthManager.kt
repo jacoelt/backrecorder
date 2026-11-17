@@ -87,7 +87,25 @@ class DriveAuthManager @Inject constructor(
          * merely slow device would report a working grant as failed.
          */
         private const val PLAY_SERVICES_TIMEOUT_MS = 30_000L
+
+        /**
+         * How long an outstanding identity lookup stays reusable by a later adoption.
+         *
+         * A judgement rather than a measurement, and it is a trade between two failures. Too
+         * short and `sharedLookupFor` dedupes nothing - callers are serialized behind
+         * [sessionMutex] and so arrive a whole [IDENTITY_LOOKUP_TIMEOUT_MS] apart, which is why
+         * a window at the budget would never reuse anything. Too long and a network that
+         * recovers mid-stall keeps rejoining the dead socket for the ~320s an orphan can live,
+         * resolving "unknown" and pinning nothing the whole time. A minute collapses a storm of
+         * taps into a handful of lookups while keeping that blind window short.
+         */
+        private const val LOOKUP_REUSE_WINDOW_MS = 60_000L
     }
+
+    private class OutstandingLookup(
+        val startedAt: Long,
+        val deferred: Deferred<DriveAccountIdentity?>
+    )
 
     /** Outcome of asking for authorization without showing UI ourselves. */
     sealed class AuthorizationOutcome {
@@ -138,7 +156,7 @@ class DriveAuthManager @Inject constructor(
     private val sessionMutex = Mutex()
 
     /** Guarded by [sessionMutex]; see `sharedLookupFor`. */
-    private val lookupsInFlight = mutableMapOf<String, Deferred<DriveAccountIdentity?>>()
+    private val lookupsInFlight = mutableMapOf<String, OutstandingLookup>()
 
     private val tokenMutex = Mutex()
     /** Read without [tokenMutex] by the late pin only - see `pinWhateverTheOrphanResolves`. */
@@ -231,10 +249,6 @@ class DriveAuthManager @Inject constructor(
      */
     suspend fun signOut() = sessionMutex.withLock {
         clearLocked()
-        // A disconnect is the user asking the app to forget the account, and a shared lookup
-        // holds its access token as a map key and the account's address in its answer. The
-        // orphan itself cannot be cancelled and keeps its own reference; this only drops ours.
-        lookupsInFlight.clear()
         appPreferences.setDriveAccount(null, null)
         pinnedAccountId = null
         pinnedEmail = null
@@ -279,6 +293,12 @@ class DriveAuthManager @Inject constructor(
     /** Caller must hold [sessionMutex]. */
     private suspend fun clearLocked() {
         tokenMutex.withLock { resetTokenLocked() }
+        // An answered lookup holds an account's address and id - a stranger's, on the mismatch
+        // path, which is the one place this app ever learns one - keyed by its access token.
+        // Teardown is where that stops being ours to keep. Only answered ones: dropping an
+        // outstanding entry would not stop the orphan, which holds all of it anyway, and would
+        // let a disconnect-reconnect cycle stack the second lookup this map exists to prevent.
+        lookupsInFlight.values.removeAll { it.deferred.isCompleted }
         invalidateSession()
     }
 
@@ -394,26 +414,30 @@ class DriveAuthManager @Inject constructor(
      * deliberate: the lookup is the *detection* half of the account pin, so skipping it would
      * remove the backstop this class documents.
      *
-     * Only *outstanding* lookups are shared, never answers: a completed one is dropped on the
-     * next call, so no verdict reached under one grant can be read back under another.
+     * Only *outstanding* lookups are shared, never answers: a completed one is dropped rather
+     * than cached, so no verdict reached under one grant can be read back under another.
      *
-     * The accepted cost is that a lookup already abandoned is **rejoined** rather than re-asked.
-     * Every caller is serialized behind [sessionMutex], so a second one arrives no sooner than
-     * [IDENTITY_LOOKUP_TIMEOUT_MS] after the first - meaning a rule that only reuses a lookup
-     * still inside its own budget would never reuse one at all, and this would dedupe nothing.
-     * So on a network that recovers while an orphan is still stalled, adoptions keep joining the
-     * dead socket until it gives up, resolving to "unknown" and pinning nothing in the meantime -
-     * which is the degrade [accountMatchesPin] already documents, and the orphan's own watcher
-     * records the pin when it finally answers.
+     * What is shared is a lookup that has usually been **abandoned** already — its first caller
+     * gave up at [IDENTITY_LOOKUP_TIMEOUT_MS] while it kept running — so reuse is bounded by
+     * [LOOKUP_REUSE_WINDOW_MS] rather than by the lookup's own life. Past that an adoption asks
+     * again on a fresh socket, which is what lets a network that recovered mid-stall pin at all;
+     * the orphan is left running, never cancelled, and its watcher still records a late pin.
+     *
+     * The saving is largest when Play Services keeps handing back one access token for a live
+     * grant, which is the shape this is written against; lookups for *distinct* tokens still
+     * stack one orphan each, which is [#117](https://github.com/jacoelt/backrecorder/issues/117).
      *
      * Caller must hold [sessionMutex]: every path here runs under [adoptLocked], and the map
      * needs no lock of its own.
      */
     private fun sharedLookupFor(token: String): Deferred<DriveAccountIdentity?> {
-        lookupsInFlight.values.removeAll { it.isCompleted }
-        return lookupsInFlight.getOrPut(token) {
-            applicationScope.async { identityResolver.resolve(token) }
+        val now = SystemClock.elapsedRealtime()
+        lookupsInFlight.values.removeAll {
+            it.deferred.isCompleted || now - it.startedAt >= LOOKUP_REUSE_WINDOW_MS
         }
+        return lookupsInFlight.getOrPut(token) {
+            OutstandingLookup(now, applicationScope.async { identityResolver.resolve(token) })
+        }.deferred
     }
 
     /**
