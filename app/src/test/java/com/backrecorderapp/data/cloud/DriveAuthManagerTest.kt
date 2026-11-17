@@ -532,10 +532,8 @@ class DriveAuthManagerTest {
 
     @Test
     fun `repeated authorizes share one outstanding lookup for the same token`() = runTest {
-        // #104: each abandoned lookup holds an IO thread, a Drive client and a socket for as
-        // long as the network tarpits it, and Settings entries, launches and Connect taps all
-        // reach this path. Starting a second lookup for a token one is already outstanding for
-        // stacks orphans in the pool Room, DataStore and the uploads share.
+        // An abandoned lookup keeps its thread, Drive client and socket for the whole stall, so
+        // a token one is already outstanding for must rejoin it rather than stack an orphan.
         answersWith(grant())
         val resolver = CountingResolver(STALLED_LOOKUP_MS)
         val auth = newManager(resolver = resolver)
@@ -545,6 +543,42 @@ class DriveAuthManagerTest {
         auth.authorize()
 
         assertEquals(listOf("token-1"), resolver.tokensAsked)
+    }
+
+    @Test
+    fun `the consent result shares the lookup an earlier authorize left outstanding`() = runTest {
+        // The consent path reaches accountMatchesPin too, and a connect attempt that timed out
+        // is exactly what the user answers by granting consent - so it is the likeliest pair of
+        // callers to stack two orphans. The pin is also written once rather than once per
+        // caller, since each timed-out caller leaves its own watcher on the shared lookup.
+        answersWith(grant())
+        val resolver = CountingResolver(STALLED_LOOKUP_MS)
+        val auth = newManager(resolver = resolver)
+        auth.authorize()
+
+        every { client.resultFromIntent(any()) } returns grant()
+        auth.handleAuthorizationResult(mockk(relaxed = true))
+
+        assertEquals(listOf("token-1"), resolver.tokensAsked)
+
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { preferences.setDriveAccount("acct-1", "a@x.com") }
+    }
+
+    @Test
+    fun `a disconnect forgets the lookup holding the account's token and address`() = runTest {
+        // A disconnect is the user asking the app to forget the account, and the shared lookup
+        // holds its access token as a map key and its address in the answer it is waiting on.
+        answersWith(grant())
+        val resolver = CountingResolver(STALLED_LOOKUP_MS)
+        val auth = newManager(resolver = resolver)
+        auth.authorize()
+
+        auth.signOut()
+        auth.authorize()
+
+        assertEquals(listOf("token-1", "token-1"), resolver.tokensAsked)
     }
 
     @Test
@@ -565,9 +599,8 @@ class DriveAuthManagerTest {
 
     @Test
     fun `a lookup that has already answered is not reused by the next authorize`() = runTest {
-        // Only outstanding lookups are shared, never their answers: the check is the detection
-        // half of the account pin, so every adoption has to ask Drive afresh rather than read a
-        // verdict reached under an earlier grant.
+        // Only outstanding lookups are shared, never answers: a verdict reached under one grant
+        // must not be read back under a later one.
         answersWith(grant())
         val resolver = CountingResolver(durationMs = 0L)
         val auth = newManager(resolver = resolver)

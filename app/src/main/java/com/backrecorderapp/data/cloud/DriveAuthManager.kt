@@ -137,7 +137,7 @@ class DriveAuthManager @Inject constructor(
      */
     private val sessionMutex = Mutex()
 
-    private val lookupMutex = Mutex()
+    /** Guarded by [sessionMutex]; see `sharedLookupFor`. */
     private val lookupsInFlight = mutableMapOf<String, Deferred<DriveAccountIdentity?>>()
 
     private val tokenMutex = Mutex()
@@ -231,6 +231,10 @@ class DriveAuthManager @Inject constructor(
      */
     suspend fun signOut() = sessionMutex.withLock {
         clearLocked()
+        // A disconnect is the user asking the app to forget the account, and a shared lookup
+        // holds its access token as a map key and the account's address in its answer. The
+        // orphan itself cannot be cancelled and keeps its own reference; this only drops ours.
+        lookupsInFlight.clear()
         appPreferences.setDriveAccount(null, null)
         pinnedAccountId = null
         pinnedEmail = null
@@ -390,18 +394,27 @@ class DriveAuthManager @Inject constructor(
      * deliberate: the lookup is the *detection* half of the account pin, so skipping it would
      * remove the backstop this class documents.
      *
-     * Only *outstanding* lookups are shared, never results. A completed one is dropped on the
-     * next call, so every adoption still asks Drive afresh and no answer here outlives the grant
-     * it was made under. [lookupMutex] is always taken under [sessionMutex] and never the other
-     * way round; nothing suspends while it is held.
+     * Only *outstanding* lookups are shared, never answers: a completed one is dropped on the
+     * next call, so no verdict reached under one grant can be read back under another.
+     *
+     * The accepted cost is that a lookup already abandoned is **rejoined** rather than re-asked.
+     * Every caller is serialized behind [sessionMutex], so a second one arrives no sooner than
+     * [IDENTITY_LOOKUP_TIMEOUT_MS] after the first - meaning a rule that only reuses a lookup
+     * still inside its own budget would never reuse one at all, and this would dedupe nothing.
+     * So on a network that recovers while an orphan is still stalled, adoptions keep joining the
+     * dead socket until it gives up, resolving to "unknown" and pinning nothing in the meantime -
+     * which is the degrade [accountMatchesPin] already documents, and the orphan's own watcher
+     * records the pin when it finally answers.
+     *
+     * Caller must hold [sessionMutex]: every path here runs under [adoptLocked], and the map
+     * needs no lock of its own.
      */
-    private suspend fun sharedLookupFor(token: String): Deferred<DriveAccountIdentity?> =
-        lookupMutex.withLock {
-            lookupsInFlight.values.removeAll { it.isCompleted }
-            lookupsInFlight.getOrPut(token) {
-                applicationScope.async { identityResolver.resolve(token) }
-            }
+    private fun sharedLookupFor(token: String): Deferred<DriveAccountIdentity?> {
+        lookupsInFlight.values.removeAll { it.isCompleted }
+        return lookupsInFlight.getOrPut(token) {
+            applicationScope.async { identityResolver.resolve(token) }
         }
+    }
 
     /**
      * Records the pin from an abandoned lookup if it ever answers.
