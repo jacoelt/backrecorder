@@ -87,7 +87,25 @@ class DriveAuthManager @Inject constructor(
          * merely slow device would report a working grant as failed.
          */
         private const val PLAY_SERVICES_TIMEOUT_MS = 30_000L
+
+        /**
+         * How long an outstanding identity lookup stays reusable by a later adoption.
+         *
+         * A judgement rather than a measurement, and it is a trade between two failures. Too
+         * short and `sharedLookupFor` dedupes nothing - callers are serialized behind
+         * [sessionMutex] and so arrive a whole [IDENTITY_LOOKUP_TIMEOUT_MS] apart, which is why
+         * a window at the budget would never reuse anything. Too long and a network that
+         * recovers mid-stall keeps rejoining the dead socket for the ~320s an orphan can live,
+         * resolving "unknown" and pinning nothing the whole time. A minute collapses a storm of
+         * taps into a handful of lookups while keeping that blind window short.
+         */
+        private const val LOOKUP_REUSE_WINDOW_MS = 60_000L
     }
+
+    private class OutstandingLookup(
+        val startedAt: Long,
+        val deferred: Deferred<DriveAccountIdentity?>
+    )
 
     /** Outcome of asking for authorization without showing UI ourselves. */
     sealed class AuthorizationOutcome {
@@ -136,6 +154,9 @@ class DriveAuthManager @Inject constructor(
      * which cannot wait on a session operation without deadlocking the request it is serving.
      */
     private val sessionMutex = Mutex()
+
+    /** Guarded by [sessionMutex]; see `sharedLookupFor`. */
+    private val lookupsInFlight = mutableMapOf<String, OutstandingLookup>()
 
     private val tokenMutex = Mutex()
     /** Read without [tokenMutex] by the late pin only - see `pinWhateverTheOrphanResolves`. */
@@ -362,9 +383,11 @@ class DriveAuthManager @Inject constructor(
      * because it waits while holding [sessionMutex] - see the #102 bullet in CLAUDE.md.
      */
     private suspend fun resolveIdentityWithinBudget(token: String): DriveAccountIdentity? {
-        val lookup = applicationScope.async { identityResolver.resolve(token) }
+        val lookup = sharedLookupFor(token)
         return try {
-            withTimeout(IDENTITY_LOOKUP_TIMEOUT_MS) { lookup.await() }
+            val identity = withTimeout(IDENTITY_LOOKUP_TIMEOUT_MS) { lookup.await() }
+            dropAnsweredLookup(token, lookup)
+            identity
         } catch (e: TimeoutCancellationException) {
             // Caught by its own type, not as CancellationException: a caller cancelled from
             // outside must still unwind rather than be reported as a slow lookup.
@@ -372,6 +395,62 @@ class DriveAuthManager @Inject constructor(
             pinWhateverTheOrphanResolves(token, lookup)
             null
         }
+    }
+
+    /**
+     * The outstanding lookup for [token], starting one only when there is none.
+     *
+     * An abandoned lookup is still running, and on a network that tarpits connects to
+     * googleapis.com it holds a [kotlinx.coroutines.Dispatchers.IO] thread, a throwaway Drive
+     * client and a pending socket for the ~320s measured in #102. The callers that reach
+     * [accountMatchesPin] repeat freely - a Settings entry, an app launch, a Connect tap - so
+     * without this they stack orphans in the pool Room, DataStore and the uploads share.
+     *
+     * Deduping by token rather than skipping the lookup once [pinnedAccountId] is set is
+     * deliberate: the lookup is the *detection* half of the account pin, so skipping it would
+     * remove the backstop this class documents.
+     *
+     * Only *outstanding* lookups are shared, never answers: a completed one is dropped rather
+     * than cached, so no verdict reached under one grant can be read back under another.
+     *
+     * What is shared is a lookup that has usually been **abandoned** already — its first caller
+     * gave up at [IDENTITY_LOOKUP_TIMEOUT_MS] while it kept running — so reuse is bounded by
+     * [LOOKUP_REUSE_WINDOW_MS] rather than by the lookup's own life. Past that an adoption asks
+     * again on a fresh socket, which is what lets a network that recovered mid-stall pin at all;
+     * the orphan is left running, never cancelled, and its watcher still records a late pin.
+     *
+     * The saving is largest when Play Services keeps handing back one access token for a live
+     * grant, which is the shape this is written against; lookups for *distinct* tokens still
+     * stack one orphan each, which is [#117](https://github.com/jacoelt/backrecorder/issues/117).
+     *
+     * Caller must hold [sessionMutex]: every path here runs under [adoptLocked], and the map
+     * needs no lock of its own.
+     */
+    private fun sharedLookupFor(token: String): Deferred<DriveAccountIdentity?> {
+        val now = SystemClock.elapsedRealtime()
+        lookupsInFlight.values.removeAll {
+            it.deferred.isCompleted || now - it.startedAt >= LOOKUP_REUSE_WINDOW_MS
+        }
+        return lookupsInFlight.getOrPut(token) {
+            OutstandingLookup(now, applicationScope.async { identityResolver.resolve(token) })
+        }.deferred
+    }
+
+    /**
+     * Forgets a lookup that has answered, from whichever side received the answer.
+     *
+     * An answered lookup is nobody's to keep: it holds an account's address and id - a
+     * stranger's where the pin refused the grant - under its access token. `sharedLookupFor`
+     * drops it too, but only when some later adoption happens by, which on the network this is
+     * written for is long after the user gave up and left, and may be never.
+     *
+     * Identity rather than equality: a replacement for the same token is a different `async`,
+     * and an earlier answer must not drop it.
+     *
+     * Caller must hold [sessionMutex].
+     */
+    private fun dropAnsweredLookup(token: String, lookup: Deferred<DriveAccountIdentity?>) {
+        if (lookupsInFlight[token]?.deferred === lookup) lookupsInFlight.remove(token)
     }
 
     /**
@@ -405,9 +484,13 @@ class DriveAuthManager @Inject constructor(
             // uncaught throw here - setDriveAccount is a DataStore write, which throws on an
             // unreadable file - takes the whole process down, from work the user never started.
             try {
-                val identity = lookup.await() ?: return@launch
+                val identity = lookup.await()
                 sessionMutex.withLock {
-                    if (pinnedAccountId != null || cachedToken != token) return@withLock
+                    dropAnsweredLookup(token, lookup)
+
+                    if (identity == null || pinnedAccountId != null || cachedToken != token) {
+                        return@withLock
+                    }
                     appPreferences.setDriveAccount(identity.accountId, identity.email)
                     pinnedAccountId = identity.accountId
                     pinnedEmail = identity.email
