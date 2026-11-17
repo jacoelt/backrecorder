@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import javax.inject.Inject
 
@@ -45,6 +46,8 @@ class SaveRecordingUseCase @Inject constructor(
 
     companion object {
         private const val TAG = "SaveRecordingUseCase"
+
+        private const val TRUNCATING_WRITE_MODE = "wt"
 
         private const val MAX_DISPLAY_NAME_LENGTH = 100
         private const val MAX_EXTENSION_LENGTH = 8
@@ -331,7 +334,7 @@ class SaveRecordingUseCase @Inject constructor(
         // storage, and - once the Drive copy existed - uploaded the audio that was missing from
         // it. The save must fail instead, so the empty file is cleaned up and nothing is handed
         // to the uploader.
-        val outputStream = context.contentResolver.openOutputStream(destUri)
+        val outputStream = openForWriting(destUri)
             ?: throw IOException("Could not open the chosen location for writing")
 
         outputStream.use { out ->
@@ -339,5 +342,30 @@ class SaveRecordingUseCase @Inject constructor(
                 input.copyTo(out)
             }
         }
+    }
+
+    /**
+     * Asks for `"wt"` rather than the default `"w"` (issue #96): a `DocumentsProvider` is not
+     * required to truncate on `"w"`, so a URI aimed at an existing, longer file would keep that
+     * file's trailing bytes past the end of the new recording - a corrupt local `.m4a` while the
+     * Drive copy of the same save is correct.
+     *
+     * The truncating mode is optional for a provider to honour, and one that will not honour it
+     * says so either by throwing or by answering null, before any byte is written. Both fall back
+     * to the plain write, which is exactly the behaviour that shipped before this: a save that
+     * fails outright is a worse outcome than the stale tail this guards against, and the picker
+     * almost always mints a fresh file where the two modes are indistinguishable.
+     */
+    private fun openForWriting(destUri: Uri): OutputStream? {
+        val resolver = context.contentResolver
+        val truncating = try {
+            resolver.openOutputStream(destUri, TRUNCATING_WRITE_MODE)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Destination would not open truncating; retrying with a plain write", e)
+            null
+        }
+        return truncating ?: resolver.openOutputStream(destUri)
     }
 }
