@@ -255,20 +255,25 @@ class SavedRecordingUploader @Inject constructor(
                     // one is still reported.
                     val mode = appPreferences.cloudUploadMode.first()
                     if (mode == CloudUploadMode.OFF) return
-                    if (!isCloudNetworkAvailable(context, mode)) {
-                        // Not probed: with no transport the request cannot answer, and a doomed
-                        // one holds the lock - and every save behind it - for the whole connect
-                        // timeout before the user hears anything.
-                        reportFailure(displayName)
-                        return
-                    }
+                    if (!isCloudNetworkAvailable(context, mode)) break
                 }
             }
         }
 
         // The last attempt can drop the same way, or commit and then answer terminal; without
         // this the user is told the backup failed while it sits in BackRecorder/.
-        if (uploadMutex.withLock { alreadyOnDrive(runId) } != null) return
+        //
+        // Read here rather than relying on the checks between attempts, which a break on the
+        // last attempt jumps straight past: with no transport the probe cannot answer, and a
+        // doomed request holds the lock - and every save queued behind it - for the whole
+        // connect timeout before the user hears anything.
+        val transportForProbe = appPreferences.cloudUploadMode.first()
+        if (transportForProbe != CloudUploadMode.OFF &&
+            isCloudNetworkAvailable(context, transportForProbe) &&
+            uploadMutex.withLock { alreadyOnDrive(runId) } != null
+        ) {
+            return
+        }
 
         reportFailure(displayName)
     }

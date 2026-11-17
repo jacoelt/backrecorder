@@ -88,7 +88,9 @@ class DriveCloudStorage @Inject constructor(
 
     suspend fun uploadSegment(file: File): String? {
         val folders = ensureFolderStructure() ?: return null
-        return withContext(Dispatchers.IO) { uploadFile(file, folders.stagingId, file.name) }
+        return withContext(Dispatchers.IO) {
+            uploadFile(file, folders.stagingId, file.name, uploadRunId = null)
+        }
     }
 
     /**
@@ -124,6 +126,11 @@ class DriveCloudStorage @Inject constructor(
      *
      * `appProperties` is private to this app and searchable under the narrow `drive.file` scope
      * already in use.
+     *
+     * Reconciliation is deliberately out of scope: when a `files.list` lags a fresh commit badly
+     * enough that a retry uploads anyway, two files end up carrying the same run id and this
+     * returns one of them. Tidying that up means deleting from the user's Drive on the strength
+     * of a listing that has already proved unreliable, which is a worse trade than the duplicate.
      */
     suspend fun findSavedRecording(uploadRunId: String): String? = withContext(Dispatchers.IO) {
         val folders = ensureFolderStructure() ?: return@withContext null
@@ -141,11 +148,16 @@ class DriveCloudStorage @Inject constructor(
         result.files?.firstOrNull()?.id
     }
 
+    /**
+     * [uploadRunId] is required rather than defaulted, so a new saved-recording call site cannot
+     * silently produce a file [findSavedRecording] can never match - the same reason #98 refuses
+     * a default for its `complimentary` flag. Segments pass null: nothing probes for them.
+     */
     private fun uploadFile(
         file: File,
         parentFolderId: String,
         displayName: String,
-        uploadRunId: String? = null
+        uploadRunId: String?
     ): String? {
         val drive = drive ?: return null
 

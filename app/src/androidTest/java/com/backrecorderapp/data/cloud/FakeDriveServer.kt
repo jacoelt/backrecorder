@@ -112,6 +112,9 @@ class FakeDriveServer @Inject constructor() {
     private var failNextUploadResponse: Boolean = false
 
     @Volatile
+    private var failNextUploadBeforeStoring: Boolean = false
+
+    @Volatile
     private var accountId: String = DEFAULT_ACCOUNT_ID
 
     @Volatile
@@ -199,6 +202,7 @@ class FakeDriveServer @Inject constructor() {
         revoked.clear()
         uploadSessions.clear()
         failNextUploadResponse = false
+        failNextUploadBeforeStoring = false
         accountId = DEFAULT_ACCOUNT_ID
         accountEmail = DEFAULT_ACCOUNT_EMAIL
     }
@@ -225,6 +229,17 @@ class FakeDriveServer @Inject constructor() {
      */
     fun failAfterNextUpload() {
         failNextUploadResponse = true
+    }
+
+    /**
+     * The ordinary transport failure: the bytes never reach Drive, so the retry has nothing of
+     * its own to find. It is what tells a probe that asks "is there a file like this?" apart from
+     * one that asks "is there the file *I* uploaded?" - only the former matches here, wrongly.
+     *
+     * One-shot, so the attempt after it can succeed.
+     */
+    fun failNextUploadBeforeStoring() {
+        failNextUploadBeforeStoring = true
     }
 
     /** Makes the server answer 401 to [token], as Drive does once a token is no longer good. */
@@ -392,6 +407,7 @@ class FakeDriveServer @Inject constructor() {
             val parts = multipartBodies(request)
             val meta = parts.firstOrNull()?.let { JSONObject(String(it, Charsets.UTF_8)) }
                 ?: JSONObject()
+            refusedBeforeStoring()?.let { return it }
             return completedUpload(createFromMetadata(meta, parts.getOrNull(1)))
         }
 
@@ -412,7 +428,14 @@ class FakeDriveServer @Inject constructor() {
             ?: return Response(400, error(400, "no upload_id"))
         val metadata = uploadSessions.remove(uploadId)
             ?: return Response(404, error(404, "unknown upload session"))
+        refusedBeforeStoring()?.let { return it }
         return completedUpload(createFromMetadata(metadata, request.body))
+    }
+
+    private fun refusedBeforeStoring(): Response? {
+        if (!failNextUploadBeforeStoring) return null
+        failNextUploadBeforeStoring = false
+        return Response(500, error(500, "the upload never reached Drive"))
     }
 
     /**

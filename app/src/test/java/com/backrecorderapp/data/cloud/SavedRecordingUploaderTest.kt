@@ -536,6 +536,9 @@ class SavedRecordingUploaderTest {
 
         // The remaining attempts would have gone out over cellular against the user's setting.
         coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
+        // Nor is the copy probed for: with no transport the request cannot answer, and a doomed
+        // one holds the upload lock for the whole connect timeout before the user hears anything.
+        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any()) }
         // Losing the transport is not a choice the user made, so they are still told.
         assertEquals(1, reported.size)
     }

@@ -14,6 +14,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Test
 
 /**
@@ -22,6 +24,9 @@ import org.junit.Test
  * recording's file as this one's backup, which loses a backup rather than a duplicate.
  */
 class DriveCloudStorageFindSavedRecordingTest {
+
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
 
     private lateinit var drive: Drive
     private lateinit var files: Drive.Files
@@ -73,6 +78,26 @@ class DriveCloudStorageFindSavedRecordingTest {
 
     private fun fileList(entries: List<com.google.api.services.drive.model.File>) =
         FileList().apply { this.files = entries }
+
+    /**
+     * The other end of the handshake: a probe that asks for a run id finds nothing unless the
+     * upload wrote that id onto the file, and a silent probe is a duplicate on every retry.
+     */
+    @Test
+    fun `stamps the upload run's id onto the file it creates`() = runTest {
+        val createRequest = mockk<Drive.Files.Create>()
+        val metadata = slot<com.google.api.services.drive.model.File>()
+        every { files.create(capture(metadata), any()) } returns createRequest
+        every { createRequest.setFields(any()) } returns createRequest
+        every { createRequest.execute() } returns entry("new-id")
+
+        val uploaded = temporaryFolder.newFile("recording.m4a").apply { writeBytes(ByteArray(8)) }
+        storage.uploadSavedRecording(uploaded, "My Recording.m4a", RUN_ID)
+
+        assertEquals(mapOf("uploadRunId" to RUN_ID), metadata.captured.appProperties)
+        assertEquals("My Recording.m4a", metadata.captured.name)
+        assertEquals(listOf("root-id"), metadata.captured.parents)
+    }
 
     @Test
     fun `finds the copy this upload run created`() = runTest {

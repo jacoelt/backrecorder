@@ -499,8 +499,11 @@ class DriveSyncE2eTest {
      * `BackRecorder/` under the same name and the same bytes must **not** be read as this run's,
      * or the recording the user just saved loses its backup silently.
      *
-     * Only the real client against a real listing exercises the `appProperties` query; a unit
-     * test can assert what the query says, not what Drive selects with it.
+     * The first attempt is refused **before** Drive stores anything, so this run has nothing of
+     * its own on Drive when the retry probes. That is what separates a probe asking "is there a
+     * file like this?" - which would match the seeded copy and stop - from one asking "is there
+     * the file *I* uploaded?". Only the real client against a real listing exercises the
+     * `appProperties` query; a unit test can assert what the query says, not what it selects.
      */
     @Test
     fun aPreExistingCopyOfTheSameNameDoesNotSuppressTheBackup() = runBlocking {
@@ -509,24 +512,24 @@ class DriveSyncE2eTest {
         val folders = requireNotNull(driveCloudStorage.ensureFolderStructure())
 
         val bytes = ByteArray(96) { it.toByte() }
-        server.seedFile(
+        val seeded = server.seedFile(
             name = "Reused Name.m4a",
             parentId = folders.rootId,
             content = bytes,
             createdTime = System.currentTimeMillis() - hours(1)
         )
 
-        server.failAfterNextUpload()
+        server.failNextUploadBeforeStoring()
         val saved = File(appContext.cacheDir, "Reused Name.m4a").apply { writeBytes(bytes) }
         savedRecordingUploader.enqueue(saved, "Reused Name.m4a")
 
-        awaitUntil("This run's copy never reached the fake Drive", LOOP_TIMEOUT_MS) {
-            server.entries().count { it.name == "Reused Name.m4a" } > 1
+        awaitUntil("This run's own copy never reached the fake Drive", LOOP_TIMEOUT_MS) {
+            server.entries().any { it.name == "Reused Name.m4a" && it.id != seeded.id }
         }
         awaitDriveQuiet()
 
         assertEquals(
-            "The older copy must not be mistaken for this run's",
+            "The seeded copy must not be mistaken for this run's",
             2,
             server.entries().count { it.name == "Reused Name.m4a" }
         )
