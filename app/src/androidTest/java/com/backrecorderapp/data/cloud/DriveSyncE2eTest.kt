@@ -454,10 +454,9 @@ class DriveSyncE2eTest {
      * (#92).
      *
      * No unit test can establish this: what it turns on is the real [DriveCloudStorage] asking a
-     * real Drive API for a file by name and size, against a server that genuinely holds the one
-     * the dropped attempt stored. Drive does not dedupe by name, so before the fix the retry
-     * added a second copy of the recording to the user's quota with nothing able to tell them
-     * apart afterwards.
+     * real Drive API for the `appProperties` run id, against a server that genuinely holds the
+     * file the dropped attempt stored. Drive does not dedupe by name, so before the fix the retry
+     * added a second copy of the recording to the user's quota.
      */
     @Test
     fun aRetryAfterADroppedResponseDoesNotLeaveASecondCopy() = runBlocking {
