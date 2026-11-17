@@ -1,6 +1,5 @@
 package com.backrecorderapp.data.cloud
 
-import com.google.api.client.util.DateTime
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -66,7 +65,9 @@ class FakeDriveServer @Inject constructor() {
         parents: List<String>,
         val createdTime: Long,
         content: ByteArray? = null,
-        trashed: Boolean = false
+        trashed: Boolean = false,
+        /** The app-private metadata a saved-recording upload stamps its run id into (#92). */
+        val appProperties: Map<String, String> = emptyMap()
     ) {
         @Volatile
         var name: String = name
@@ -275,7 +276,8 @@ class FakeDriveServer @Inject constructor() {
         mimeType: String,
         parents: MutableList<String>,
         createdTime: Long,
-        content: ByteArray?
+        content: ByteArray?,
+        appProperties: Map<String, String> = emptyMap()
     ): Entry {
         val entry = Entry(
             id = "file-" + ids.incrementAndGet(),
@@ -283,7 +285,8 @@ class FakeDriveServer @Inject constructor() {
             mimeType = mimeType,
             parents = parents,
             createdTime = createdTime,
-            content = content
+            content = content,
+            appProperties = appProperties
         )
         entries[entry.id] = entry
         return entry
@@ -426,12 +429,16 @@ class FakeDriveServer @Inject constructor() {
         val parents = metadata.optJSONArray("parents")?.let { array ->
             MutableList(array.length()) { array.getString(it) }
         } ?: mutableListOf()
+        val appProperties = metadata.optJSONObject("appProperties")?.let { json ->
+            json.keys().asSequence().associateWith { json.getString(it) }
+        } ?: emptyMap()
         return newEntry(
             name = metadata.optString("name", "unnamed"),
             mimeType = metadata.optString("mimeType", "application/octet-stream"),
             parents = parents,
             createdTime = System.currentTimeMillis(),
-            content = content
+            content = content,
+            appProperties = appProperties
         )
     }
 
@@ -505,9 +512,6 @@ class FakeDriveServer @Inject constructor() {
 
     private fun entryJson(entry: Entry): JSONObject = JSONObject()
         .put("id", entry.id)
-        // Drive reports a byte size for anything with content, and `findSavedRecording` matches
-        // on it (#92) — a fake that omitted it would make that lookup silently never match.
-        .put("size", entry.content?.size?.toString())
         .put("name", entry.name)
         .put("mimeType", entry.mimeType)
         .put("trashed", entry.trashed)
@@ -533,11 +537,24 @@ class FakeDriveServer @Inject constructor() {
      * folder into a passing test.
      */
     private class QueryMatcher(query: String) {
-        private val clauses: List<(Entry) -> Boolean> =
-            query.split(" and ")
+        private val clauses: List<(Entry) -> Boolean>
+
+        init {
+            val built = mutableListOf<(Entry) -> Boolean>()
+            // `appProperties has { key='k' and value='v' }` carries its own " and ", so it has
+            // to come out whole before the rest is split on that separator.
+            val rest = APP_PROPERTY.replace(query) { match ->
+                val key = unescape(match.groupValues[1])
+                val value = unescape(match.groupValues[2])
+                built += { entry: Entry -> entry.appProperties[key] == value }
+                ""
+            }
+            built += rest.split(" and ")
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .map(::compile)
+            clauses = built
+        }
 
         fun matches(entry: Entry): Boolean = clauses.all { it(entry) }
 
@@ -547,7 +564,10 @@ class FakeDriveServer @Inject constructor() {
             val MIME_IS_NOT = Regex("""mimeType\s*!=\s*'(.*)'""")
             val IN_PARENTS = Regex("""'(.*)'\s+in\s+parents""")
             val TRASHED = Regex("""trashed\s*=\s*(true|false)""")
-            val CREATED_AFTER = Regex("""createdTime\s*>\s*'(.*)'""")
+            val APP_PROPERTY = Regex(
+                """appProperties\s+has\s*\{\s*key\s*=\s*'((?:\\.|[^'])*)'""" +
+                    """\s+and\s+value\s*=\s*'((?:\\.|[^'])*)'\s*\}"""
+            )
 
             fun compile(clause: String): (Entry) -> Boolean {
                 NAME.matchEntire(clause)?.let { m ->
@@ -569,10 +589,6 @@ class FakeDriveServer @Inject constructor() {
                 TRASHED.matchEntire(clause)?.let { m ->
                     val trashed = m.groupValues[1].toBoolean()
                     return { it.trashed == trashed }
-                }
-                CREATED_AFTER.matchEntire(clause)?.let { m ->
-                    val after = DateTime(unescape(m.groupValues[1])).value
-                    return { it.createdTime > after }
                 }
                 error("FakeDriveServer cannot evaluate the Drive query clause: '" + clause + "'")
             }

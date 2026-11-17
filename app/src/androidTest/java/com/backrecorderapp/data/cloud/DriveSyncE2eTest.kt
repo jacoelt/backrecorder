@@ -477,9 +477,8 @@ class DriveSyncE2eTest {
         // for the retry's own footprint instead: either the dedupe probe, or the second copy a
         // blind retry would have added.
         awaitUntil("The upload was never retried", LOOP_TIMEOUT_MS) {
-            server.recordedCalls().any {
-                it.query["q"]?.contains("Dropped Response.m4a") == true
-            } || server.entries().count { it.name == "Dropped Response.m4a" } > 1
+            server.recordedCalls().any { it.query["q"]?.contains("uploadRunId") == true } ||
+                server.entries().count { it.name == "Dropped Response.m4a" } > 1
         }
         awaitDriveQuiet()
 
@@ -493,6 +492,44 @@ class DriveSyncE2eTest {
             "The one copy must still be in $ROOT_FOLDER",
             listOf(folders.rootId),
             copies.single().parents.toList()
+        )
+    }
+
+    /**
+     * The other half of #92, and the one that costs more when it breaks: a copy already in
+     * `BackRecorder/` under the same name and the same bytes must **not** be read as this run's,
+     * or the recording the user just saved loses its backup silently.
+     *
+     * Only the real client against a real listing exercises the `appProperties` query; a unit
+     * test can assert what the query says, not what Drive selects with it.
+     */
+    @Test
+    fun aPreExistingCopyOfTheSameNameDoesNotSuppressTheBackup() = runBlocking {
+        authorize()
+        appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        val folders = requireNotNull(driveCloudStorage.ensureFolderStructure())
+
+        val bytes = ByteArray(96) { it.toByte() }
+        server.seedFile(
+            name = "Reused Name.m4a",
+            parentId = folders.rootId,
+            content = bytes,
+            createdTime = System.currentTimeMillis() - hours(1)
+        )
+
+        server.failAfterNextUpload()
+        val saved = File(appContext.cacheDir, "Reused Name.m4a").apply { writeBytes(bytes) }
+        savedRecordingUploader.enqueue(saved, "Reused Name.m4a")
+
+        awaitUntil("This run's copy never reached the fake Drive", LOOP_TIMEOUT_MS) {
+            server.entries().count { it.name == "Reused Name.m4a" } > 1
+        }
+        awaitDriveQuiet()
+
+        assertEquals(
+            "The older copy must not be mistaken for this run's",
+            2,
+            server.entries().count { it.name == "Reused Name.m4a" }
         )
     }
 

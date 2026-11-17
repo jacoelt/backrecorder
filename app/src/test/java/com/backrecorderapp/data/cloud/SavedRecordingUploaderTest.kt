@@ -97,7 +97,7 @@ class SavedRecordingUploaderTest {
         every { driveCloudStorage.isInitialized } returns true
         // Explicit because a relaxed mock answers a String? with "", which the uploader would
         // read as a copy a previous attempt had landed and every retry test would stop at one.
-        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } returns null
+        coEvery { driveCloudStorage.findSavedRecording(any()) } returns null
 
         driveAuthManager = mockk(relaxed = true)
         isAuthorized = MutableStateFlow(true)
@@ -166,7 +166,7 @@ class SavedRecordingUploaderTest {
     fun `uploads a saved recording to the Drive root under the name the user chose`() = runTest {
         // Asserted inside the stub: the staged copy must still exist, with the recording's bytes,
         // at the moment Drive reads it — the whole point of taking the file over by rename.
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
             val staged = firstArg<File>()
             assertTrue("the staged file must exist during the upload", staged.exists())
             assertTrue(
@@ -181,7 +181,7 @@ class SavedRecordingUploaderTest {
         }
 
         coVerify(exactly = 1) {
-            driveCloudStorage.uploadSavedRecording(any(), "My Recording.m4a")
+            driveCloudStorage.uploadSavedRecording(any(), "My Recording.m4a", any())
         }
         assertTrue("a successful upload must report nothing", reported.isEmpty())
     }
@@ -194,7 +194,7 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         assertTrue("a refusal must be silent", reported.isEmpty())
     }
 
@@ -206,7 +206,7 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         // A refusal is not a failure: the user was never entitled to the copy, so nothing is said.
         assertTrue(reported.isEmpty())
     }
@@ -226,7 +226,7 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         assertTrue("no grant means nothing was promised", reported.isEmpty())
     }
 
@@ -237,17 +237,17 @@ class SavedRecordingUploaderTest {
     @Test
     fun `waits for a grant still being restored at launch`() = runTest {
         isAuthorized.value = false
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } returns "drive-id"
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
         uploader.enqueue(sourceFile(), "My Recording.m4a")
         advanceTimeBy(5_000)
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
 
         isAuthorized.value = true
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
     }
 
     @Test
@@ -259,7 +259,7 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         assertEquals(1, reported.size)
     }
 
@@ -306,7 +306,7 @@ class SavedRecordingUploaderTest {
 
     /** Staged and then dropped proves the decline path ran, so the silence is not vacuous. */
     private fun assertDeclinedWithoutLogging() {
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         assertTrue(stagingDir().listFiles().orEmpty().isEmpty())
         verify(exactly = 0) { Log.w(any(), any<String>()) }
         verify(exactly = 0) { Log.w(any(), any<String>(), any()) }
@@ -316,17 +316,17 @@ class SavedRecordingUploaderTest {
     fun `waits for billing to answer rather than refusing a subscriber Play was slow about`() =
         runTest {
             statusResolved.value = false
-            coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+            coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } returns "drive-id"
             val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
             uploader.enqueue(sourceFile(), "My Recording.m4a")
             advanceTimeBy(5_000)
-            coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+            coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
 
             statusResolved.value = true
             advanceUntilIdle()
 
-            coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+            coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         }
 
     @Test
@@ -337,7 +337,7 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         // Entitlement was never established, so this is a refusal rather than a failure.
         assertTrue(reported.isEmpty())
         assertTrue("no staged file may survive", stagingDir().listFiles().orEmpty().isEmpty())
@@ -346,7 +346,7 @@ class SavedRecordingUploaderTest {
     @Test
     fun `retries a failing upload and reports nothing once one attempt succeeds`() = runTest {
         var attempts = 0
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
             attempts++
             if (attempts < 2) throw RuntimeException("transient") else "drive-id"
         }
@@ -363,7 +363,7 @@ class SavedRecordingUploaderTest {
     @Test
     fun `gives up after three attempts and reports the failure in app and as a notification`() =
         runTest {
-            coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
                 RuntimeException("Drive is down")
             val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
             val reported = withFailureCollector(uploader) {
@@ -371,7 +371,7 @@ class SavedRecordingUploaderTest {
             }
 
             coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
-                driveCloudStorage.uploadSavedRecording(any(), any())
+                driveCloudStorage.uploadSavedRecording(any(), any(), any())
             }
             assertEquals(1, reported.size)
             verify(exactly = 1) { uploadFailureNotifier.notifyUploadFailed(any()) }
@@ -379,14 +379,14 @@ class SavedRecordingUploaderTest {
 
     @Test
     fun `reports a Drive refusal that comes back as no file id`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns null
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } returns null
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         val reported = withFailureCollector(uploader) {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
         coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
-            driveCloudStorage.uploadSavedRecording(any(), any())
+            driveCloudStorage.uploadSavedRecording(any(), any(), any())
         }
         assertEquals(1, reported.size)
     }
@@ -398,7 +398,7 @@ class SavedRecordingUploaderTest {
      */
     @Test
     fun `reports both failures when two uploads of the same name fail`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("Drive is down")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         val reported = withFailureCollector(uploader) {
@@ -413,14 +413,14 @@ class SavedRecordingUploaderTest {
 
     @Test
     fun `stops retrying when Drive rejects the grant`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws httpError(401, "")
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws httpError(401, "")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         val reported = withFailureCollector(uploader) {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
         // Asking again a second later cannot restore a revoked grant.
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         assertEquals(1, reported.size)
     }
 
@@ -430,7 +430,7 @@ class SavedRecordingUploaderTest {
      */
     @Test
     fun `keeps retrying a throttle, after a longer wait`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             httpError(403, """{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}""")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
@@ -438,7 +438,7 @@ class SavedRecordingUploaderTest {
         advanceUntilIdle()
 
         coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
-            driveCloudStorage.uploadSavedRecording(any(), any())
+            driveCloudStorage.uploadSavedRecording(any(), any(), any())
         }
     }
 
@@ -448,24 +448,24 @@ class SavedRecordingUploaderTest {
      */
     @Test
     fun `waits out a throttle before trying again`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             httpError(403, """{"error":{"errors":[{"reason":"userRateLimitExceeded"}]}}""")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
         uploader.enqueue(sourceFile(), "My Recording.m4a")
         advanceTimeBy(3_000)
 
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
 
         advanceUntilIdle()
         coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
-            driveCloudStorage.uploadSavedRecording(any(), any())
+            driveCloudStorage.uploadSavedRecording(any(), any(), any())
         }
     }
 
     @Test
     fun `retries an ordinary failure promptly`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("transient")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
@@ -473,7 +473,7 @@ class SavedRecordingUploaderTest {
         advanceTimeBy(3_000)
 
         // Unlike a throttle, this one is back inside a few seconds.
-        coVerify(exactly = 2) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 2) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
     }
 
     /**
@@ -484,7 +484,7 @@ class SavedRecordingUploaderTest {
     @Test
     fun `retries an attempt that times out, and frees the lock for the next save`() = runTest {
         var calls = 0
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } coAnswers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } coAnswers {
             calls++
             if (calls == 1) awaitCancellation() else "drive-id"
         }
@@ -500,31 +500,31 @@ class SavedRecordingUploaderTest {
 
     @Test
     fun `treats a plain 403 as a dead grant and stops`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             httpError(403, """{"error":{"errors":[{"reason":"insufficientPermissions"}]}}""")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
         uploader.enqueue(sourceFile(), "My Recording.m4a")
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
     }
 
     @Test
     fun `stops retrying when the Drive account is out of space`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             httpError(403, """{"error":{"errors":[{"reason":"storageQuotaExceeded"}]}}""")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
         uploader.enqueue(sourceFile(), "My Recording.m4a")
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
     }
 
     @Test
     fun `stops retrying when the user leaves Wi-Fi part way through`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
             every { capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) } returns false
             throw RuntimeException("transient")
         }
@@ -535,7 +535,7 @@ class SavedRecordingUploaderTest {
         }
 
         // The remaining attempts would have gone out over cellular against the user's setting.
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         // Losing the transport is not a choice the user made, so they are still told.
         assertEquals(1, reported.size)
     }
@@ -548,7 +548,7 @@ class SavedRecordingUploaderTest {
     fun `says nothing when the user turns uploads off part way through`() = runTest {
         val mode = MutableStateFlow(CloudUploadMode.WIFI_ONLY)
         every { appPreferences.cloudUploadMode } returns mode
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
             mode.value = CloudUploadMode.OFF
             throw RuntimeException("transient")
         }
@@ -558,14 +558,14 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
         assertTrue("declining the copy must be silent", reported.isEmpty())
     }
 
     /** The in-app half must survive the notification half failing, or a failure goes unreported. */
     @Test
     fun `still reports in app when the notification cannot be posted`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("Drive is down")
         every { uploadFailureNotifier.notifyUploadFailed(any()) } throws
             SecurityException("notifications are blocked")
@@ -580,7 +580,7 @@ class SavedRecordingUploaderTest {
 
     @Test
     fun `tells the user the same thing in the app and in the notification`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("Drive is down")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
@@ -595,7 +595,7 @@ class SavedRecordingUploaderTest {
     fun `runs one upload at a time however many saves arrive`() = runTest {
         var inFlight = 0
         var maxInFlight = 0
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } coAnswers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } coAnswers {
             inFlight++
             maxInFlight = maxOf(maxInFlight, inFlight)
             delay(1_000)
@@ -610,13 +610,13 @@ class SavedRecordingUploaderTest {
         advanceUntilIdle()
 
         assertEquals("uploads must not run in parallel", 1, maxInFlight)
-        coVerify(exactly = 3) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        coVerify(exactly = 3) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
     }
 
     @Test
     fun `takes the file out of the caller's hands so the save's cleanup cannot delete it`() =
         runTest {
-            coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+            coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } returns "drive-id"
             val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
             val source = sourceFile()
 
@@ -627,12 +627,12 @@ class SavedRecordingUploaderTest {
             assertFalse("the source file must have been moved away", source.exists())
 
             advanceUntilIdle()
-            coVerify { driveCloudStorage.uploadSavedRecording(any(), "My Recording.m4a") }
+            coVerify { driveCloudStorage.uploadSavedRecording(any(), "My Recording.m4a", any()) }
         }
 
     @Test
     fun `deletes the staged copy whatever the outcome`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("Drive is down")
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
 
@@ -662,7 +662,7 @@ class SavedRecordingUploaderTest {
     @Test
     fun `sweeps a staged file an earlier process death abandoned, keeping recent ones`() =
         runTest {
-            coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+            coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } returns "drive-id"
             val staging = stagingDir().apply { mkdirs() }
             val abandoned = File(staging, "abandoned.m4a").apply {
                 writeBytes(ByteArray(4))
@@ -681,32 +681,51 @@ class SavedRecordingUploaderTest {
     /** Issue #92: a dropped connection after Drive stored the bytes must not upload again. */
     @Test
     fun `does not re-upload a copy a dropped connection had already landed`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
-            RuntimeException("connection reset after the bytes were accepted")
-        coEvery {
-            driveCloudStorage.findSavedRecording(
-                "My Recording.m4a",
-                RECORDING_BYTES.size.toLong(),
-                any()
-            )
-        } returns "drive-id"
+        val stamped = mutableListOf<String>()
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
+            stamped += thirdArg<String>()
+            throw RuntimeException("connection reset after the bytes were accepted")
+        }
+        val probed = mutableListOf<String>()
+        coEvery { driveCloudStorage.findSavedRecording(any()) } answers {
+            probed += firstArg<String>()
+            "drive-id"
+        }
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         val reported = withFailureCollector(uploader) {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
-        // Verified explicitly, or an unrelated early-success path would satisfy the count above.
-        coVerify(exactly = 1) {
-            driveCloudStorage.findSavedRecording(
-                "My Recording.m4a",
-                RECORDING_BYTES.size.toLong(),
-                any()
-            )
-        }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
+        // The probe must ask for the id the upload stamped, or it is identifying the copy by
+        // something other than this run and could match an unrelated recording's file.
+        assertEquals(stamped, probed)
         assertTrue("a copy that did land is a success, not a failure", reported.isEmpty())
         verify(exactly = 0) { uploadFailureNotifier.notifyUploadFailed(any()) }
+    }
+
+    @Test
+    fun `stamps one id per run, and a different one on the next run`() = runTest {
+        val stamped = mutableListOf<String>()
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
+            stamped += thirdArg<String>()
+            "drive-id"
+        }
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        uploader.enqueue(sourceFile("one.m4a"), "My Recording.m4a")
+        advanceUntilIdle()
+        uploader.enqueue(sourceFile("two.m4a"), "My Recording.m4a")
+        advanceUntilIdle()
+
+        assertEquals(2, stamped.size)
+        assertEquals(
+            "two saves of the same name must not share a run id, or each could claim the " +
+                "other's copy as its own backup",
+            2,
+            stamped.toSet().size
+        )
     }
 
     /**
@@ -715,10 +734,10 @@ class SavedRecordingUploaderTest {
      */
     @Test
     fun `says nothing when the final attempt turns out to have landed`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("connection reset after the bytes were accepted")
         var probes = 0
-        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } answers {
+        coEvery { driveCloudStorage.findSavedRecording(any()) } answers {
             probes++
             if (probes < SavedRecordingUploader.MAX_ATTEMPTS) null else "drive-id"
         }
@@ -732,46 +751,42 @@ class SavedRecordingUploaderTest {
         verify(exactly = 0) { uploadFailureNotifier.notifyUploadFailed(any()) }
     }
 
-    /**
-     * A zero length matches any empty file of that name, which would report a backup that does
-     * not exist - so a staged file the platform evicted must not be probed for at all.
-     */
+    /** The other route out of the loop: Drive committed, then answered with a dead grant. */
     @Test
-    fun `does not probe for a staged file that has gone`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
-            firstArg<File>().delete()
-            throw RuntimeException("transient")
-        }
+    fun `says nothing when a terminal response followed a commit that landed`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
+            httpError(401, """{"error":{"errors":[{"reason":"authError"}]}}""")
+        coEvery { driveCloudStorage.findSavedRecording(any()) } returns "drive-id"
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
-        withFailureCollector(uploader) {
+        val reported = withFailureCollector(uploader) {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any(), any(), any()) }
+        coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any(), any()) }
+        assertTrue("the copy is on Drive, so there is nothing to report", reported.isEmpty())
     }
 
+    /** Nothing of this run's can be on Drive yet, so the request would be spent for nothing. */
     @Test
     fun `does not look for an earlier copy before the first attempt`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } returns "drive-id"
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } returns "drive-id"
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         uploader.enqueue(sourceFile(), "My Recording.m4a")
         advanceUntilIdle()
 
-        // A match here would be an earlier recording saved under the same name, and skipping on
-        // it would drop this one's backup entirely.
-        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any(), any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any()) }
     }
 
     @Test
     fun `retries normally when no earlier copy is on Drive`() = runTest {
         var attempts = 0
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } answers {
             attempts++
             throw RuntimeException("transient")
         }
-        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } returns null
+        coEvery { driveCloudStorage.findSavedRecording(any()) } returns null
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         val reported = withFailureCollector(uploader) {
@@ -784,9 +799,9 @@ class SavedRecordingUploaderTest {
 
     @Test
     fun `uploads anyway when the check for an earlier copy cannot be answered`() = runTest {
-        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any(), any()) } throws
             RuntimeException("transient")
-        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } throws
+        coEvery { driveCloudStorage.findSavedRecording(any()) } throws
             RuntimeException("the listing failed too")
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
@@ -795,7 +810,7 @@ class SavedRecordingUploaderTest {
         }
 
         coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
-            driveCloudStorage.uploadSavedRecording(any(), any())
+            driveCloudStorage.uploadSavedRecording(any(), any(), any())
         }
         assertEquals(1, reported.size)
     }

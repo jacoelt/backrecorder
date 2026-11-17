@@ -3,7 +3,6 @@ package com.backrecorderapp.data.cloud
 import android.util.Log
 import com.google.api.client.http.FileContent
 import com.google.api.client.http.HttpResponseException
-import com.google.api.client.util.DateTime
 import com.google.api.services.drive.Drive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +25,12 @@ class DriveCloudStorage @Inject constructor(
         private const val TAG = "DriveCloudStorage"
         private const val ROOT_FOLDER = "BackRecorder"
         private const val STAGING_FOLDER = "staging"
+
+        /**
+         * Private metadata key carrying the id of the upload run that created a saved recording,
+         * so a retry can ask Drive whether its own earlier attempt landed (#92).
+         */
+        private const val UPLOAD_RUN_KEY = "uploadRunId"
 
         /** Drive's own mime type for folders. Staging listings must exclude them. */
         private const val FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -93,55 +98,63 @@ class DriveCloudStorage @Inject constructor(
      * in there once it ages past the 24h window, so a saved recording placed in staging would be
      * destroyed a day later - the one outcome a backup copy must never have.
      */
-    suspend fun uploadSavedRecording(file: File, displayName: String): String? {
+    suspend fun uploadSavedRecording(
+        file: File,
+        displayName: String,
+        uploadRunId: String
+    ): String? {
         val folders = ensureFolderStructure() ?: return null
-        return withContext(Dispatchers.IO) { uploadFile(file, folders.rootId, displayName) }
+        return withContext(Dispatchers.IO) {
+            uploadFile(file, folders.rootId, displayName, uploadRunId)
+        }
     }
 
     /**
-     * The id of a recording already sitting in `BackRecorder/` under [displayName] and exactly
-     * [sizeBytes] long, or null.
+     * The id of the copy the upload run [uploadRunId] already put in `BackRecorder/`, or null.
      *
-     * Size as well as name, because the name alone cannot tell the copy a dropped retry left
-     * behind from a different recording the user saved under the same name earlier - and reading
-     * that one as "already uploaded" would silently drop the new recording's backup.
+     * The run stamps its own id on the file as it creates it, so this asks Drive a question with
+     * exactly one right answer. Identifying the copy by what it *looks* like instead - its name
+     * and byte length - cannot work here: the name is whatever the user typed in the picker and
+     * is freely repeatable, and size discriminates far less than it appears to, because this app
+     * records at a fixed 32 kbps and its selections are minute-quantised, so two different
+     * recordings of equal duration plausibly share a byte length. A match on those would report
+     * an unrelated recording's copy as this one's backup and drop it silently, which is worse
+     * than the duplicate being prevented. A timestamp bound narrows that but cannot close it,
+     * since it weighs the device's clock against Drive's and leaves concurrent saves overlapping.
      *
-     * [createdAfter] is what makes that impossible rather than merely unlikely, and it is the
-     * clause doing the real work: the name is whatever the user typed in the picker and is freely
-     * repeatable, and size discriminates far less than it looks like it does, because this app
-     * emits a fixed 32 kbps and its selections are minute-quantised - two different recordings of
-     * equal duration plausibly have the same byte length. Pinning the match to files Drive created
-     * after this upload run began means no pre-existing copy can ever satisfy it. A device clock
-     * running ahead of Drive's degrades this to no match, which costs a duplicate rather than the
-     * backup.
+     * `appProperties` is private to this app and searchable under the narrow `drive.file` scope
+     * already in use.
      */
-    suspend fun findSavedRecording(
-        displayName: String,
-        sizeBytes: Long,
-        createdAfter: Long
-    ): String? = withContext(Dispatchers.IO) {
+    suspend fun findSavedRecording(uploadRunId: String): String? = withContext(Dispatchers.IO) {
         val folders = ensureFolderStructure() ?: return@withContext null
         val drive = drive ?: return@withContext null
 
         val result = drive.files().list()
             .setQ(
-                "name = '${escapeQueryLiteral(displayName)}' and " +
-                    "'${folders.rootId}' in parents and trashed = false " +
-                    "and mimeType != '$FOLDER_MIME_TYPE' " +
-                    "and createdTime > '${DateTime(createdAfter).toStringRfc3339()}'"
+                "appProperties has { key='$UPLOAD_RUN_KEY' and " +
+                    "value='${escapeQueryLiteral(uploadRunId)}' } and " +
+                    "'${folders.rootId}' in parents and trashed = false"
             )
-            .setFields("files(id, size)")
+            .setFields("files(id)")
             .execute()
 
-        result.files?.firstOrNull { it.getSize() == sizeBytes }?.id
+        result.files?.firstOrNull()?.id
     }
 
-    private fun uploadFile(file: File, parentFolderId: String, displayName: String): String? {
+    private fun uploadFile(
+        file: File,
+        parentFolderId: String,
+        displayName: String,
+        uploadRunId: String? = null
+    ): String? {
         val drive = drive ?: return null
 
         val metadata = com.google.api.services.drive.model.File().apply {
             name = displayName
             parents = listOf(parentFolderId)
+            if (uploadRunId != null) {
+                appProperties = mapOf(UPLOAD_RUN_KEY to uploadRunId)
+            }
         }
 
         val mediaContent = FileContent("audio/mp4", file)
