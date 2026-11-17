@@ -269,10 +269,6 @@ class SaveRecordingUseCaseTest {
         verify(exactly = 0) { savedRecordingUploader.enqueue(any(), any()) }
     }
 
-    /**
-     * Issue #96: mode "w" leaves a provider free not to truncate, so saving over an existing,
-     * longer file would leave its tail past the end of the new recording.
-     */
     @Test
     fun `asks the provider to truncate the destination (issue 96)`() = runTest {
         val mode = slot<String>()
@@ -285,10 +281,6 @@ class SaveRecordingUseCaseTest {
         verify(exactly = 0) { contentResolver.openOutputStream(any()) }
     }
 
-    /**
-     * Truncation is optional for a provider to honour, and a save that fails outright is worse
-     * than the stale tail it guards against - so a refused mode must still write the recording.
-     */
     @Test
     fun `falls back to a plain write when the provider throws on the truncating mode`() = runTest {
         val written = ByteArrayOutputStream()

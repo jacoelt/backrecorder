@@ -13,14 +13,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Issue #96 turns on a claim about the platform, not about this app's code: that a real provider
- * accepts the `"wt"` mode [SaveRecordingUseCase] now asks for, and that it genuinely shortens a
- * destination that already holds a longer file. Neither half is reachable from a JVM test, where
- * the resolver is a mock and the mode string is just an argument.
+ * Checks on a real provider what no JVM test can, where the resolver is a mock and the mode is
+ * just an argument: that the `"wt"` [SaveRecordingUseCase] now asks for is accepted, and that it
+ * genuinely shortens a destination already holding a longer file (#96).
  *
- * The stand-in for the picker's destination is a MediaStore entry, since that is what the
- * documents UI hands back for a new file on this platform's own provider and the only real
- * provider an unattended test can create a writable URI on.
+ * The stand-in for the picker's destination is a MediaStore entry - the only real provider an
+ * unattended test can mint a writable URI on.
  */
 @RunWith(AndroidJUnit4::class)
 class TruncatingWriteModeTest {

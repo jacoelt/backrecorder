@@ -350,11 +350,10 @@ class SaveRecordingUseCase @Inject constructor(
      * file's trailing bytes past the end of the new recording - a corrupt local `.m4a` while the
      * Drive copy of the same save is correct.
      *
-     * The truncating mode is optional for a provider to honour, and one that will not honour it
-     * says so either by throwing or by answering null, before any byte is written. Both fall back
-     * to the plain write, which is exactly the behaviour that shipped before this: a save that
-     * fails outright is a worse outcome than the stale tail this guards against, and the picker
-     * almost always mints a fresh file where the two modes are indistinguishable.
+     * The mode is optional for a provider to honour, and one that will not says so either by
+     * throwing or by answering null, before any byte is written. Both fall back to the plain
+     * write: a save that fails outright is a worse outcome than the stale tail this guards
+     * against, and for a fresh picker file the two modes are indistinguishable.
      */
     private fun openForWriting(destUri: Uri): OutputStream? {
         val resolver = context.contentResolver
