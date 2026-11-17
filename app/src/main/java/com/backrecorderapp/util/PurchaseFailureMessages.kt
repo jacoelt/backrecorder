@@ -13,4 +13,5 @@ fun PurchaseFailure.messageRes(): Int = when (this) {
     PurchaseFailure.BILLING_UNAVAILABLE -> R.string.upgrade_error_billing_unavailable
     PurchaseFailure.PRODUCT_UNAVAILABLE -> R.string.upgrade_error_product_unavailable
     PurchaseFailure.LAUNCH_FAILED -> R.string.upgrade_error_launch_failed
+    PurchaseFailure.BILLING_BUSY -> R.string.upgrade_error_billing_busy
 }

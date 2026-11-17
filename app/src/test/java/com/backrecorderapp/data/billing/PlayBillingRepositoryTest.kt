@@ -510,6 +510,174 @@ class PlayBillingRepositoryTest {
         }
 
     /**
+     * The defect #78 reported: the shared attempt belongs to no caller.
+     *
+     * A caller that gives up used to complete it with a refusal, which was handed to every other
+     * waiter instantly while the real `startConnection` was still outstanding. The waiter that
+     * matters is the launch-time resolve ladder - `statusResolved` is what every billing gate
+     * keys off, and `CloudSyncManager.canSyncNow()` refuses a paying subscriber until it is true.
+     */
+    @Test
+    fun `a caller that gives up does not answer the others waiting on the same connection`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            every { client.startConnection(capture(listener)) } answers { }
+            stubQueryPurchases(purchase(acknowledged = true))
+            stubProductQuery(premiumProduct())
+            every { client.launchBillingFlow(any(), any()) } returns okResult()
+
+            val repository = createRepository()
+            // The ladder owns the attempt; the tap joins it five seconds in, so the two have
+            // different budgets and the ladder's expiry cannot be mistaken for the tap's own.
+            repository.connect()
+            runCurrent()
+            advanceTimeBy(5_000)
+            val tap = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            verify(exactly = 1) { client.startConnection(any()) }
+
+            // The ladder's attempt expires and it backs off, leaving the tap still waiting.
+            advanceTimeBy(16_000)
+            assertTrue(tap.isActive)
+
+            // Play answers the connection that was outstanding all along.
+            every { client.isReady } returns true
+            listener.captured.onBillingSetupFinished(okResult())
+            runCurrent()
+
+            assertNull(tap.await())
+            verify(exactly = 1) { client.launchBillingFlow(activity, any()) }
+        }
+
+    /**
+     * The same abandonment from the other side, and the one that cost a paying subscriber cloud
+     * sync for the session: the tap owns the attempt and its screen goes away, while the resolve
+     * ladder is the one waiting on it.
+     *
+     * Play answers only the attempt that was actually made, so a ladder pushed off it has
+     * nothing to fall back on - which is exactly what being handed the tap's refusal did.
+     */
+    @Test
+    fun `a tap that gives up leaves the resolve ladder on the connection it joined`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            var attempts = 0
+            every { client.startConnection(capture(listener)) } answers { attempts++ }
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            val tap = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            repository.connect()
+            runCurrent()
+            assertEquals(1, attempts)
+
+            tap.cancel()
+            runCurrent()
+
+            every { client.isReady } returns true
+            listener.captured.onBillingSetupFinished(okResult())
+            runCurrent()
+
+            assertEquals(true, repository.statusResolved.value)
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+            assertEquals(1, attempts)
+        }
+
+    /**
+     * The other half of #78: a load queued behind the other screen's hand-off used to spend its
+     * whole budget on the lock and then report "billing unavailable" over a Play that was never
+     * asked anything. Busy is a different word with a different remedy - try again in a moment.
+     */
+    @Test
+    fun `a plan load queued behind a hand-off reports busy, not unavailable`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            // Captured and never answered, so the hand-off holds the client throughout.
+            every {
+                client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any())
+            } answers { }
+
+            val repository = createRepository()
+            val handOff = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            val load = async { repository.loadSubscriptionPlans() }
+            advanceTimeBy(11_000)
+
+            assertEquals(PlanQuery.Unavailable(PurchaseFailure.BILLING_BUSY), load.await())
+            assertTrue(handOff.isActive)
+            // Busy means Play was never asked - one query, the hand-off's own.
+            verify(exactly = 1) {
+                client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any())
+            }
+            handOff.cancel()
+        }
+
+    /** The hand-off had the opposite shape: it waited on the lock with no bound at all. */
+    @Test
+    fun `a hand-off queued behind another reports busy rather than waiting without end`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            every {
+                client.queryProductDetailsAsync(any<QueryProductDetailsParams>(), any())
+            } answers { }
+
+            val repository = createRepository()
+            val first = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            val second = async { repository.launchPurchaseFlow(activity, yearlyPlan) }
+            advanceTimeBy(11_000)
+
+            assertEquals(PurchaseFailure.BILLING_BUSY, second.await())
+            verify(exactly = 0) { client.launchBillingFlow(any(), any()) }
+            first.cancel()
+        }
+
+    /**
+     * A lock wait that expires must not leave the lock held: a leak would make every later
+     * upgrade on either screen report busy for the life of the process.
+     */
+    @Test
+    fun `a lock wait that expires leaves the client usable`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            val productListener = slot<ProductDetailsResponseListener>()
+            var playAnswers = false
+            every {
+                client.queryProductDetailsAsync(
+                    any<QueryProductDetailsParams>(),
+                    capture(productListener)
+                )
+            } answers {
+                if (playAnswers) {
+                    val response: QueryProductDetailsResult = mockk(relaxed = true) {
+                        every { productDetailsList } returns listOf(premiumProduct())
+                    }
+                    productListener.captured.onProductDetailsResponse(okResult(), response)
+                }
+            }
+
+            val repository = createRepository()
+            val holder = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            val refused = async { repository.loadSubscriptionPlans() }
+            advanceTimeBy(11_000)
+            assertEquals(
+                PlanQuery.Unavailable(PurchaseFailure.BILLING_BUSY),
+                refused.await()
+            )
+
+            // The holder's own prepare expires and hands the client back.
+            advanceTimeBy(10_000)
+            assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, holder.await())
+
+            playAnswers = true
+            assertTrue(repository.loadSubscriptionPlans() is PlanQuery.Available)
+        }
+
+    /**
      * Play refunds a subscription that is never acknowledged within three days. Nothing in the
      * app acknowledged until the Upgrade button started reaching Play at all.
      */

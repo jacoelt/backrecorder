@@ -24,7 +24,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
@@ -54,6 +53,23 @@ class PlayBillingRepository @Inject constructor(
          * purchase that is going ahead.
          */
         private const val PREPARE_TIMEOUT_MS = 20_000L
+
+        /**
+         * How long a caller may wait for [purchaseMutex] before reporting that billing is busy.
+         *
+         * Timed apart from [PREPARE_TIMEOUT_MS] because the two mean different things to the
+         * user: Play never answering is "billing unavailable", while queueing behind the other
+         * screen's hand-off is "something else is in progress, try again in a moment". Sharing
+         * one budget meant a plan load could spend all of it on the lock and report the first
+         * over a Play it never asked anything (#78).
+         *
+         * Deliberately shorter than [PREPARE_TIMEOUT_MS]. A hand-off holds the client for at
+         * most one prepare, so an equal bound would make this outcome a dead heat that never
+         * fires - and a waiter stuck behind a Play that is not answering gains nothing by
+         * waiting out the full prepare only to be refused anyway. A healthy round trip is
+         * seconds, so this is generous for a queue worth joining and short for one that is not.
+         */
+        private const val LOCK_WAIT_TIMEOUT_MS = 10_000L
 
         /**
          * How long one acknowledgement may stay in flight before its token is freed for a later
@@ -86,6 +102,9 @@ class PlayBillingRepository @Inject constructor(
      * button that felt dead used to produce a false "unavailable" over a purchase that was
      * working. A dropped tap is not an option either: the second caller is often a different
      * screen, and it would be left with nothing to show.
+     *
+     * The wait for it is bounded by [LOCK_WAIT_TIMEOUT_MS] and reported as
+     * [PurchaseFailure.BILLING_BUSY], separately from whatever Play then takes.
      */
     private val purchaseMutex = Mutex()
 
@@ -94,6 +113,9 @@ class PlayBillingRepository @Inject constructor(
      * still connecting waits for that one. Play answers a second concurrent `startConnection`
      * with an error, which would surface as "billing unavailable" seconds before the first
      * connection succeeds.
+     *
+     * It belongs to no caller: only Play's own callback completes it, and a caller that gives up
+     * merely takes it out of this slot. See [ensureConnected].
      */
     private val connection = AtomicReference<CompletableDeferred<PurchaseFailure?>?>(null)
 
@@ -252,18 +274,25 @@ class PlayBillingRepository @Inject constructor(
 
     override suspend fun loadSubscriptionPlans(): PlanQuery =
         try {
-            // The timeout wraps the lock as well as the work. Both screens are alive at once, so
-            // a load can queue behind another hand-off, and a lock wait outside the budget would
-            // add a second full timeout to a user who is staring at a spinner. Bounding the whole
-            // thing is safe *here* precisely because nothing user-visible has been launched -
-            // which is why launchPurchaseFlow below must not do the same.
-            withTimeoutOrNull(PREPARE_TIMEOUT_MS) { purchaseMutex.withLock { preparePlans() } }
-                ?: PlanQuery.Unavailable(
-                    reportFailure(
-                        PurchaseFailure.BILLING_UNAVAILABLE,
-                        "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
-                    )
-                )
+            // The lock wait is bounded separately from the Play round trip rather than sharing
+            // one budget with it: a load queued behind the other screen's hand-off could burn
+            // the whole of a shared budget waiting and then report "billing unavailable" over a
+            // Play that was never asked anything, which is the wrong word for "busy" (#78).
+            if (!acquirePurchaseLock()) {
+                PlanQuery.Unavailable(busyFailure())
+            } else {
+                try {
+                    withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePlans() }
+                        ?: PlanQuery.Unavailable(
+                            reportFailure(
+                                PurchaseFailure.BILLING_UNAVAILABLE,
+                                "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
+                            )
+                        )
+                } finally {
+                    purchaseMutex.unlock()
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -273,6 +302,20 @@ class PlayBillingRepository @Inject constructor(
                 reportFailure(PurchaseFailure.BILLING_UNAVAILABLE, "billing threw: $e")
             )
         }
+
+    /**
+     * Takes [purchaseMutex] within [LOCK_WAIT_TIMEOUT_MS], false when the wait expired.
+     *
+     * `Mutex.lock` releases the lock itself if cancellation lands after it was acquired, so a
+     * caller that times out here cannot leave it held.
+     */
+    private suspend fun acquirePurchaseLock(): Boolean =
+        withTimeoutOrNull(LOCK_WAIT_TIMEOUT_MS) { purchaseMutex.lock() } != null
+
+    private fun busyFailure(): PurchaseFailure = reportFailure(
+        PurchaseFailure.BILLING_BUSY,
+        "another hand-off held the billing client for ${LOCK_WAIT_TIMEOUT_MS}ms"
+    )
 
     private suspend fun preparePlans(): PlanQuery {
         val details = when (val query = connectAndQueryOffer()) {
@@ -296,30 +339,37 @@ class PlayBillingRepository @Inject constructor(
     override suspend fun launchPurchaseFlow(
         activity: Activity,
         plan: SubscriptionPlan
-    ): PurchaseFailure? =
-        purchaseMutex.withLock {
-            try {
-                // Only the preparation is timed. A non-null Prepared keeps "the sheet was shown"
-                // (null) distinguishable from "nothing came back", which an earlier version
-                // conflated - reporting every successful purchase as a timeout.
-                val prepared = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePurchase(plan) }
-                    ?: return@withLock reportFailure(
-                        PurchaseFailure.BILLING_UNAVAILABLE,
-                        "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
-                    )
+    ): PurchaseFailure? {
+        // Bounding the lock wait is safe here for the same reason wrapping the launch is not:
+        // this expires strictly before anything of Play's is on screen. Unbounded, a Continue
+        // tap queued behind the other screen's hand-off waited however long that one took, with
+        // nothing to tell the user it was waiting on (#78).
+        if (!acquirePurchaseLock()) return busyFailure()
 
-                when (prepared) {
-                    is Prepared.Unavailable -> prepared.failure
-                    is Prepared.Offer -> showPurchaseSheet(activity, prepared)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // A throw out of the Play client (a dead service binding, say) would otherwise
-                // reach viewModelScope and take the app down instead of reporting.
-                reportFailure(PurchaseFailure.LAUNCH_FAILED, "billing threw: $e")
+        return try {
+            // Only the preparation is timed. A non-null Prepared keeps "the sheet was shown"
+            // (null) distinguishable from "nothing came back", which an earlier version
+            // conflated - reporting every successful purchase as a timeout.
+            val prepared = withTimeoutOrNull(PREPARE_TIMEOUT_MS) { preparePurchase(plan) }
+
+            when (prepared) {
+                null -> reportFailure(
+                    PurchaseFailure.BILLING_UNAVAILABLE,
+                    "no answer from Play within ${PREPARE_TIMEOUT_MS}ms"
+                )
+                is Prepared.Unavailable -> prepared.failure
+                is Prepared.Offer -> showPurchaseSheet(activity, prepared)
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A throw out of the Play client (a dead service binding, say) would otherwise
+            // reach viewModelScope and take the app down instead of reporting.
+            reportFailure(PurchaseFailure.LAUNCH_FAILED, "billing threw: $e")
+        } finally {
+            purchaseMutex.unlock()
         }
+    }
 
     private sealed interface Prepared {
         data class Offer(val details: ProductDetails, val offerToken: String) : Prepared
@@ -388,17 +438,16 @@ class PlayBillingRepository @Inject constructor(
                 startConnection(attempt)
                 return attempt.await()
             } finally {
-                // An attempt whose owner gave up - timed out, or its screen went away - must not
-                // be left in place: every later tap would wait on a deferred nobody completes,
-                // and no reconnect would ever be tried.
-                if (!attempt.isCompleted) {
-                    attempt.complete(
-                        reportFailure(
-                            PurchaseFailure.BILLING_UNAVAILABLE,
-                            "connection attempt abandoned before Play answered"
-                        )
-                    )
-                }
+                // Unpublished, never answered. This caller giving up - a timeout, or its screen
+                // going away - says nothing about the `startConnection` it began, which is still
+                // outstanding and still owns Play's callback. Answering the attempt here handed
+                // every *other* waiter a refusal none of them caused, and the launch-time resolve
+                // ladder is usually among them - so `statusResolved` stayed false for the session
+                // and CloudSyncManager refused a paying subscriber (#78). Only Play's own
+                // callback completes an attempt now. Taking it out of the slot is still needed,
+                // or every later caller would join a deferred nothing will ever complete; anyone
+                // still awaiting this one is bounded by their own budget and gets the real answer
+                // if Play does come back.
                 connection.compareAndSet(attempt, null)
             }
         }
