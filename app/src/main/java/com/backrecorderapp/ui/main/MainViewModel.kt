@@ -153,7 +153,7 @@ class MainViewModel @Inject constructor(
      * Only in this view model, though: settings holds its own flags over the same singleton
      * repository, so a hand-off started here and one started there are **serialized** by the
      * repository's mutex rather than prevented, and the user would see the second sheet behind
-     * the first. Closing that needs the in-flight state to live in the repository; issue #78.
+     * the first. Closing that needs the in-flight state to live in the repository; issue #118.
      *
      * Nothing else may write these flags. Anything that reads the whole state, suspends, then
      * writes `state.copy(...)` back puts a cleared flag to true again *permanently*, since the

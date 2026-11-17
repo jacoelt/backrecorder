@@ -591,6 +591,66 @@ class PlayBillingRepositoryTest {
         }
 
     /**
+     * A connection that fails after its starter gave up is still refusing whoever stayed on it,
+     * and `Log.w` is the only evidence a release build keeps (#107). An earlier version of #78
+     * silenced this by asking whether the attempt was still published — which is false in exactly
+     * the case that matters, since an abandoned attempt is unpublished while still awaited.
+     */
+    @Test
+    fun `a connection refused after its starter gave up is still logged`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            every { client.startConnection(capture(listener)) } answers { }
+
+            val repository = createRepository()
+            val abandoned = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            advanceTimeBy(21_000)
+            assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, abandoned.await())
+
+            listener.captured.onBillingServiceDisconnected()
+
+            verify { Log.w(any(), match<String> { it.startsWith("Billing connection failed") }) }
+        }
+
+    /**
+     * A `startConnection` that throws registered no listener, so no callback can ever answer the
+     * attempt it was given. It must be answered on the spot: a waiter that had already joined it
+     * would otherwise sit out its whole budget for a connection nobody is attempting.
+     */
+    @Test
+    fun `a connection that throws answers the waiters it can never call back`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            every { client.startConnection(any()) } throws IllegalStateException("dead binder")
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            val tap = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+
+            // No advanceTimeBy: answered immediately, not after PREPARE_TIMEOUT_MS.
+            assertTrue(tap.isCompleted)
+            assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, tap.await())
+        }
+
+    /** The ladder runs on the application scope, which has no handler: a throw there is fatal. */
+    @Test
+    fun `a connection that throws does not escape the resolve ladder`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            every { client.startConnection(any()) } throws IllegalStateException("dead binder")
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            repository.connect()
+            advanceTimeBy(60_000)
+
+            assertEquals(false, repository.statusResolved.value)
+        }
+
+    /**
      * The other half of #78: a load queued behind the other screen's hand-off used to spend its
      * whole budget on the lock and then report "billing unavailable" over a Play that was never
      * asked anything. Busy is a different word with a different remedy - try again in a moment.
@@ -608,6 +668,7 @@ class PlayBillingRepositoryTest {
             val handOff = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
             runCurrent()
             val load = async { repository.loadSubscriptionPlans() }
+            // Past LOCK_WAIT_TIMEOUT_MS, short of the holder's PREPARE_TIMEOUT_MS.
             advanceTimeBy(11_000)
 
             assertEquals(PlanQuery.Unavailable(PurchaseFailure.BILLING_BUSY), load.await())

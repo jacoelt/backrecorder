@@ -111,8 +111,9 @@ class PlayBillingRepository @Inject constructor(
      * with an error, which would surface as "billing unavailable" seconds before the first
      * connection succeeds.
      *
-     * It belongs to no caller: only Play's own callback completes it, and a caller that gives up
-     * merely takes it out of this slot. See [ensureConnected].
+     * It belongs to no caller: only Play's own callback completes it — barring a `startConnection`
+     * that throws, which registered no callback — and a caller that gives up merely takes it out
+     * of this slot. See [ensureConnected].
      */
     private val connection = AtomicReference<CompletableDeferred<PurchaseFailure?>?>(null)
 
@@ -450,9 +451,9 @@ class PlayBillingRepository @Inject constructor(
                     // nothing else can ever answer this attempt. Anyone already awaiting it -
                     // typically the resolve ladder - would otherwise wait out its whole budget
                     // for a connection that was never attempted.
-                    attempt.complete(
-                        reportFailure(PurchaseFailure.BILLING_UNAVAILABLE, "startConnection threw: $e")
-                    )
+                    if (!attempt.isCompleted) {
+                        attempt.complete(connectionFailed("startConnection threw: $e"))
+                    }
                 }
                 return attempt.await()
             } finally {
@@ -462,7 +463,8 @@ class PlayBillingRepository @Inject constructor(
                 // every *other* waiter a refusal none of them caused, and the launch-time resolve
                 // ladder is usually among them - so `statusResolved` stayed false for the session
                 // and CloudSyncManager refused a paying subscriber (#78). Only Play's own
-                // callback completes an attempt now. Taking it out of the slot is still needed,
+                // callback completes an attempt now, bar the throw handled above. Taking it out
+                // of the slot is still needed,
                 // or every later caller would join a deferred nothing will ever complete; anyone
                 // still awaiting this one is bounded by their own budget and gets the real answer
                 // if Play does come back.
@@ -478,10 +480,7 @@ class PlayBillingRepository @Inject constructor(
                     pending.complete(null)
                 } else {
                     pending.complete(
-                        answerWaiters(
-                            PurchaseFailure.BILLING_UNAVAILABLE,
-                            "billing setup failed: ${result.responseCode} ${result.debugMessage}"
-                        )
+                        connectionFailed("setup: ${result.responseCode} ${result.debugMessage}")
                     )
                 }
             }
@@ -492,25 +491,8 @@ class PlayBillingRepository @Inject constructor(
                 // This listener outlives the attempt, so an ordinary later disconnect lands here
                 // too - that one answers nobody and must not be logged as a hand-off failure.
                 if (pending.isCompleted) return
-                pending.complete(
-                    answerWaiters(
-                        PurchaseFailure.BILLING_UNAVAILABLE,
-                        "billing service disconnected before setup finished"
-                    )
-                )
+                pending.complete(connectionFailed("disconnected before setup finished"))
             }
-
-            /**
-             * [reportFailure], but silent once this attempt has been abandoned.
-             *
-             * Since #78 an abandoned attempt is left uncompleted, so the first ordinary Play
-             * service restart afterwards lands in the disconnect callback above and would log a
-             * hand-off failure for a hand-off nobody made. `Log.w` survives `-assumenosideeffects`
-             * in release and is the only evidence a field diagnosis has, so a phantom entry there
-             * costs more than the missing one.
-             */
-            fun answerWaiters(failure: PurchaseFailure, detail: String): PurchaseFailure =
-                if (connection.get() === pending) reportFailure(failure, detail) else failure
         })
     }
 
@@ -608,6 +590,22 @@ class PlayBillingRepository @Inject constructor(
                 "launchBillingFlow: ${result.responseCode} ${result.debugMessage}"
             )
         }
+    }
+
+    /**
+     * Logs a connection-level event and returns what to answer waiters with.
+     *
+     * Separate from [reportFailure] because a connection is not a hand-off. Since #78 an
+     * abandoned attempt is left uncompleted, so an ordinary Play restart afterwards lands in the
+     * disconnect callback and `reportFailure` would write "Upgrade hand-off failed" for a hand-off
+     * nobody made - into the `Log.w` that `-assumenosideeffects` leaves as release's only evidence
+     * (#107). Gating that on whether the attempt is still published was worse: an attempt is
+     * unpublished *while still awaited* in exactly the #78 case, so a genuine refusal of those
+     * waiters went unlogged. Every connection event is written, saying only what it was.
+     */
+    private fun connectionFailed(detail: String): PurchaseFailure {
+        Log.w(TAG, "Billing connection failed: $detail")
+        return PurchaseFailure.BILLING_UNAVAILABLE
     }
 
     /** Logs the detail the user never sees and returns [failure], so callers can `return` it. */
