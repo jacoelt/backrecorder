@@ -125,7 +125,7 @@ class SaveRecordingUseCaseTest {
                 workThreads += Thread.currentThread().name
                 secondArg<File>().writeBytes(ByteArray(8))
             }
-            every { contentResolver.openOutputStream(any()) } answers {
+            every { contentResolver.openOutputStream(any(), any()) } answers {
                 workThreads += Thread.currentThread().name
                 ByteArrayOutputStream()
             }
@@ -258,6 +258,7 @@ class SaveRecordingUseCaseTest {
         every { trimUseCase.trim(any(), any(), any(), any()) } answers {
             secondArg<File>().writeBytes(ByteArray(8))
         }
+        every { contentResolver.openOutputStream(any(), any()) } returns null
         every { contentResolver.openOutputStream(any()) } returns null
         coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(completeSegment())
 
@@ -266,6 +267,54 @@ class SaveRecordingUseCaseTest {
 
         assertTrue(result is SaveResult.Error)
         verify(exactly = 0) { savedRecordingUploader.enqueue(any(), any()) }
+    }
+
+    @Test
+    fun `asks the provider to truncate the destination (issue 96)`() = runTest {
+        val mode = slot<String>()
+        every { contentResolver.openOutputStream(any(), capture(mode)) } returns
+            ByteArrayOutputStream()
+
+        assertTrue(runSaveOfOneSegment() is SaveResult.Success)
+
+        assertEquals("wt", mode.captured)
+        verify(exactly = 0) { contentResolver.openOutputStream(any()) }
+    }
+
+    @Test
+    fun `falls back to a plain write when the provider throws on the truncating mode`() = runTest {
+        val written = ByteArrayOutputStream()
+        every { contentResolver.openOutputStream(any(), any()) } throws
+            UnsupportedOperationException("mode not supported")
+        every { contentResolver.openOutputStream(any()) } returns written
+
+        assertTrue(runSaveOfOneSegment() is SaveResult.Success)
+        assertEquals(8, written.size())
+    }
+
+    /** A provider may refuse the mode by answering null rather than by throwing. */
+    @Test
+    fun `falls back to a plain write when the truncating mode is answered with null`() = runTest {
+        val written = ByteArrayOutputStream()
+        every { contentResolver.openOutputStream(any(), any()) } returns null
+        every { contentResolver.openOutputStream(any()) } returns written
+
+        assertTrue(runSaveOfOneSegment() is SaveResult.Success)
+        assertEquals(8, written.size())
+    }
+
+    /** One save of a single eight-byte segment, with everything but the destination stubbed. */
+    private suspend fun runSaveOfOneSegment(): SaveResult {
+        coEvery { billingRepository.getSubscriptionStatus() } returns SubscriptionStatus.ACTIVE
+        every { context.cacheDir } returns temporaryFolder.root
+        every { trimUseCase.trim(any(), any(), any(), any()) } answers {
+            secondArg<File>().writeBytes(ByteArray(8))
+        }
+        every { contentResolver.query(any(), any(), any(), any(), any()) } returns null
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(completeSegment())
+
+        val now = System.currentTimeMillis()
+        return saveRecordingUseCase.execute(now - (5 * 60 * 1000), now, mockk())
     }
 
     @Test
