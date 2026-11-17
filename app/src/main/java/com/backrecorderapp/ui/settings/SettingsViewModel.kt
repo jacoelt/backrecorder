@@ -188,10 +188,41 @@ class SettingsViewModel @Inject constructor(
     private val _driveConnecting = MutableStateFlow(false)
 
     /**
-     * True while a Drive grant operation is in flight. The connect queues behind the session lock
-     * and crosses Play Services, so the button must render the wait rather than look live.
+     * Holds the same claim as [_driveConnecting] across the consent round trip, which spans two
+     * separate calls into this view model and so cannot be covered by one `finally` (#105).
+     *
+     * [requestDriveAccess] returns as soon as it publishes the `PendingIntent`; the screen
+     * launches the sheet a frame or two later. Releasing the claim at that return left the
+     * Connect button live in between, and a tap landing there started a second `authorize()`
+     * that took the claim - so the real [onConsentResult] was discarded and a grant Google had
+     * already approved was lost, with no error and no retry.
+     *
+     * It is released by [onConsentResult] - through `claimingDriveConnect(continuesConsent)`,
+     * which takes the claim over rather than contending for it - and **not** at launch time: the
+     * window still has focus for the hundreds of milliseconds the consent activity takes to
+     * appear, so a claim dropped at launch leaves Connect live long enough for a second tap to
+     * open a second sheet over the first.
+     *
+     * That it cannot outlive a flow which never returns - the leak that would be a permanently
+     * disabled Connect button, #102 in a new place - rests on three things rather than on a
+     * cleanup hook. It is only ever set together with [_consentRequest]; while that request is
+     * live any composition of the settings screen launches it, and `ActivityResultRegistry`
+     * answers a launch even when the intent sender is dead, so a result always arrives; and the
+     * view model dies with the settings back-stack entry, so leaving outright ends it too.
      */
-    val driveConnecting: StateFlow<Boolean> = _driveConnecting.asStateFlow()
+    private val _awaitingConsent = MutableStateFlow(false)
+
+    /**
+     * True while a Drive grant operation is in flight, the consent sheet's round trip included.
+     * The connect queues behind the session lock and crosses Play Services, so the button must
+     * render the wait rather than look live.
+     *
+     * Eagerly rather than `WhileSubscribed`, as [upgradeBusy]: with no collector the combine
+     * never runs and `value` answers from a stale cache.
+     */
+    val driveConnecting: StateFlow<Boolean> =
+        combine(_driveConnecting, _awaitingConsent) { connecting, consent -> connecting || consent }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val _driveError = MutableStateFlow<DriveError?>(null)
 
@@ -239,7 +270,8 @@ class SettingsViewModel @Inject constructor(
 
             // Uploads cannot work without the grant, so ask for it as part of turning the mode
             // on rather than silently queueing segments that will never leave. If another grant
-            // request is already running, that one starts the loop when it finishes.
+            // request is already running - or a consent sheet is still out - that one starts the
+            // loop when it finishes, through here or through `completeConsent`.
             claimingDriveConnect {
                 if (requestDriveAccess()) cloudSyncManager.startSync()
             }
@@ -266,11 +298,33 @@ class SettingsViewModel @Inject constructor(
      *
      * The claim is released only by the call that took it, in a `finally` - never by the user
      * leaving the screen. See [planLoadGeneration] above for why: a flag freed from outside the
-     * call it guards lets a second operation start over the top of one still running.
+     * call it guards lets a second operation start over the top of one still running. The one
+     * exception is [_awaitingConsent], which guards no running call at all - `authorize()` has
+     * already returned by then, and what is outstanding is a UI round trip rather than work.
+     *
+     * [continuesConsent] marks the call that adopts the result of that round trip; it owns
+     * [_awaitingConsent], so it passes that guard and takes the claim over without a live gap.
+     * It is defaulted rather than required - unlike the parameter #98 argues about, the default
+     * is the *stricter* behaviour, so a new call site that forgets it is refused rather than
+     * waved through. It still refuses while a real call is running, which is the one case where
+     * an approved grant can still be dropped; that is logged rather than silent.
      */
-    private suspend fun claimingDriveConnect(block: suspend () -> Unit) {
-        if (_driveConnecting.value) return
+    private suspend fun claimingDriveConnect(
+        continuesConsent: Boolean = false,
+        block: suspend () -> Unit
+    ) {
+        if (_driveConnecting.value) {
+            // A tripwire rather than a path with a known trigger: every other claim taker is
+            // refused while a consent is outstanding, so reaching this needs a second result
+            // delivered while the first is still being adopted. A dropped grant is #105's own
+            // harm, so if it ever does happen it must not be invisible on a release build -
+            // Log.w survives `-assumenosideeffects`, Log.d and Log.i do not (#107).
+            if (continuesConsent) Log.w(TAG, "Consent result dropped: a grant operation is running")
+            return
+        }
+        if (_awaitingConsent.value && !continuesConsent) return
         _driveConnecting.value = true
+        _awaitingConsent.value = false
         try {
             block()
         } finally {
@@ -301,6 +355,16 @@ class SettingsViewModel @Inject constructor(
                 true
             }
             is DriveAuthManager.AuthorizationOutcome.ConsentRequired -> {
+                // Claimed before the request is published, so the screen cannot launch the sheet
+                // and answer it in between; see [_awaitingConsent].
+                //
+                // Published even when the user has already left the screen, which looks wrong and
+                // is not: `authorize()` calls `clearLocked()` before it reports ConsentRequired,
+                // so by this line the session is gone and this intent is the only route back to a
+                // working account. Dropping it would disconnect Drive silently - no sheet, no
+                // error, uploads simply stopped - which is a worse version of the lost grant this
+                // issue is about. It is picked up by the next composition instead.
+                _awaitingConsent.value = true
                 _consentRequest.value = outcome.pendingIntent
                 false
             }
@@ -341,13 +405,22 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onConsentLaunched() {
+        // Only the request is consumed here, never the claim. Releasing the claim at launch
+        // leaves Connect live while the consent activity is still starting - hundreds of
+        // milliseconds in which the window still has focus - and a tap there publishes a second
+        // request that the still-composed LaunchedEffect opens as a second sheet over the first.
         _consentRequest.value = null
     }
 
     fun onConsentResult(data: Intent?) {
         viewModelScope.launch {
-            // Adopting the grant crosses the same lock and lookup, so it is busy too.
-            claimingDriveConnect { completeConsent(data) }
+            // Adopting the grant crosses the same lock and lookup, so it is busy too, and it
+            // continues the claim the published request took rather than starting a new one. It
+            // is deliberately not conditional on that claim still being held: a process death
+            // during the sheet replaces this view model, and the restored launcher then delivers
+            // a real grant to a fresh instance that was never awaiting it. A grant operation
+            // actually running is the one thing that still refuses it, and logs when it does.
+            claimingDriveConnect(continuesConsent = true) { completeConsent(data) }
         }
     }
 
@@ -529,6 +602,11 @@ class SettingsViewModel @Inject constructor(
      * to be rendered again on the way back.
      */
     fun onScreenLeft() {
+        // The consent claim and its request are deliberately left alone here, unlike every other
+        // dialog this drops: `authorize()` has already called `clearLocked()` by the time either
+        // exists, so the request is not a stale offer but the only route back to a working
+        // account, and dropping it would disconnect Drive silently. They are not a leak either -
+        // see [_awaitingConsent] for what ends the claim.
         abandonPendingPlanLoad()
         // Leaving abandons the purchase too, unlike dismissing the offer: its answer would
         // otherwise raise a failure dialog over this screen on the way back.
