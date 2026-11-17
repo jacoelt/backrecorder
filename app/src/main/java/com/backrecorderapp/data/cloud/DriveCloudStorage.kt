@@ -26,6 +26,12 @@ class DriveCloudStorage @Inject constructor(
         private const val ROOT_FOLDER = "BackRecorder"
         private const val STAGING_FOLDER = "staging"
 
+        /**
+         * Private metadata key carrying the id of the upload run that created a saved recording,
+         * so a retry can ask Drive whether its own earlier attempt landed (#92).
+         */
+        private const val UPLOAD_RUN_KEY = "uploadRunId"
+
         /** Drive's own mime type for folders. Staging listings must exclude them. */
         private const val FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
@@ -82,7 +88,9 @@ class DriveCloudStorage @Inject constructor(
 
     suspend fun uploadSegment(file: File): String? {
         val folders = ensureFolderStructure() ?: return null
-        return withContext(Dispatchers.IO) { uploadFile(file, folders.stagingId, file.name) }
+        return withContext(Dispatchers.IO) {
+            uploadFile(file, folders.stagingId, file.name, uploadRunId = null)
+        }
     }
 
     /**
@@ -92,17 +100,73 @@ class DriveCloudStorage @Inject constructor(
      * in there once it ages past the 24h window, so a saved recording placed in staging would be
      * destroyed a day later - the one outcome a backup copy must never have.
      */
-    suspend fun uploadSavedRecording(file: File, displayName: String): String? {
+    suspend fun uploadSavedRecording(
+        file: File,
+        displayName: String,
+        uploadRunId: String
+    ): String? {
         val folders = ensureFolderStructure() ?: return null
-        return withContext(Dispatchers.IO) { uploadFile(file, folders.rootId, displayName) }
+        return withContext(Dispatchers.IO) {
+            uploadFile(file, folders.rootId, displayName, uploadRunId)
+        }
     }
 
-    private fun uploadFile(file: File, parentFolderId: String, displayName: String): String? {
+    /**
+     * The id of the copy the upload run [uploadRunId] already put in `BackRecorder/`, or null.
+     *
+     * The run stamps its own id on the file as it creates it, so this asks Drive a question with
+     * exactly one right answer. Identifying the copy by what it *looks* like instead - its name
+     * and byte length - cannot work here: the name is whatever the user typed in the picker and
+     * is freely repeatable, and size discriminates far less than it appears to, because this app
+     * records at a fixed 32 kbps and its selections are minute-quantised, so two different
+     * recordings of equal duration plausibly share a byte length. A match on those would report
+     * an unrelated recording's copy as this one's backup and drop it silently, which is worse
+     * than the duplicate being prevented. A timestamp bound narrows that but cannot close it,
+     * since it weighs the device's clock against Drive's and leaves concurrent saves overlapping.
+     *
+     * `appProperties` is private to this app and searchable under the narrow `drive.file` scope
+     * already in use.
+     *
+     * Reconciliation is deliberately out of scope: when a `files.list` lags a fresh commit badly
+     * enough that a retry uploads anyway, two files end up carrying the same run id and this
+     * returns one of them. Tidying that up means deleting from the user's Drive on the strength
+     * of a listing that has already proved unreliable, which is a worse trade than the duplicate.
+     */
+    suspend fun findSavedRecording(uploadRunId: String): String? = withContext(Dispatchers.IO) {
+        val folders = ensureFolderStructure() ?: return@withContext null
+        val drive = drive ?: return@withContext null
+
+        val result = drive.files().list()
+            .setQ(
+                "appProperties has { key='$UPLOAD_RUN_KEY' and " +
+                    "value='${escapeQueryLiteral(uploadRunId)}' } and " +
+                    "'${folders.rootId}' in parents and trashed = false"
+            )
+            .setFields("files(id)")
+            .execute()
+
+        result.files?.firstOrNull()?.id
+    }
+
+    /**
+     * [uploadRunId] is required rather than defaulted, so a new saved-recording call site cannot
+     * silently produce a file [findSavedRecording] can never match - the same reason #98 refuses
+     * a default for its `complimentary` flag. Segments pass null: nothing probes for them.
+     */
+    private fun uploadFile(
+        file: File,
+        parentFolderId: String,
+        displayName: String,
+        uploadRunId: String?
+    ): String? {
         val drive = drive ?: return null
 
         val metadata = com.google.api.services.drive.model.File().apply {
             name = displayName
             parents = listOf(parentFolderId)
+            if (uploadRunId != null) {
+                appProperties = mapOf(UPLOAD_RUN_KEY to uploadRunId)
+            }
         }
 
         val mediaContent = FileContent("audio/mp4", file)

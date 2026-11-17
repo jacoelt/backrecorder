@@ -65,7 +65,9 @@ class FakeDriveServer @Inject constructor() {
         parents: List<String>,
         val createdTime: Long,
         content: ByteArray? = null,
-        trashed: Boolean = false
+        trashed: Boolean = false,
+        /** The app-private metadata a saved-recording upload stamps its run id into (#92). */
+        val appProperties: Map<String, String> = emptyMap()
     ) {
         @Volatile
         var name: String = name
@@ -105,6 +107,12 @@ class FakeDriveServer @Inject constructor() {
 
     /** Open resumable upload sessions: upload id to the metadata the initiation carried. */
     private val uploadSessions = Collections.synchronizedMap(mutableMapOf<String, JSONObject>())
+
+    @Volatile
+    private var failNextUploadResponse: Boolean = false
+
+    @Volatile
+    private var failNextUploadBeforeStoring: Boolean = false
 
     @Volatile
     private var accountId: String = DEFAULT_ACCOUNT_ID
@@ -193,6 +201,8 @@ class FakeDriveServer @Inject constructor() {
         calls.clear()
         revoked.clear()
         uploadSessions.clear()
+        failNextUploadResponse = false
+        failNextUploadBeforeStoring = false
         accountId = DEFAULT_ACCOUNT_ID
         accountEmail = DEFAULT_ACCOUNT_EMAIL
     }
@@ -207,6 +217,29 @@ class FakeDriveServer @Inject constructor() {
         uploadSessions.clear()
         this.accountId = accountId
         this.accountEmail = email
+    }
+
+    /**
+     * Models the failure behind #92: Drive accepts and stores the bytes, then the client never
+     * sees the response. The entry is created exactly as a successful upload would create it and
+     * the uploader is told the attempt failed, so its retry runs against a Drive that already
+     * holds the file.
+     *
+     * One-shot, so the attempt after it can succeed.
+     */
+    fun failAfterNextUpload() {
+        failNextUploadResponse = true
+    }
+
+    /**
+     * The ordinary transport failure: the bytes never reach Drive, so the retry has nothing of
+     * its own to find. It is what tells a probe that asks "is there a file like this?" apart from
+     * one that asks "is there the file *I* uploaded?" - only the former matches here, wrongly.
+     *
+     * One-shot, so the attempt after it can succeed.
+     */
+    fun failNextUploadBeforeStoring() {
+        failNextUploadBeforeStoring = true
     }
 
     /** Makes the server answer 401 to [token], as Drive does once a token is no longer good. */
@@ -258,7 +291,8 @@ class FakeDriveServer @Inject constructor() {
         mimeType: String,
         parents: MutableList<String>,
         createdTime: Long,
-        content: ByteArray?
+        content: ByteArray?,
+        appProperties: Map<String, String> = emptyMap()
     ): Entry {
         val entry = Entry(
             id = "file-" + ids.incrementAndGet(),
@@ -266,7 +300,8 @@ class FakeDriveServer @Inject constructor() {
             mimeType = mimeType,
             parents = parents,
             createdTime = createdTime,
-            content = content
+            content = content,
+            appProperties = appProperties
         )
         entries[entry.id] = entry
         return entry
@@ -372,7 +407,8 @@ class FakeDriveServer @Inject constructor() {
             val parts = multipartBodies(request)
             val meta = parts.firstOrNull()?.let { JSONObject(String(it, Charsets.UTF_8)) }
                 ?: JSONObject()
-            return created(createFromMetadata(meta, parts.getOrNull(1)))
+            refusedBeforeStoring()?.let { return it }
+            return completedUpload(createFromMetadata(meta, parts.getOrNull(1)))
         }
 
         val metadata = JSONObject(request.bodyText().ifBlank { "{}" })
@@ -392,19 +428,40 @@ class FakeDriveServer @Inject constructor() {
             ?: return Response(400, error(400, "no upload_id"))
         val metadata = uploadSessions.remove(uploadId)
             ?: return Response(404, error(404, "unknown upload session"))
-        return created(createFromMetadata(metadata, request.body))
+        refusedBeforeStoring()?.let { return it }
+        return completedUpload(createFromMetadata(metadata, request.body))
+    }
+
+    private fun refusedBeforeStoring(): Response? {
+        if (!failNextUploadBeforeStoring) return null
+        failNextUploadBeforeStoring = false
+        return Response(500, error(500, "the upload never reached Drive"))
+    }
+
+    /**
+     * The response to a stored upload — 500 instead of the entry when [failAfterNextUpload] armed
+     * it, leaving the file on the server and the client believing the attempt failed.
+     */
+    private fun completedUpload(entry: Entry): Response {
+        if (!failNextUploadResponse) return created(entry)
+        failNextUploadResponse = false
+        return Response(500, error(500, "the connection dropped after the bytes landed"))
     }
 
     private fun createFromMetadata(metadata: JSONObject, content: ByteArray?): Entry {
         val parents = metadata.optJSONArray("parents")?.let { array ->
             MutableList(array.length()) { array.getString(it) }
         } ?: mutableListOf()
+        val appProperties = metadata.optJSONObject("appProperties")?.let { json ->
+            json.keys().asSequence().associateWith { json.getString(it) }
+        } ?: emptyMap()
         return newEntry(
             name = metadata.optString("name", "unnamed"),
             mimeType = metadata.optString("mimeType", "application/octet-stream"),
             parents = parents,
             createdTime = System.currentTimeMillis(),
-            content = content
+            content = content,
+            appProperties = appProperties
         )
     }
 
@@ -503,11 +560,24 @@ class FakeDriveServer @Inject constructor() {
      * folder into a passing test.
      */
     private class QueryMatcher(query: String) {
-        private val clauses: List<(Entry) -> Boolean> =
-            query.split(" and ")
+        private val clauses: List<(Entry) -> Boolean>
+
+        init {
+            val built = mutableListOf<(Entry) -> Boolean>()
+            // `appProperties has { key='k' and value='v' }` carries its own " and ", so it has
+            // to come out whole before the rest is split on that separator.
+            val rest = APP_PROPERTY.replace(query) { match ->
+                val key = unescape(match.groupValues[1])
+                val value = unescape(match.groupValues[2])
+                built += { entry: Entry -> entry.appProperties[key] == value }
+                ""
+            }
+            built += rest.split(" and ")
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .map(::compile)
+            clauses = built
+        }
 
         fun matches(entry: Entry): Boolean = clauses.all { it(entry) }
 
@@ -517,6 +587,10 @@ class FakeDriveServer @Inject constructor() {
             val MIME_IS_NOT = Regex("""mimeType\s*!=\s*'(.*)'""")
             val IN_PARENTS = Regex("""'(.*)'\s+in\s+parents""")
             val TRASHED = Regex("""trashed\s*=\s*(true|false)""")
+            val APP_PROPERTY = Regex(
+                """appProperties\s+has\s*\{\s*key\s*=\s*'((?:\\.|[^'])*)'""" +
+                    """\s+and\s+value\s*=\s*'((?:\\.|[^'])*)'\s*\}"""
+            )
 
             fun compile(clause: String): (Entry) -> Boolean {
                 NAME.matchEntire(clause)?.let { m ->

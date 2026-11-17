@@ -25,6 +25,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -227,8 +228,12 @@ class SavedRecordingUploader @Inject constructor(
     private enum class Attempt { UPLOADED, RETRYABLE, THROTTLED, TERMINAL }
 
     private suspend fun upload(file: File, displayName: String) {
+        // Stamped on whatever this run uploads, so a retry can ask Drive for its own earlier
+        // attempt by identity rather than guess at it from the name and size.
+        val runId = UUID.randomUUID().toString()
+
         for (attempt in 1..MAX_ATTEMPTS) {
-            when (val outcome = attemptUpload(file, displayName, attempt)) {
+            when (val outcome = attemptUpload(file, displayName, attempt, runId)) {
                 Attempt.UPLOADED -> return
                 Attempt.TERMINAL -> break
                 else -> {
@@ -255,22 +260,48 @@ class SavedRecordingUploader @Inject constructor(
             }
         }
 
+        // The last attempt can drop the same way, or commit and then answer terminal; without
+        // this the user is told the backup failed while it sits in BackRecorder/.
+        //
+        // Read here rather than relying on the checks between attempts, which a break on the
+        // last attempt jumps straight past: with no transport the probe cannot answer, and a
+        // doomed request holds the lock - and every save queued behind it - for the whole
+        // connect timeout before the user hears anything.
+        val transportForProbe = appPreferences.cloudUploadMode.first()
+        if (transportForProbe != CloudUploadMode.OFF &&
+            isCloudNetworkAvailable(context, transportForProbe) &&
+            uploadMutex.withLock { alreadyOnDrive(runId) } != null
+        ) {
+            return
+        }
+
         reportFailure(displayName)
     }
 
     /**
-     * One transfer, under the lock.
+     * One transfer and the probe in front of it, under the lock.
      *
-     * The lock covers the transfer alone so that exactly one saved recording is on the wire at a
-     * time through the single Drive client. What stops a stalled transfer holding it - and every
-     * save queued behind it - is the socket timeout on the Drive request itself, since a
-     * coroutine timeout cannot interrupt the blocking call underneath.
+     * The lock covers those two and nothing else, so that exactly one saved recording is on the
+     * wire at a time through the single Drive client. What stops a stalled transfer holding it -
+     * and every save queued behind it - is the socket timeout on the Drive request itself, since
+     * a coroutine timeout cannot interrupt the blocking call underneath. The probe needs no
+     * [UPLOAD_TIMEOUT_MS] for that same reason: it is one small metadata response under those
+     * same socket bounds, with no trickling transfer for a backstop to catch.
      */
-    private suspend fun attemptUpload(file: File, displayName: String, attempt: Int): Attempt =
+    private suspend fun attemptUpload(
+        file: File,
+        displayName: String,
+        attempt: Int,
+        runId: String
+    ): Attempt =
         uploadMutex.withLock {
             try {
+                // Not on the first attempt: nothing of this run's can be on Drive yet.
+                if (attempt > 1) {
+                    alreadyOnDrive(runId)?.let { return@withLock Attempt.UPLOADED }
+                }
                 val uploadedId = withTimeout(UPLOAD_TIMEOUT_MS) {
-                    driveCloudStorage.uploadSavedRecording(file, displayName)
+                    driveCloudStorage.uploadSavedRecording(file, displayName, runId)
                 }
                 if (uploadedId != null) return@withLock Attempt.UPLOADED
                 Log.w(TAG, "Drive refused the upload of a saved recording (attempt $attempt)")
@@ -297,6 +328,29 @@ class SavedRecordingUploader @Inject constructor(
                 Log.e(TAG, "Saved-recording upload attempt $attempt failed", e)
                 Attempt.RETRYABLE
             }
+        }
+
+    /**
+     * The id of a copy an earlier attempt of this run landed after all, or null.
+     *
+     * A connection dropped *after* Drive committed the bytes fails the attempt here while the
+     * file exists there (#92), and Drive does not dedupe by name, so retrying blind adds a second
+     * copy and spends the user's quota.
+     *
+     * Null is the answer whenever this cannot be sure - a `files.list` lagging a fresh commit, a
+     * probe that throws - because a duplicate costs quota while a missing backup costs the copy
+     * the user was promised.
+     */
+    private suspend fun alreadyOnDrive(runId: String): String? =
+        try {
+            driveCloudStorage.findSavedRecording(runId)?.also {
+                Log.w(TAG, "An earlier attempt had already uploaded this recording")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not check whether an earlier attempt landed", e)
+            null
         }
 
     /**

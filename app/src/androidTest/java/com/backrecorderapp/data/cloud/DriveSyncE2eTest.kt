@@ -449,6 +449,92 @@ class DriveSyncE2eTest {
         )
     }
 
+    /**
+     * A retry after Drive accepted the bytes but lost the response leaves **one** copy, not two
+     * (#92).
+     *
+     * No unit test can establish this: what it turns on is the real [DriveCloudStorage] asking a
+     * real Drive API for the `appProperties` run id, against a server that genuinely holds the
+     * file the dropped attempt stored. Drive does not dedupe by name, so before the fix the retry
+     * added a second copy of the recording to the user's quota.
+     */
+    @Test
+    fun aRetryAfterADroppedResponseDoesNotLeaveASecondCopy() = runBlocking {
+        authorize()
+        appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        val folders = requireNotNull(driveCloudStorage.ensureFolderStructure())
+
+        server.failAfterNextUpload()
+        val saved = File(appContext.cacheDir, "Dropped Response.m4a").apply {
+            writeBytes(ByteArray(96) { it.toByte() })
+        }
+        savedRecordingUploader.enqueue(saved, "Dropped Response.m4a")
+
+        // Waiting for the file to appear would prove nothing: the dropped attempt stores it
+        // immediately, and the retry is two seconds of backoff away - longer than awaitDriveQuiet's
+        // one-second window, so the assertion would run before attempt 2 and pass either way. Wait
+        // for the retry's own footprint instead: either the dedupe probe, or the second copy a
+        // blind retry would have added.
+        awaitUntil("The upload was never retried", LOOP_TIMEOUT_MS) {
+            server.recordedCalls().any { it.query["q"]?.contains("uploadRunId") == true } ||
+                server.entries().count { it.name == "Dropped Response.m4a" } > 1
+        }
+        awaitDriveQuiet()
+
+        val copies = server.entries().filter { it.name == "Dropped Response.m4a" }
+        assertEquals(
+            "A retried upload must not add a second copy: $copies",
+            1,
+            copies.size
+        )
+        assertEquals(
+            "The one copy must still be in $ROOT_FOLDER",
+            listOf(folders.rootId),
+            copies.single().parents.toList()
+        )
+    }
+
+    /**
+     * The other half of #92, and the one that costs more when it breaks: a copy already in
+     * `BackRecorder/` under the same name and the same bytes must **not** be read as this run's,
+     * or the recording the user just saved loses its backup silently.
+     *
+     * The first attempt is refused **before** Drive stores anything, so this run has nothing of
+     * its own on Drive when the retry probes. That is what separates a probe asking "is there a
+     * file like this?" - which would match the seeded copy and stop - from one asking "is there
+     * the file *I* uploaded?". Only the real client against a real listing exercises the
+     * `appProperties` query; a unit test can assert what the query says, not what it selects.
+     */
+    @Test
+    fun aPreExistingCopyOfTheSameNameDoesNotSuppressTheBackup() = runBlocking {
+        authorize()
+        appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        val folders = requireNotNull(driveCloudStorage.ensureFolderStructure())
+
+        val bytes = ByteArray(96) { it.toByte() }
+        val seeded = server.seedFile(
+            name = "Reused Name.m4a",
+            parentId = folders.rootId,
+            content = bytes,
+            createdTime = System.currentTimeMillis() - hours(1)
+        )
+
+        server.failNextUploadBeforeStoring()
+        val saved = File(appContext.cacheDir, "Reused Name.m4a").apply { writeBytes(bytes) }
+        savedRecordingUploader.enqueue(saved, "Reused Name.m4a")
+
+        awaitUntil("This run's own copy never reached the fake Drive", LOOP_TIMEOUT_MS) {
+            server.entries().any { it.name == "Reused Name.m4a" && it.id != seeded.id }
+        }
+        awaitDriveQuiet()
+
+        assertEquals(
+            "The seeded copy must not be mistaken for this run's",
+            2,
+            server.entries().count { it.name == "Reused Name.m4a" }
+        )
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private suspend fun authorize() {
