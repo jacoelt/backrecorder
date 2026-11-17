@@ -326,10 +326,14 @@ class PlayBillingRepository @Inject constructor(
         return held
     }
 
-    private fun busyFailure(): PurchaseFailure = reportFailure(
-        PurchaseFailure.BILLING_BUSY,
-        "another hand-off held the billing client for ${LOCK_WAIT_TIMEOUT_MS}ms"
-    )
+    /**
+     * Neither caller nor holder is necessarily a hand-off — both are as often a plan load — so
+     * this does not go through [reportFailure], whose line claims one failed.
+     */
+    private fun busyFailure(): PurchaseFailure {
+        Log.w(TAG, "Billing client held by another call for ${LOCK_WAIT_TIMEOUT_MS}ms")
+        return PurchaseFailure.BILLING_BUSY
+    }
 
     private suspend fun preparePlans(): PlanQuery {
         val details = when (val query = connectAndQueryOffer()) {
@@ -464,10 +468,9 @@ class PlayBillingRepository @Inject constructor(
                 // ladder is usually among them - so `statusResolved` stayed false for the session
                 // and CloudSyncManager refused a paying subscriber (#78). Only Play's own
                 // callback completes an attempt now, bar the throw handled above. Taking it out
-                // of the slot is still needed,
-                // or every later caller would join a deferred nothing will ever complete; anyone
-                // still awaiting this one is bounded by their own budget and gets the real answer
-                // if Play does come back.
+                // of the slot is still needed, or every later caller would join a deferred
+                // nothing will ever complete; anyone still awaiting this one is bounded by their
+                // own budget and gets the real answer if Play does come back.
                 connection.compareAndSet(attempt, null)
             }
         }

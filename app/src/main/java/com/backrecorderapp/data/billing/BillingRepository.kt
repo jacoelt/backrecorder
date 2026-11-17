@@ -28,8 +28,8 @@ enum class PurchaseFailure {
     LAUNCH_FAILED,
 
     /**
-     * Another hand-off held the one Play client for too long, so this one never asked Play
-     * anything.
+     * Another billing operation — a hand-off, or a plan load — held the one Play client for too
+     * long, so this one never asked Play anything.
      *
      * Its own outcome rather than [BILLING_UNAVAILABLE] because the two send the user somewhere
      * different: nothing is wrong with billing, and trying again in a moment works. Both screens
