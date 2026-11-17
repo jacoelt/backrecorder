@@ -385,7 +385,9 @@ class DriveAuthManager @Inject constructor(
     private suspend fun resolveIdentityWithinBudget(token: String): DriveAccountIdentity? {
         val lookup = sharedLookupFor(token)
         return try {
-            withTimeout(IDENTITY_LOOKUP_TIMEOUT_MS) { lookup.await() }
+            val identity = withTimeout(IDENTITY_LOOKUP_TIMEOUT_MS) { lookup.await() }
+            dropAnsweredLookup(token, lookup)
+            identity
         } catch (e: TimeoutCancellationException) {
             // Caught by its own type, not as CancellationException: a caller cancelled from
             // outside must still unwind rather than be reported as a slow lookup.
@@ -435,6 +437,23 @@ class DriveAuthManager @Inject constructor(
     }
 
     /**
+     * Forgets a lookup that has answered, from whichever side received the answer.
+     *
+     * An answered lookup is nobody's to keep: it holds an account's address and id - a
+     * stranger's where the pin refused the grant - under its access token. `sharedLookupFor`
+     * drops it too, but only when some later adoption happens by, which on the network this is
+     * written for is long after the user gave up and left, and may be never.
+     *
+     * Identity rather than equality: a replacement for the same token is a different `async`,
+     * and an earlier answer must not drop it.
+     *
+     * Caller must hold [sessionMutex].
+     */
+    private fun dropAnsweredLookup(token: String, lookup: Deferred<DriveAccountIdentity?>) {
+        if (lookupsInFlight[token]?.deferred === lookup) lookupsInFlight.remove(token)
+    }
+
+    /**
      * Records the pin from an abandoned lookup if it ever answers.
      *
      * Without this the bound would have *weakened* the account pin rather than left it alone. A
@@ -467,12 +486,7 @@ class DriveAuthManager @Inject constructor(
             try {
                 val identity = lookup.await()
                 sessionMutex.withLock {
-                    // An answered lookup is nobody's to keep: it holds an account's address and
-                    // id - a stranger's where the pin refused this grant - under its access
-                    // token. `sharedLookupFor` would drop it too, but only when some later
-                    // adoption happens by, and on the network this is written for the answer
-                    // arrives minutes after the user gave up and left.
-                    if (lookupsInFlight[token]?.deferred === lookup) lookupsInFlight.remove(token)
+                    dropAnsweredLookup(token, lookup)
 
                     if (identity == null || pinnedAccountId != null || cachedToken != token) {
                         return@withLock

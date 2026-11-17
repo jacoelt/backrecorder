@@ -569,8 +569,8 @@ class DriveAuthManagerTest {
     @Test
     fun `a disconnect and reconnect rejoins the lookup still outstanding`() = runTest {
         // Disconnect-reconnect is what a user does when a connect appears to hang, so it is the
-        // likeliest way to stack orphans. Teardown drops answered lookups, never running ones:
-        // dropping those would not stop the orphan and would restart it on the next tap.
+        // likeliest way to stack orphans. Teardown deliberately drops nothing: forgetting a
+        // running lookup would not stop the orphan and would restart it on the next tap.
         answersWith(grant())
         val resolver = CountingResolver(STALLED_LOOKUP_MS)
         val auth = newManager(resolver = resolver)
