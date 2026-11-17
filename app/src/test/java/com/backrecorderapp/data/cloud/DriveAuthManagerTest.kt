@@ -514,6 +514,71 @@ class DriveAuthManagerTest {
         coVerify(exactly = 0) { preferences.setDriveAccount(any(), any()) }
     }
 
+    /** Counts the calls it is asked to make, so sharing is measurable rather than inferred. */
+    private class CountingResolver(
+        private val durationMs: Long,
+        private val identity: DriveAccountIdentity? = DriveAccountIdentity("acct-1", "a@x.com")
+    ) : DriveAccountIdentityResolver {
+        val tokensAsked = mutableListOf<String>()
+
+        override suspend fun resolve(accessToken: String): DriveAccountIdentity? {
+            tokensAsked += accessToken
+            return withContext(NonCancellable) {
+                delay(durationMs)
+                identity
+            }
+        }
+    }
+
+    @Test
+    fun `repeated authorizes share one outstanding lookup for the same token`() = runTest {
+        // #104: each abandoned lookup holds an IO thread, a Drive client and a socket for as
+        // long as the network tarpits it, and Settings entries, launches and Connect taps all
+        // reach this path. Starting a second lookup for a token one is already outstanding for
+        // stacks orphans in the pool Room, DataStore and the uploads share.
+        answersWith(grant())
+        val resolver = CountingResolver(STALLED_LOOKUP_MS)
+        val auth = newManager(resolver = resolver)
+
+        auth.authorize()
+        auth.authorize()
+        auth.authorize()
+
+        assertEquals(listOf("token-1"), resolver.tokensAsked)
+    }
+
+    @Test
+    fun `a different token gets its own lookup`() = runTest {
+        // Sharing is per token, not global: a token from another grant has another account
+        // behind it, and answering for it from the first one's lookup is the drift this class
+        // exists to catch.
+        val resolver = CountingResolver(STALLED_LOOKUP_MS)
+        val auth = newManager(resolver = resolver)
+
+        answersWith(grant(token = "token-1"))
+        auth.authorize()
+        answersWith(grant(token = "token-2"))
+        auth.authorize()
+
+        assertEquals(listOf("token-1", "token-2"), resolver.tokensAsked)
+    }
+
+    @Test
+    fun `a lookup that has already answered is not reused by the next authorize`() = runTest {
+        // Only outstanding lookups are shared, never their answers: the check is the detection
+        // half of the account pin, so every adoption has to ask Drive afresh rather than read a
+        // verdict reached under an earlier grant.
+        answersWith(grant())
+        val resolver = CountingResolver(durationMs = 0L)
+        val auth = newManager(resolver = resolver)
+
+        auth.authorize()
+        advanceUntilIdle()
+        auth.authorize()
+
+        assertEquals(listOf("token-1", "token-1"), resolver.tokensAsked)
+    }
+
     @Test
     fun `a Play Services call that never answers does not hold the session`() = runTest {
         // The identity lookup is not the only slow call under sessionMutex. Leaving this one

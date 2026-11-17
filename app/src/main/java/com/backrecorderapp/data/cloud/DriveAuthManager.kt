@@ -137,6 +137,9 @@ class DriveAuthManager @Inject constructor(
      */
     private val sessionMutex = Mutex()
 
+    private val lookupMutex = Mutex()
+    private val lookupsInFlight = mutableMapOf<String, Deferred<DriveAccountIdentity?>>()
+
     private val tokenMutex = Mutex()
     /** Read without [tokenMutex] by the late pin only - see `pinWhateverTheOrphanResolves`. */
     @Volatile
@@ -362,7 +365,7 @@ class DriveAuthManager @Inject constructor(
      * because it waits while holding [sessionMutex] - see the #102 bullet in CLAUDE.md.
      */
     private suspend fun resolveIdentityWithinBudget(token: String): DriveAccountIdentity? {
-        val lookup = applicationScope.async { identityResolver.resolve(token) }
+        val lookup = sharedLookupFor(token)
         return try {
             withTimeout(IDENTITY_LOOKUP_TIMEOUT_MS) { lookup.await() }
         } catch (e: TimeoutCancellationException) {
@@ -373,6 +376,32 @@ class DriveAuthManager @Inject constructor(
             null
         }
     }
+
+    /**
+     * The outstanding lookup for [token], starting one only when there is none.
+     *
+     * An abandoned lookup is still running, and on a network that tarpits connects to
+     * googleapis.com it holds a [kotlinx.coroutines.Dispatchers.IO] thread, a throwaway Drive
+     * client and a pending socket for the ~320s measured in #102. The callers that reach
+     * [accountMatchesPin] repeat freely - a Settings entry, an app launch, a Connect tap - so
+     * without this they stack orphans in the pool Room, DataStore and the uploads share.
+     *
+     * Deduping by token rather than skipping the lookup once [pinnedAccountId] is set is
+     * deliberate: the lookup is the *detection* half of the account pin, so skipping it would
+     * remove the backstop this class documents.
+     *
+     * Only *outstanding* lookups are shared, never results. A completed one is dropped on the
+     * next call, so every adoption still asks Drive afresh and no answer here outlives the grant
+     * it was made under. [lookupMutex] is always taken under [sessionMutex] and never the other
+     * way round; nothing suspends while it is held.
+     */
+    private suspend fun sharedLookupFor(token: String): Deferred<DriveAccountIdentity?> =
+        lookupMutex.withLock {
+            lookupsInFlight.values.removeAll { it.isCompleted }
+            lookupsInFlight.getOrPut(token) {
+                applicationScope.async { identityResolver.resolve(token) }
+            }
+        }
 
     /**
      * Records the pin from an abandoned lookup if it ever answers.
