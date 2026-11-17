@@ -1,5 +1,6 @@
 package com.backrecorderapp.data.cloud
 
+import com.google.api.client.util.DateTime
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -546,6 +547,7 @@ class FakeDriveServer @Inject constructor() {
             val MIME_IS_NOT = Regex("""mimeType\s*!=\s*'(.*)'""")
             val IN_PARENTS = Regex("""'(.*)'\s+in\s+parents""")
             val TRASHED = Regex("""trashed\s*=\s*(true|false)""")
+            val CREATED_AFTER = Regex("""createdTime\s*>\s*'(.*)'""")
 
             fun compile(clause: String): (Entry) -> Boolean {
                 NAME.matchEntire(clause)?.let { m ->
@@ -567,6 +569,10 @@ class FakeDriveServer @Inject constructor() {
                 TRASHED.matchEntire(clause)?.let { m ->
                     val trashed = m.groupValues[1].toBoolean()
                     return { it.trashed == trashed }
+                }
+                CREATED_AFTER.matchEntire(clause)?.let { m ->
+                    val after = DateTime(unescape(m.groupValues[1])).value
+                    return { it.createdTime > after }
                 }
                 error("FakeDriveServer cannot evaluate the Drive query clause: '" + clause + "'")
             }

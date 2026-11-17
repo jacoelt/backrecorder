@@ -471,8 +471,15 @@ class DriveSyncE2eTest {
         }
         savedRecordingUploader.enqueue(saved, "Dropped Response.m4a")
 
-        awaitUntil("The saved recording never reached the fake Drive", LOOP_TIMEOUT_MS) {
-            server.entries().any { it.name == "Dropped Response.m4a" }
+        // Waiting for the file to appear would prove nothing: the dropped attempt stores it
+        // immediately, and the retry is two seconds of backoff away - longer than awaitDriveQuiet's
+        // one-second window, so the assertion would run before attempt 2 and pass either way. Wait
+        // for the retry's own footprint instead: either the dedupe probe, or the second copy a
+        // blind retry would have added.
+        awaitUntil("The upload was never retried", LOOP_TIMEOUT_MS) {
+            server.recordedCalls().any {
+                it.query["q"]?.contains("Dropped Response.m4a") == true
+            } || server.entries().count { it.name == "Dropped Response.m4a" } > 1
         }
         awaitDriveQuiet()
 

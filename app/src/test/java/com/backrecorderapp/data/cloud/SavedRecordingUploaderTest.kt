@@ -97,7 +97,7 @@ class SavedRecordingUploaderTest {
         every { driveCloudStorage.isInitialized } returns true
         // Explicit because a relaxed mock answers a String? with "", which the uploader would
         // read as a copy a previous attempt had landed and every retry test would stop at one.
-        coEvery { driveCloudStorage.findSavedRecording(any(), any()) } returns null
+        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } returns null
 
         driveAuthManager = mockk(relaxed = true)
         isAuthorized = MutableStateFlow(true)
@@ -678,17 +678,17 @@ class SavedRecordingUploaderTest {
             assertTrue("a recent staged file belongs to a live upload", recent.exists())
         }
 
-    /**
-     * Issue #92. A connection dropping after Drive accepted the bytes fails the attempt while
-     * the copy exists there, and Drive does not dedupe by name - so a blind retry left the user
-     * paying quota for two or three copies of one recording.
-     */
+    /** Issue #92: a dropped connection after Drive stored the bytes must not upload again. */
     @Test
     fun `does not re-upload a copy a dropped connection had already landed`() = runTest {
         coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
             RuntimeException("connection reset after the bytes were accepted")
         coEvery {
-            driveCloudStorage.findSavedRecording("My Recording.m4a", RECORDING_BYTES.size.toLong())
+            driveCloudStorage.findSavedRecording(
+                "My Recording.m4a",
+                RECORDING_BYTES.size.toLong(),
+                any()
+            )
         } returns "drive-id"
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
@@ -697,8 +697,58 @@ class SavedRecordingUploaderTest {
         }
 
         coVerify(exactly = 1) { driveCloudStorage.uploadSavedRecording(any(), any()) }
+        // Verified explicitly, or an unrelated early-success path would satisfy the count above.
+        coVerify(exactly = 1) {
+            driveCloudStorage.findSavedRecording(
+                "My Recording.m4a",
+                RECORDING_BYTES.size.toLong(),
+                any()
+            )
+        }
         assertTrue("a copy that did land is a success, not a failure", reported.isEmpty())
         verify(exactly = 0) { uploadFailureNotifier.notifyUploadFailed(any()) }
+    }
+
+    /**
+     * The last attempt is a third of the window #92 describes, and telling the user their backup
+     * failed while the copy is in `BackRecorder/` is the one report that is simply untrue.
+     */
+    @Test
+    fun `says nothing when the final attempt turns out to have landed`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
+            RuntimeException("connection reset after the bytes were accepted")
+        var probes = 0
+        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } answers {
+            probes++
+            if (probes < SavedRecordingUploader.MAX_ATTEMPTS) null else "drive-id"
+        }
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        val reported = withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        assertTrue("the copy is on Drive, so there is nothing to report", reported.isEmpty())
+        verify(exactly = 0) { uploadFailureNotifier.notifyUploadFailed(any()) }
+    }
+
+    /**
+     * A zero length matches any empty file of that name, which would report a backup that does
+     * not exist - so a staged file the platform evicted must not be probed for at all.
+     */
+    @Test
+    fun `does not probe for a staged file that has gone`() = runTest {
+        coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } answers {
+            firstArg<File>().delete()
+            throw RuntimeException("transient")
+        }
+
+        val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
+        withFailureCollector(uploader) {
+            uploader.enqueue(sourceFile(), "My Recording.m4a")
+        }
+
+        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any(), any(), any()) }
     }
 
     @Test
@@ -711,7 +761,7 @@ class SavedRecordingUploaderTest {
 
         // A match here would be an earlier recording saved under the same name, and skipping on
         // it would drop this one's backup entirely.
-        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any(), any()) }
+        coVerify(exactly = 0) { driveCloudStorage.findSavedRecording(any(), any(), any()) }
     }
 
     @Test
@@ -721,7 +771,7 @@ class SavedRecordingUploaderTest {
             attempts++
             throw RuntimeException("transient")
         }
-        coEvery { driveCloudStorage.findSavedRecording(any(), any()) } returns null
+        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } returns null
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
         val reported = withFailureCollector(uploader) {
@@ -736,7 +786,7 @@ class SavedRecordingUploaderTest {
     fun `uploads anyway when the check for an earlier copy cannot be answered`() = runTest {
         coEvery { driveCloudStorage.uploadSavedRecording(any(), any()) } throws
             RuntimeException("transient")
-        coEvery { driveCloudStorage.findSavedRecording(any(), any()) } throws
+        coEvery { driveCloudStorage.findSavedRecording(any(), any(), any()) } throws
             RuntimeException("the listing failed too")
 
         val uploader = buildUploader(CoroutineScope(StandardTestDispatcher(testScheduler)))
@@ -744,7 +794,6 @@ class SavedRecordingUploaderTest {
             uploader.enqueue(sourceFile(), "My Recording.m4a")
         }
 
-        // A missing backup is worse for the user than a duplicate, so not knowing uploads.
         coVerify(exactly = SavedRecordingUploader.MAX_ATTEMPTS) {
             driveCloudStorage.uploadSavedRecording(any(), any())
         }

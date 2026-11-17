@@ -227,8 +227,12 @@ class SavedRecordingUploader @Inject constructor(
     private enum class Attempt { UPLOADED, RETRYABLE, THROTTLED, TERMINAL }
 
     private suspend fun upload(file: File, displayName: String) {
+        // Captured before the first attempt so that only a copy *this* run put on Drive can
+        // satisfy the dedupe probe. See [DriveCloudStorage.findSavedRecording].
+        val startedAt = System.currentTimeMillis()
+
         for (attempt in 1..MAX_ATTEMPTS) {
-            when (val outcome = attemptUpload(file, displayName, attempt)) {
+            when (val outcome = attemptUpload(file, displayName, attempt, startedAt)) {
                 Attempt.UPLOADED -> return
                 Attempt.TERMINAL -> break
                 else -> {
@@ -255,22 +259,39 @@ class SavedRecordingUploader @Inject constructor(
             }
         }
 
+        // The same dropped response on the *last* attempt, or a commit followed by a response
+        // classified terminal, would otherwise tell the user their backup failed while the copy
+        // is sitting in BackRecorder/. This is also the probe most likely to find it: several
+        // seconds have passed since the transfer.
+        if (uploadMutex.withLock { alreadyOnDrive(file, displayName, startedAt) } != null) return
+
         reportFailure(displayName)
     }
 
     /**
-     * One transfer, under the lock.
+     * One transfer and the probe in front of it, under the lock.
      *
-     * The lock covers the transfer alone so that exactly one saved recording is on the wire at a
-     * time through the single Drive client. What stops a stalled transfer holding it - and every
-     * save queued behind it - is the socket timeout on the Drive request itself, since a
-     * coroutine timeout cannot interrupt the blocking call underneath.
+     * The lock covers those two and nothing else, so that exactly one saved recording is on the
+     * wire at a time through the single Drive client; the unbounded waits and the backoff stay
+     * outside it. What stops a stalled transfer holding it - and every save queued behind it - is
+     * the socket timeout on the Drive request itself, since a coroutine timeout cannot interrupt
+     * the blocking call underneath. The probe needs no [UPLOAD_TIMEOUT_MS] of its own for that
+     * same reason: it is one small metadata response under the same socket bounds, with no
+     * trickling transfer for a backstop to catch.
      */
-    private suspend fun attemptUpload(file: File, displayName: String, attempt: Int): Attempt =
+    private suspend fun attemptUpload(
+        file: File,
+        displayName: String,
+        attempt: Int,
+        startedAt: Long
+    ): Attempt =
         uploadMutex.withLock {
             try {
+                // Not on the first attempt: nothing of this run's can be on Drive yet.
                 if (attempt > 1) {
-                    alreadyOnDrive(file, displayName)?.let { return@withLock Attempt.UPLOADED }
+                    alreadyOnDrive(file, displayName, startedAt)?.let {
+                        return@withLock Attempt.UPLOADED
+                    }
                 }
                 val uploadedId = withTimeout(UPLOAD_TIMEOUT_MS) {
                     driveCloudStorage.uploadSavedRecording(file, displayName)
@@ -303,31 +324,40 @@ class SavedRecordingUploader @Inject constructor(
         }
 
     /**
-     * The id of a copy a previous attempt landed after all, or null.
+     * The id of a copy an earlier attempt of this run landed after all, or null.
      *
      * A connection that drops *after* Drive accepted the bytes but before the response reached
      * the client fails the attempt here while the file exists there (#92). Drive does not dedupe
-     * by name, so retrying blind adds a second copy under the same name and spends the user's
-     * quota - two or three of one recording, with nothing in the app able to tell them apart
-     * afterwards. A resumable upload would not fix this: the client cannot resume a session
-     * across a new `execute()`, so a dropped one is abandoned and the retry starts a fresh
-     * session, which is the same duplicate.
+     * by name, so retrying blind adds a second copy and spends the user's quota. A resumable
+     * upload would not fix it: the client cannot resume a session across a new `execute()`, so a
+     * dropped one is abandoned and the retry opens a fresh session - the same duplicate.
      *
-     * A probe that cannot be answered falls through to the upload rather than skipping it: a
-     * duplicate costs quota, a missing backup costs the copy, and the copy is what the user was
-     * promised.
+     * Two ways this answers null for a copy that is in fact there, both of which cost a duplicate
+     * rather than the backup, which is the direction to fail in: a `files.list` is not guaranteed
+     * to show a file Drive committed moments ago, and the probe cannot run at all if the staged
+     * file has gone (a zero length would otherwise match any empty file of that name and report a
+     * backup that does not exist). A probe that throws falls through to the upload for the same
+     * reason - a duplicate costs quota, a missing backup costs the copy the user was promised.
      */
-    private suspend fun alreadyOnDrive(file: File, displayName: String): String? =
-        try {
-            driveCloudStorage.findSavedRecording(displayName, file.length())?.also {
-                Log.w(TAG, "A previous attempt had already uploaded this recording")
+    private suspend fun alreadyOnDrive(
+        file: File,
+        displayName: String,
+        startedAt: Long
+    ): String? {
+        val size = file.length()
+        if (size <= 0L) return null
+
+        return try {
+            driveCloudStorage.findSavedRecording(displayName, size, startedAt)?.also {
+                Log.w(TAG, "An earlier attempt had already uploaded this recording")
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Could not check whether a previous attempt landed", e)
+            Log.w(TAG, "Could not check whether an earlier attempt landed", e)
             null
         }
+    }
 
     /**
      * The in-app message goes up first and unconditionally, then the notification, wrapped so an
