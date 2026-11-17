@@ -2,6 +2,7 @@ package com.backrecorderapp.ui.settings
 
 import android.app.Activity
 import android.app.PendingIntent
+import android.util.Log
 import app.cash.turbine.ReceiveTurbine
 import app.cash.turbine.test
 import com.backrecorderapp.data.billing.BillingPeriod
@@ -25,6 +26,8 @@ import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
@@ -85,6 +88,11 @@ class SettingsViewModelTest {
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
 
+        mockkStatic(Log::class)
+        every { Log.w(any(), any<String>()) } returns 0
+        every { Log.e(any(), any<String>()) } returns 0
+        every { Log.e(any(), any<String>(), any()) } returns 0
+
         appPreferences = mockk(relaxed = true)
         billingRepository = mockk(relaxed = true)
         subscriptionGate = mockk(relaxed = true)
@@ -118,6 +126,7 @@ class SettingsViewModelTest {
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+        unmockkStatic(Log::class)
     }
 
     private fun createViewModel() = SettingsViewModel(
@@ -191,6 +200,230 @@ class SettingsViewModelTest {
 
         assertNotNull(viewModel.consentRequest.value)
         verify(exactly = 0) { cloudSyncManager.startSync() }
+    }
+
+    @Test
+    fun `a published consent request keeps the connect claim`() = runTest {
+        // #105: the claim used to be released the moment the pending intent was published, so the
+        // Connect button was live for the frame or two before the sheet covered it.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `a tap during the consent round trip cannot steal the claim`() = runTest {
+        // The lost grant #105 reports: the second tap took the claim, so the real consent result
+        // was discarded and an approval Google had already given went nowhere.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        // The window the issue is about: the request is published, the screen has not launched
+        // the sheet yet, and the button must not be live.
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+
+        viewModel.onConsentLaunched()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.handleAuthorizationResult(any()) }
+        verify { cloudSyncManager.startSync() }
+        assertFalse(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `leaving the screen keeps an unlaunched consent request and its claim`() = runTest {
+        // onScreenLeft drops every other dialog raised by an unanswered action. This one is not
+        // a stale offer: authorize() cleared the session before publishing it, so dropping it
+        // would leave Drive disconnected with nothing to reconnect it.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.driveConnecting.value)
+        assertNotNull(viewModel.consentRequest.value)
+
+        viewModel.onScreenLeft()
+        advanceUntilIdle()
+
+        assertNotNull(viewModel.consentRequest.value)
+        assertTrue(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `a consent request resolving after the screen left is still published`() = runTest {
+        // authorize() calls clearLocked() before reporting ConsentRequired, so by then the
+        // session is gone and this intent is the only route back to a working account. Dropping
+        // it because the user stepped away would disconnect Drive silently.
+        val pendingIntent = mockk<PendingIntent>()
+        val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+        coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.onScreenLeft()
+        advanceUntilIdle()
+
+        authorizing.complete(
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+        )
+        advanceUntilIdle()
+
+        assertNotNull(viewModel.consentRequest.value)
+        assertTrue(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `launching the sheet consumes the request but keeps the claim`() = runTest {
+        // Releasing at launch would leave Connect live while the consent activity is still
+        // starting, and a tap there opens a second sheet over the first.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.onConsentLaunched()
+        advanceUntilIdle()
+
+        assertNull(viewModel.consentRequest.value)
+        assertTrue(viewModel.driveConnecting.value)
+
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+    }
+
+    @Test
+    fun `a consent result arriving during a grant operation is refused and logged`() = runTest {
+        // The one case where an approved grant can still be dropped. It must not be silent: a
+        // release build strips Log.d/i but keeps Log.w.
+        val authorizing = CompletableDeferred<DriveAuthManager.AuthorizationOutcome>()
+        coEvery { driveAuthManager.authorize() } coAnswers { authorizing.await() }
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { driveAuthManager.handleAuthorizationResult(any()) }
+        verify { Log.w(any<String>(), any<String>()) }
+
+        authorizing.complete(DriveAuthManager.AuthorizationOutcome.Authorized)
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun `a launched consent is still adopted after the screen was left`() = runTest {
+        // The sheet outlives the screen, so the grant behind it must too.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.onConsentLaunched()
+        viewModel.onScreenLeft()
+        advanceUntilIdle()
+
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.handleAuthorizationResult(any()) }
+        verify { cloudSyncManager.startSync() }
+        assertFalse(viewModel.driveConnecting.value)
+    }
+
+    @Test
+    fun `a refused consent result releases the handed-over claim`() = runTest {
+        // The leak case: the claim is held from publication until the result, so a consent the
+        // user cancelled must free it or Connect stays disabled for the life of the view model.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Failed
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.onConsentLaunched()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.driveConnecting.value)
+        assertEquals(DriveError.SIGN_IN_FAILED, viewModel.driveError.value)
+
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { driveAuthManager.authorize() }
+    }
+
+    @Test
+    fun `an upload-mode change during the consent round trip starts no second grant`() = runTest {
+        // The mode is still the user's choice and is persisted; the outstanding consent is what
+        // starts the loop, so a second authorize() would only publish a competing sheet.
+        val pendingIntent = mockk<PendingIntent>()
+        coEvery { driveAuthManager.authorize() } returns
+            DriveAuthManager.AuthorizationOutcome.ConsentRequired(pendingIntent)
+
+        val viewModel = createViewModel()
+        viewModel.connectDrive()
+        advanceUntilIdle()
+
+        viewModel.setCloudUploadMode(CloudUploadMode.ALWAYS_ON)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.authorize() }
+        coVerify { appPreferences.setCloudUploadMode(CloudUploadMode.ALWAYS_ON) }
+    }
+
+    @Test
+    fun `a consent result is adopted even when no claim is outstanding`() = runTest {
+        // A process death during the sheet replaces this view model, and the restored launcher
+        // delivers the grant to a fresh instance that was never awaiting it.
+        coEvery { driveAuthManager.handleAuthorizationResult(any()) } returns
+            DriveAuthManager.AuthorizationOutcome.Authorized
+
+        val viewModel = createViewModel()
+        viewModel.onConsentResult(null)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { driveAuthManager.handleAuthorizationResult(any()) }
+        verify { cloudSyncManager.startSync() }
     }
 
     @Test
