@@ -595,8 +595,8 @@ class PlayBillingRepositoryTest {
      * #119: Play binding slowly on a cold start. The first attempt hangs; every later one is
      * refused synchronously because the client is still connecting, so the ladder exhausts its
      * rungs in about a minute. When the first attempt's callback finally lands nobody is
-     * awaiting it - and without a watcher `statusResolved` stayed false for the process, so a
-     * paying subscriber got no cloud sync until they restarted the app.
+     * awaiting it, yet it must still resolve entitlement; before #119 `statusResolved` stayed
+     * false for the process, so a paying subscriber got no cloud sync until they restarted the app.
      */
     @Test
     fun `a connection that succeeds after the resolve ladder gave up still resolves entitlement`() =
@@ -624,6 +624,40 @@ class PlayBillingRepositoryTest {
             listeners.first().onBillingSetupFinished(okResult())
             runCurrent()
 
+            assertEquals(true, repository.statusResolved.value)
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        }
+
+    /**
+     * The late OK lands while the ladder's last rung is still running, so the callback skips it
+     * on the promise that a rung will query - and no rung follows. The ladder's exit must.
+     */
+    @Test
+    fun `a connection that comes up on the ladder's last rung still resolves entitlement`() =
+        runTest(StandardTestDispatcher()) {
+            var ready = false
+            every { client.isReady } answers { ready }
+            val listeners = mutableListOf<BillingClientStateListener>()
+            every { client.startConnection(any()) } answers {
+                val listener = firstArg<BillingClientStateListener>()
+                listeners += listener
+                if (listeners.size == 5) {
+                    listeners.first().onBillingSetupFinished(okResult())
+                    ready = true
+                }
+                if (listeners.size > 1) {
+                    listener.onBillingSetupFinished(result(BillingClient.BillingResponseCode.DEVELOPER_ERROR))
+                }
+            }
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            repository.connect()
+            runCurrent()
+            advanceTimeBy(55_000)
+            runCurrent()
+
+            assertEquals(5, listeners.size)
             assertEquals(true, repository.statusResolved.value)
             assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
         }

@@ -487,9 +487,7 @@ class PlayBillingRepository @Inject constructor(
      * synchronously while the client is still connecting - or a fresh connection made later by a
      * plan load, which only asks for offers (#119). `connect()` runs its ladder once per process,
      * so without this `statusResolved` stayed false for the session and a paying subscriber was
-     * refused cloud sync. Hooked on Play's own callback rather than on a watcher of the abandoned
-     * attempt, so there is no coroutine to bound and no timing window between a caller's timeout
-     * and its unpublish. A running ladder queries after its own connect, hence `resolving`.
+     * refused cloud sync. A running ladder queries after its own connect, hence `resolving`.
      */
     private fun resolveEntitlementIfUnresolved() {
         if (_statusResolved.value || resolving.get()) return
