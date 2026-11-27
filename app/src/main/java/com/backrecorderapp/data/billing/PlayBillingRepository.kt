@@ -141,11 +141,7 @@ class PlayBillingRepository @Inject constructor(
                 }
                 Log.w(TAG, "entitlement unresolved after $RESOLVE_ATTEMPTS attempts")
             } finally {
-                resolving.set(false)
-                // A connection that came up on the last rung - its OK racing the rung's timeout,
-                // or landing on the main thread before the flag above cleared - was skipped by
-                // resolveEntitlementIfUnresolved on the promise that a later rung would query.
-                if (!_statusResolved.value && billingClient.isReady) resolveEntitlementIfUnresolved()
+                releaseResolving()
             }
         }
     }
@@ -157,9 +153,17 @@ class PlayBillingRepository @Inject constructor(
             try {
                 if (!resolveEntitlement()) Log.w(TAG, "entitlement refresh unanswered; keeping the last one")
             } finally {
-                resolving.set(false)
+                releaseResolving()
             }
         }
+    }
+
+    private fun releaseResolving() {
+        resolving.set(false)
+        // A connection that came up during the read's last attempt - its OK racing that attempt's
+        // timeout, or landing on the main thread before the flag above cleared - was skipped by
+        // resolveEntitlementIfUnresolved on the promise that the running read would query.
+        if (!_statusResolved.value && billingClient.isReady) resolveEntitlementIfUnresolved()
     }
 
     /**

@@ -583,14 +583,14 @@ class PlayBillingRepositoryTest {
     fun `a late answer does not overwrite entitlement already resolved`() =
         runTest(StandardTestDispatcher()) {
             every { client.isReady } returns true
-            val listener = slot<PurchasesResponseListener>()
-            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } returns Unit
+            val listeners = mutableListOf<PurchasesResponseListener>()
+            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listeners)) } returns Unit
             val repository = createRepository()
             repository.refreshEntitlement()
             runCurrent()
             advanceTimeBy(25_000)
             runCurrent()
-            val late = listener.captured
+            val late = listeners.first()
             stubQueryPurchases(purchase(acknowledged = true))
             repository.refreshEntitlement()
             runCurrent()
@@ -814,6 +814,41 @@ class PlayBillingRepositoryTest {
             runCurrent()
 
             assertEquals(5, listeners.size)
+            assertEquals(true, repository.statusResolved.value)
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        }
+
+    /**
+     * A refresh holds the same flag as the ladder, so a late OK landing during it is skipped by
+     * the callback on the promise that the refresh will query - which a failed refresh cannot.
+     */
+    @Test
+    fun `a connection that comes up during a failed refresh still resolves entitlement`() =
+        runTest(StandardTestDispatcher()) {
+            var ready = false
+            every { client.isReady } answers { ready }
+            val listeners = mutableListOf<BillingClientStateListener>()
+            every { client.startConnection(any()) } answers {
+                val listener = firstArg<BillingClientStateListener>()
+                listeners += listener
+                if (listeners.size == 2) {
+                    listeners.first().onBillingSetupFinished(okResult())
+                    ready = true
+                    listener.onBillingSetupFinished(result(BillingClient.BillingResponseCode.DEVELOPER_ERROR))
+                }
+            }
+            stubQueryPurchases(purchase(acknowledged = true))
+            val repository = createRepository()
+            repository.refreshEntitlement()
+            runCurrent()
+            advanceTimeBy(25_000)
+            runCurrent()
+            assertEquals(false, repository.statusResolved.value)
+
+            repository.refreshEntitlement()
+            runCurrent()
+
+            assertEquals(2, listeners.size)
             assertEquals(true, repository.statusResolved.value)
             assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
         }
