@@ -560,6 +560,26 @@ class PlayBillingRepositoryTest {
         }
 
     @Test
+    fun `a late refusal does not resolve an unresolved session`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            val listener = slot<PurchasesResponseListener>()
+            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } returns Unit
+            val repository = createRepository()
+            repository.refreshEntitlement()
+            runCurrent()
+            advanceTimeBy(25_000)
+            runCurrent()
+
+            listener.captured.onQueryPurchasesResponse(
+                result(BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE),
+                emptyList()
+            )
+
+            assertEquals(false, repository.statusResolved.value)
+        }
+
+    @Test
     fun `a late answer does not overwrite entitlement already resolved`() =
         runTest(StandardTestDispatcher()) {
             every { client.isReady } returns true
