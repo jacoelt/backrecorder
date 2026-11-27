@@ -62,6 +62,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.backrecorderapp.R
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.ui.components.PlanChooserDialog
@@ -109,7 +112,7 @@ fun MainScreen(
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("audio/mp4")
     ) { uri ->
-        uri?.let { viewModel.saveRecording(it) }
+        if (uri != null) viewModel.saveRecording(uri) else viewModel.onSavePickerCancelled()
     }
 
     // Show snackbar for messages
@@ -133,6 +136,13 @@ fun MainScreen(
         state.cloudUploadError?.let {
             snackbarHostState.showSnackbar(it.text)
             viewModel.dismissCloudUploadError()
+        }
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.collectSaveOutcomes()
         }
     }
 

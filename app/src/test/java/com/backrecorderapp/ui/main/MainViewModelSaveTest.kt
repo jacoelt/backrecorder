@@ -5,17 +5,23 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
-import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import com.backrecorderapp.data.billing.BillingRepository
 import com.backrecorderapp.data.cloud.CloudSyncManager
 import com.backrecorderapp.data.cloud.SavedRecordingUploader
+import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
+import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
+import com.backrecorderapp.domain.SaveCoordinator
 import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SaveResult
 import com.backrecorderapp.domain.SubscriptionGate
+import com.backrecorderapp.notification.SaveFailureNotifier
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -24,12 +30,16 @@ import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -54,6 +64,8 @@ class MainViewModelSaveTest {
     private lateinit var segmentManager: SegmentManager
     private lateinit var waveformRepository: WaveformRepository
     private lateinit var saveRecordingUseCase: SaveRecordingUseCase
+    private lateinit var failureNotifier: SaveFailureNotifier
+    private lateinit var saveCoordinator: SaveCoordinator
     private lateinit var appPreferences: AppPreferences
     private lateinit var cloudSyncManager: CloudSyncManager
     private lateinit var savedRecordingUploader: SavedRecordingUploader
@@ -66,6 +78,10 @@ class MainViewModelSaveTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         mockkStatic(Log::class)
         every { Log.e(any(), any<String>(), any()) } returns 0
+        every { Log.w(any(), any<String>(), any()) } returns 0
+
+        mockkStatic(DocumentsContract::class)
+        every { DocumentsContract.deleteDocument(any(), any()) } returns true
 
         context = mockk(relaxed = true)
         contentResolver = mockk(relaxed = true)
@@ -76,6 +92,16 @@ class MainViewModelSaveTest {
 
         waveformRepository = mockk(relaxed = true)
         saveRecordingUseCase = mockk(relaxed = true)
+        failureNotifier = mockk(relaxed = true)
+        // One coordinator for every view model a test builds: it is a process-wide singleton, and
+        // a relaunched screen sharing it with the one that left is the case this file is about.
+        saveCoordinator = SaveCoordinator(
+            context,
+            saveRecordingUseCase,
+            failureNotifier,
+            CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+            UnconfinedTestDispatcher()
+        )
         appPreferences = mockk(relaxed = true)
 
         cloudSyncManager = mockk(relaxed = true)
@@ -91,6 +117,7 @@ class MainViewModelSaveTest {
 
     @After
     fun tearDown() {
+        unmockkStatic(DocumentsContract::class)
         unmockkStatic(Log::class)
         Dispatchers.resetMain()
     }
@@ -99,14 +126,37 @@ class MainViewModelSaveTest {
         context,
         segmentManager,
         waveformRepository,
-        saveRecordingUseCase,
+        saveCoordinator,
         appPreferences,
         cloudSyncManager,
         savedRecordingUploader,
         billingRepository,
-        subscriptionGate,
-        UnconfinedTestDispatcher()
+        subscriptionGate
     )
+
+    /** A screen the test can leave for good: clearing the store is what runs `onCleared`. */
+    private fun screen(store: ViewModelStore): MainViewModel =
+        ViewModelProvider(
+            store,
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T = buildViewModel() as T
+            }
+        )[MainViewModel::class.java]
+
+    /** What `MainScreen` does while STARTED; cancelling the job is the screen going to Home. */
+    private fun TestScope.startCollecting(viewModel: MainViewModel): Job =
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.collectSaveOutcomes()
+        }
+
+    private fun TestScope.openScreen(): MainViewModel =
+        buildViewModel().also { startCollecting(it) }
+
+    private fun givenSaveablePickerFlow() {
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk<SegmentEntity>(relaxed = true))
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns GateResult.Allowed
+    }
 
     @Test
     fun `an upload failure reaches the screen and clears when dismissed (issue 84)`() = runTest {
@@ -181,12 +231,279 @@ class MainViewModelSaveTest {
         assertNotNull("error message must be shown", state.errorMessage)
         // Subscription gate must not be consulted — we never even get that far.
         coVerify(exactly = 0) { subscriptionGate.checkSaveAccess(any(), any()) }
+        assertNotNull("a refused preflight must give the slot back", saveCoordinator.tryClaim())
+    }
+
+    @Test
+    fun `requestSave with segments in range proceeds through subscription gate`() = runTest {
+        givenSaveablePickerFlow()
+
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.launchSavePicker)
+        coVerify(exactly = 1) { subscriptionGate.checkSaveAccess(any(), any()) }
     }
 
     /**
-     * The save suspends since #93, so the Save affordance is live again while one is still
-     * running. Two concurrent saves each force a flush rotation of the live recording and race to
-     * write the outcome message, so the second tap is discarded.
+     * The claim used to be taken only once the picker answered, so two taps both passed the guard,
+     * both ran the preflight and each raised the picker - two `CreateDocument` sheets back to back.
+     */
+    @Test
+    fun `a double tap on Save opens one picker (issue 111)`() = runTest {
+        val gate = CompletableDeferred<GateResult>()
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk<SegmentEntity>(relaxed = true))
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } coAnswers { gate.await() }
+
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        viewModel.requestSave()
+        gate.complete(GateResult.Allowed)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { segmentManager.getSegmentsInRange(any(), any()) }
+        coVerify(exactly = 1) { subscriptionGate.checkSaveAccess(any(), any()) }
+    }
+
+    /**
+     * The defect the issue is named for. The save outlives its screen; a relaunched screen used to
+     * read a fresh `saveInProgress = false` and start a second save over the first.
+     */
+    @Test
+    fun `a relaunched screen will not start a save while the last screen's save runs (issue 111)`() =
+        runTest {
+            val firstSave = CompletableDeferred<SaveResult>()
+            coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
+            givenSaveablePickerFlow()
+
+            val firstStore = ViewModelStore()
+            screen(firstStore).saveRecording(mockk())
+            advanceUntilIdle()
+            firstStore.clear()
+
+            val relaunched = buildViewModel()
+            advanceUntilIdle()
+            assertTrue("the relaunched screen must render the running save", relaunched.uiState.value.saveInProgress)
+
+            relaunched.requestSave()
+            advanceUntilIdle()
+            assertFalse(relaunched.uiState.value.launchSavePicker)
+            coVerify(exactly = 0) { subscriptionGate.checkSaveAccess(any(), any()) }
+
+            firstSave.complete(SaveResult.Success)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { saveRecordingUseCase.execute(any(), any(), any()) }
+            assertFalse(relaunched.uiState.value.saveInProgress)
+        }
+
+    /** The outcome used to land in the departed view model's state, which nothing collected. */
+    @Test
+    fun `a failure after the screen is gone is notified and shown on the next screen (issue 111)`() =
+        runTest {
+            val uri = mockk<Uri>()
+            val save = CompletableDeferred<SaveResult>()
+            coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+            val firstStore = ViewModelStore()
+            val first = screen(firstStore)
+            val collecting = startCollecting(first)
+            first.saveRecording(uri)
+            advanceUntilIdle()
+            collecting.cancel()
+            firstStore.clear()
+
+            save.complete(SaveResult.Error("no data"))
+            advanceUntilIdle()
+
+            verify(exactly = 1) { failureNotifier.notifySaveFailed() }
+            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+
+            val next = openScreen()
+            advanceUntilIdle()
+            assertEquals("no data", next.uiState.value.errorMessage)
+        }
+
+    /**
+     * Home keeps the view model alive, so a collector tied to its scope counted as "watching" and
+     * a failure there was never notified - the commonest way of leaving mid-save.
+     */
+    @Test
+    fun `a failure while the app is in the background is notified (issue 111)`() = runTest {
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        val viewModel = buildViewModel()
+        val collecting = startCollecting(viewModel)
+        viewModel.saveRecording(mockk())
+        advanceUntilIdle()
+        collecting.cancel()
+
+        save.complete(SaveResult.Error("no data"))
+        advanceUntilIdle()
+        verify(exactly = 1) { failureNotifier.notifySaveFailed() }
+
+        startCollecting(viewModel)
+        advanceUntilIdle()
+        assertEquals("no data", viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun `a success nobody watched is never notified and is shown on the next screen`() = runTest {
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        buildViewModel().saveRecording(mockk())
+        save.complete(SaveResult.Success)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { failureNotifier.notifySaveFailed() }
+        assertEquals("Recording saved successfully", openScreen().uiState.value.successMessage)
+    }
+
+    @Test
+    fun `an upgrade-required outcome nobody watched is not notified as a failure`() = runTest {
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns
+            SaveResult.UpgradeRequired(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+
+        buildViewModel().saveRecording(mockk())
+        advanceUntilIdle()
+
+        verify(exactly = 0) { failureNotifier.notifySaveFailed() }
+    }
+
+    /** The view model nulls its claim before handing it over, so only a direct call reaches this. */
+    @Test
+    fun `giving back a claim whose save has started keeps the slot held (issue 111)`() = runTest {
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        val claim = saveCoordinator.tryClaim()!!
+        assertTrue(saveCoordinator.save(claim, 0L, 1L, mockk()))
+        saveCoordinator.release(claim)
+
+        assertNull(saveCoordinator.tryClaim())
+        assertFalse("a started claim cannot start a second save", saveCoordinator.save(claim, 0L, 1L, mockk()))
+
+        save.complete(SaveResult.Success)
+        advanceUntilIdle()
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
+    /** The slot belongs to one claim, not to "someone": a stale claim can neither free nor reuse it. */
+    @Test
+    fun `a finished claim cannot free or start a save in the next claim's slot (issue 111)`() = runTest {
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Success
+
+        val first = saveCoordinator.tryClaim()!!
+        assertTrue(saveCoordinator.save(first, 0L, 1L, mockk()))
+        advanceUntilIdle()
+
+        val second = saveCoordinator.tryClaim()!!
+        assertNull("an unstarted claim holds the slot, as it does across the picker", saveCoordinator.tryClaim())
+
+        saveCoordinator.release(first)
+        assertNull(saveCoordinator.tryClaim())
+        assertFalse(saveCoordinator.save(first, 0L, 1L, mockk()))
+
+        saveCoordinator.release(second)
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
+    @Test
+    fun `a notification that cannot be posted still leaves the failure for the next screen`() =
+        runTest {
+            every { failureNotifier.notifySaveFailed() } throws RuntimeException("no channel")
+            coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Error("no data")
+
+            buildViewModel().saveRecording(mockk())
+            advanceUntilIdle()
+
+            assertEquals("no data", openScreen().uiState.value.errorMessage)
+            assertNotNull(saveCoordinator.tryClaim())
+        }
+
+    @Test
+    fun `a failure while the screen is open is shown there and not notified`() = runTest {
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Error("no data")
+
+        val viewModel = openScreen()
+        viewModel.saveRecording(mockk())
+        advanceUntilIdle()
+
+        assertEquals("no data", viewModel.uiState.value.errorMessage)
+        verify(exactly = 0) { failureNotifier.notifySaveFailed() }
+    }
+
+    @Test
+    fun `the claim taken at the tap carries through the picker into the save (issue 111)`() = runTest {
+        val uri = mockk<Uri>()
+        givenSaveablePickerFlow()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Success
+
+        val viewModel = openScreen()
+        viewModel.requestSave()
+        advanceUntilIdle()
+        viewModel.onSavePickerLaunched()
+        assertNull("the claim is held while the picker is open", saveCoordinator.tryClaim())
+
+        val state = viewModel.uiState.value
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            saveRecordingUseCase.execute(state.selectionStartTime, state.selectionEndTime, uri)
+        }
+        verify(exactly = 0) { DocumentsContract.deleteDocument(any(), any()) }
+        assertEquals("Recording saved successfully", viewModel.uiState.value.successMessage)
+    }
+
+    @Test
+    fun `a save the gate refuses gives the claim back (issue 111)`() = runTest {
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk<SegmentEntity>(relaxed = true))
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns
+            GateResult.Blocked(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.showUpgradeDialog)
+        assertFalse(viewModel.uiState.value.launchSavePicker)
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
+    @Test
+    fun `cancelling the picker frees Save for the next tap (issue 111)`() = runTest {
+        givenSaveablePickerFlow()
+
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+        viewModel.onSavePickerLaunched()
+        viewModel.onSavePickerCancelled()
+
+        viewModel.requestSave()
+        advanceUntilIdle()
+        coVerify(exactly = 2) { subscriptionGate.checkSaveAccess(any(), any()) }
+    }
+
+    /** A claim held for a picker that will never answer this instance must not outlive it. */
+    @Test
+    fun `leaving for good with a picker unanswered frees Save (issue 111)`() = runTest {
+        givenSaveablePickerFlow()
+
+        val store = ViewModelStore()
+        screen(store).requestSave()
+        advanceUntilIdle()
+        store.clear()
+
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
+    /**
+     * Two concurrent saves each force a flush rotation of the live recording and race over the
+     * cache temp files, so a picker result arriving while a save runs is refused.
      */
     @Test
     fun `refuses a second save while one is still in flight (issue 93)`() = runTest {
@@ -194,7 +511,7 @@ class MainViewModelSaveTest {
         val firstSave = CompletableDeferred<SaveResult>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
 
-        val viewModel = buildViewModel()
+        val viewModel = openScreen()
         viewModel.saveRecording(uri)
         advanceUntilIdle()
         assertTrue(viewModel.uiState.value.saveInProgress)
@@ -206,6 +523,7 @@ class MainViewModelSaveTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { saveRecordingUseCase.execute(any(), any(), any()) }
+        verify(exactly = 0) { DocumentsContract.deleteDocument(any(), any()) }
         assertEquals("Recording saved successfully", viewModel.uiState.value.successMessage)
         assertFalse(viewModel.uiState.value.saveInProgress)
     }
@@ -235,28 +553,22 @@ class MainViewModelSaveTest {
 
     /**
      * `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try`, so a Room
-     * or DataStore failure escapes `execute`. A flag left set by that would make Save a
-     * permanently disabled spinner both guards then refuse for the life of the view model.
+     * or DataStore failure escapes `execute`. A slot left held by that would make Save a
+     * permanently disabled spinner for the life of the process.
      */
     @Test
     fun `clears the in-flight flag and cleans up when the save throws (issue 93)`() = runTest {
         val uri = mockk<Uri>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } throws IOException("boom")
 
-        mockkStatic(DocumentsContract::class)
-        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
+        val viewModel = openScreen()
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
 
-        try {
-            val viewModel = buildViewModel()
-            viewModel.saveRecording(uri)
-            advanceUntilIdle()
-
-            assertFalse(viewModel.uiState.value.saveInProgress)
-            assertEquals("Could not save the recording", viewModel.uiState.value.errorMessage)
-            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
-        } finally {
-            unmockkStatic(DocumentsContract::class)
-        }
+        assertFalse(viewModel.uiState.value.saveInProgress)
+        assertEquals("Could not save the recording", viewModel.uiState.value.errorMessage)
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        assertNotNull(saveCoordinator.tryClaim())
     }
 
     /** A refusal that arrives after the picker ran must not leave its 0-byte file behind. */
@@ -267,55 +579,18 @@ class MainViewModelSaveTest {
         val firstSave = CompletableDeferred<SaveResult>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
 
-        mockkStatic(DocumentsContract::class)
-        every { DocumentsContract.deleteDocument(contentResolver, strayUri) } returns true
+        val viewModel = buildViewModel()
+        viewModel.saveRecording(firstUri)
+        advanceUntilIdle()
 
-        try {
-            val viewModel = buildViewModel()
-            viewModel.saveRecording(firstUri)
-            advanceUntilIdle()
+        viewModel.saveRecording(strayUri)
+        advanceUntilIdle()
 
-            viewModel.saveRecording(strayUri)
-            advanceUntilIdle()
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, strayUri) }
+        verify(exactly = 0) { DocumentsContract.deleteDocument(contentResolver, firstUri) }
 
-            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, strayUri) }
-
-            firstSave.complete(SaveResult.Success)
-            advanceUntilIdle()
-        } finally {
-            unmockkStatic(DocumentsContract::class)
-        }
-    }
-
-    /**
-     * The save and its cleanup run under `NonCancellable` (#93). Without it the result is
-     * discarded at the resume boundary while the uninterruptible trim and copy run on, so the
-     * empty SAF file is left on the user's storage - issue #23, reopened.
-     */
-    @Test
-    fun `cleans up the output uri even when the scope is cancelled mid-save (issue 93)`() = runTest {
-        val uri = mockk<Uri>()
-        val save = CompletableDeferred<SaveResult>()
-        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
-
-        mockkStatic(DocumentsContract::class)
-        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
-
-        try {
-            val viewModel = buildViewModel()
-            viewModel.saveRecording(uri)
-            advanceUntilIdle()
-
-            viewModel.viewModelScope.cancel()
-            save.complete(SaveResult.Error("no data"))
-            advanceUntilIdle()
-
-            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
-            assertFalse(viewModel.uiState.value.saveInProgress)
-            assertEquals("no data", viewModel.uiState.value.errorMessage)
-        } finally {
-            unmockkStatic(DocumentsContract::class)
-        }
+        firstSave.complete(SaveResult.Success)
+        advanceUntilIdle()
     }
 
     @Test
@@ -324,73 +599,37 @@ class MainViewModelSaveTest {
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns
             SaveResult.Error("no data")
 
-        mockkStatic(DocumentsContract::class)
-        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
+        val viewModel = openScreen()
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
 
-        try {
-            val viewModel = buildViewModel()
-            viewModel.saveRecording(uri)
-            advanceUntilIdle()
-
-            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
-            assertEquals("no data", viewModel.uiState.value.errorMessage)
-            assertFalse("a stuck flag leaves Save dead", viewModel.uiState.value.saveInProgress)
-        } finally {
-            unmockkStatic(DocumentsContract::class)
-        }
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        assertEquals("no data", viewModel.uiState.value.errorMessage)
+        assertFalse("a stuck flag leaves Save dead", viewModel.uiState.value.saveInProgress)
     }
 
     @Test
     fun `saveRecording upgrade-required path also deletes empty output uri`() = runTest {
         val uri = mockk<Uri>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns
-            SaveResult.UpgradeRequired(com.backrecorderapp.domain.BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+            SaveResult.UpgradeRequired(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
 
-        mockkStatic(DocumentsContract::class)
-        every { DocumentsContract.deleteDocument(contentResolver, uri) } returns true
+        val viewModel = openScreen()
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
 
-        try {
-            val viewModel = buildViewModel()
-            viewModel.saveRecording(uri)
-            advanceUntilIdle()
-
-            verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
-        } finally {
-            unmockkStatic(DocumentsContract::class)
-        }
+        verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
+        assertTrue(viewModel.uiState.value.showUpgradeDialog)
     }
 
     @Test
     fun `saveRecording success path does not delete output uri`() = runTest {
-        val uri = mockk<Uri>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Success
 
-        mockkStatic(DocumentsContract::class)
-        every { DocumentsContract.deleteDocument(any(), any()) } returns true
-
-        try {
-            val viewModel = buildViewModel()
-            viewModel.saveRecording(uri)
-            advanceUntilIdle()
-
-            verify(exactly = 0) { DocumentsContract.deleteDocument(any(), any()) }
-        } finally {
-            unmockkStatic(DocumentsContract::class)
-        }
-    }
-
-    @Test
-    fun `requestSave with segments in range proceeds through subscription gate`() = runTest {
-        val segment = mockk<com.backrecorderapp.data.db.SegmentEntity>(relaxed = true)
-        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(segment)
-        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns GateResult.Allowed
-
         val viewModel = buildViewModel()
-        viewModel.requestSave()
+        viewModel.saveRecording(mockk())
         advanceUntilIdle()
 
-        val state = viewModel.uiState.value
-        assertEquals(true, state.launchSavePicker)
-        coVerify(exactly = 1) { subscriptionGate.checkSaveAccess(any(), any()) }
+        verify(exactly = 0) { DocumentsContract.deleteDocument(any(), any()) }
     }
 }
