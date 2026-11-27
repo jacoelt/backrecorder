@@ -8,6 +8,7 @@ import com.backrecorderapp.di.ApplicationScope
 import com.backrecorderapp.di.IoDispatcher
 import com.backrecorderapp.notification.SaveFailureNotifier
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -129,6 +130,8 @@ class SaveCoordinator @Inject constructor(
                 is SaveResult.UpgradeRequired -> SaveOutcome.UpgradeRequired(result.reason)
                 is SaveResult.Error -> SaveOutcome.Failed(result.message)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             // `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try`, and
             // the application scope has no handler: an escaping throw would kill the process.

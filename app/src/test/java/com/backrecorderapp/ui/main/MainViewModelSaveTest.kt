@@ -447,10 +447,13 @@ class MainViewModelSaveTest {
         viewModel.onSavePickerLaunched()
         assertNull("the claim is held while the picker is open", saveCoordinator.tryClaim())
 
+        val state = viewModel.uiState.value
         viewModel.saveRecording(uri)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { saveRecordingUseCase.execute(any(), any(), uri) }
+        coVerify(exactly = 1) {
+            saveRecordingUseCase.execute(state.selectionStartTime, state.selectionEndTime, uri)
+        }
         verify(exactly = 0) { DocumentsContract.deleteDocument(any(), any()) }
         assertEquals("Recording saved successfully", viewModel.uiState.value.successMessage)
     }
