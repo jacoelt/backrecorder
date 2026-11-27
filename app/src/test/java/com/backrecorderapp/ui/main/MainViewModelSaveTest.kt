@@ -33,10 +33,13 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -140,6 +143,15 @@ class MainViewModelSaveTest {
                 override fun <T : ViewModel> create(modelClass: Class<T>): T = buildViewModel() as T
             }
         )[MainViewModel::class.java]
+
+    /** What `MainScreen` does while STARTED; cancelling the job is the screen going to Home. */
+    private fun TestScope.startCollecting(viewModel: MainViewModel): Job =
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.collectSaveOutcomes()
+        }
+
+    private fun TestScope.openScreen(): MainViewModel =
+        buildViewModel().also { startCollecting(it) }
 
     private fun givenSaveablePickerFlow() {
         coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk<SegmentEntity>(relaxed = true))
@@ -294,8 +306,11 @@ class MainViewModelSaveTest {
             coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
 
             val firstStore = ViewModelStore()
-            screen(firstStore).saveRecording(uri)
+            val first = screen(firstStore)
+            val collecting = startCollecting(first)
+            first.saveRecording(uri)
             advanceUntilIdle()
+            collecting.cancel()
             firstStore.clear()
 
             save.complete(SaveResult.Error("no data"))
@@ -304,16 +319,66 @@ class MainViewModelSaveTest {
             verify(exactly = 1) { failureNotifier.notifySaveFailed() }
             verify(exactly = 1) { DocumentsContract.deleteDocument(contentResolver, uri) }
 
-            val next = buildViewModel()
+            val next = openScreen()
             advanceUntilIdle()
             assertEquals("no data", next.uiState.value.errorMessage)
+        }
+
+    /**
+     * Home keeps the view model alive, so a collector tied to its scope counted as "watching" and
+     * a failure there was never notified - the commonest way of leaving mid-save.
+     */
+    @Test
+    fun `a failure while the app is in the background is notified (issue 111)`() = runTest {
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        val viewModel = buildViewModel()
+        val collecting = startCollecting(viewModel)
+        viewModel.saveRecording(mockk())
+        advanceUntilIdle()
+        collecting.cancel()
+
+        save.complete(SaveResult.Error("no data"))
+        advanceUntilIdle()
+        verify(exactly = 1) { failureNotifier.notifySaveFailed() }
+
+        startCollecting(viewModel)
+        advanceUntilIdle()
+        assertEquals("no data", viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun `a success nobody watched is never notified and is shown on the next screen`() = runTest {
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        buildViewModel().saveRecording(mockk())
+        save.complete(SaveResult.Success)
+        advanceUntilIdle()
+
+        verify(exactly = 0) { failureNotifier.notifySaveFailed() }
+        assertEquals("Recording saved successfully", openScreen().uiState.value.successMessage)
+    }
+
+    @Test
+    fun `a notification that cannot be posted still leaves the failure for the next screen`() =
+        runTest {
+            every { failureNotifier.notifySaveFailed() } throws RuntimeException("no channel")
+            coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Error("no data")
+
+            buildViewModel().saveRecording(mockk())
+            advanceUntilIdle()
+
+            assertEquals("no data", openScreen().uiState.value.errorMessage)
+            assertNotNull(saveCoordinator.tryClaim())
         }
 
     @Test
     fun `a failure while the screen is open is shown there and not notified`() = runTest {
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Error("no data")
 
-        val viewModel = buildViewModel()
+        val viewModel = openScreen()
         viewModel.saveRecording(mockk())
         advanceUntilIdle()
 
@@ -359,7 +424,7 @@ class MainViewModelSaveTest {
         val firstSave = CompletableDeferred<SaveResult>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { firstSave.await() }
 
-        val viewModel = buildViewModel()
+        val viewModel = openScreen()
         viewModel.saveRecording(uri)
         advanceUntilIdle()
         assertTrue(viewModel.uiState.value.saveInProgress)
@@ -409,7 +474,7 @@ class MainViewModelSaveTest {
         val uri = mockk<Uri>()
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } throws IOException("boom")
 
-        val viewModel = buildViewModel()
+        val viewModel = openScreen()
         viewModel.saveRecording(uri)
         advanceUntilIdle()
 
@@ -447,7 +512,7 @@ class MainViewModelSaveTest {
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns
             SaveResult.Error("no data")
 
-        val viewModel = buildViewModel()
+        val viewModel = openScreen()
         viewModel.saveRecording(uri)
         advanceUntilIdle()
 
@@ -462,7 +527,7 @@ class MainViewModelSaveTest {
         coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns
             SaveResult.UpgradeRequired(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
 
-        val viewModel = buildViewModel()
+        val viewModel = openScreen()
         viewModel.saveRecording(uri)
         advanceUntilIdle()
 

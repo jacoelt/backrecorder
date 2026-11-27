@@ -95,8 +95,8 @@ class SaveCoordinator @Inject constructor(
         synchronized(lock) {
             if (holder !== claim || savingTo != null) return false
             savingTo = outputUri
+            _saving.value = true
         }
-        _saving.value = true
         applicationScope.launch {
             try {
                 publish(runSave(startTime, endTime, outputUri))
@@ -104,8 +104,8 @@ class SaveCoordinator @Inject constructor(
                 synchronized(lock) {
                     holder = null
                     savingTo = null
+                    _saving.value = false
                 }
-                _saving.value = false
             }
         }
         return true
@@ -141,8 +141,9 @@ class SaveCoordinator @Inject constructor(
     }
 
     /**
-     * Always queued for the screen, and also notified when no screen is listening - the case where
-     * the in-app message alone would sit unseen until the next launch, or be lost with the process.
+     * Always queued for the screen, and also notified when no started screen is collecting - the
+     * case where the in-app message alone would sit unseen until the next launch, or be lost with
+     * the process.
      */
     private fun publish(outcome: SaveOutcome) {
         outcomeChannel.trySend(outcome)
@@ -162,6 +163,7 @@ class SaveCoordinator @Inject constructor(
         try {
             DocumentsContract.deleteDocument(context.contentResolver, uri)
         } catch (_: Exception) {
+            // Best-effort cleanup; ignore if the provider rejects deletion.
         }
     }
 }

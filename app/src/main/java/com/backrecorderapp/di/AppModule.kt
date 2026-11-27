@@ -7,11 +7,11 @@ import com.backrecorderapp.data.cloud.DriveAccountIdentityResolver
 import com.backrecorderapp.data.cloud.DriveServiceFactory
 import com.backrecorderapp.data.cloud.SystemUploadFailureNotifier
 import com.backrecorderapp.data.cloud.UploadFailureNotifier
-import com.backrecorderapp.notification.SaveFailureNotifier
-import com.backrecorderapp.notification.SystemSaveFailureNotifier
 import com.backrecorderapp.data.db.AppDatabase
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.domain.RecordingFlusher
+import com.backrecorderapp.notification.SaveFailureNotifier
+import com.backrecorderapp.notification.SystemSaveFailureNotifier
 import com.backrecorderapp.service.RecordingService
 import dagger.Module
 import dagger.Provides

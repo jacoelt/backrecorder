@@ -188,18 +188,25 @@ class MainViewModel @Inject constructor(
                 _uiState.value = _uiState.value.copy(saveInProgress = saving)
             }
         }
-        viewModelScope.launch {
-            saveCoordinator.outcomes.collect { outcome ->
-                _uiState.value = when (outcome) {
-                    SaveOutcome.Saved -> _uiState.value.copy(
-                        successMessage = "Recording saved successfully"
-                    )
-                    is SaveOutcome.UpgradeRequired -> _uiState.value.copy(
-                        showUpgradeDialog = true,
-                        upgradeReason = outcome.reason
-                    )
-                    is SaveOutcome.Failed -> _uiState.value.copy(errorMessage = outcome.message)
-                }
+    }
+
+    /**
+     * Called by the screen only while it is STARTED, never from `viewModelScope`: the coordinator
+     * notifies a failure when nothing is collecting, and this view model stays alive behind Home
+     * and under Settings, where a snackbar cannot be seen. Collecting for the view model's life
+     * would make those - the commonest ways of leaving mid-save - the silent ones (#111).
+     */
+    suspend fun collectSaveOutcomes() {
+        saveCoordinator.outcomes.collect { outcome ->
+            _uiState.value = when (outcome) {
+                SaveOutcome.Saved -> _uiState.value.copy(
+                    successMessage = "Recording saved successfully"
+                )
+                is SaveOutcome.UpgradeRequired -> _uiState.value.copy(
+                    showUpgradeDialog = true,
+                    upgradeReason = outcome.reason
+                )
+                is SaveOutcome.Failed -> _uiState.value.copy(errorMessage = outcome.message)
             }
         }
     }
