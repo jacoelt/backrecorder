@@ -143,6 +143,10 @@ class PlayBillingRepository @Inject constructor(
                 Log.w(TAG, "entitlement unresolved after $RESOLVE_ATTEMPTS attempts")
             } finally {
                 resolving.set(false)
+                // A connection that came up on the last rung - its OK racing the rung's timeout,
+                // or landing on the main thread before the flag above cleared - was skipped by
+                // resolveEntitlementIfUnresolved on the promise that a later rung would query.
+                if (!_statusResolved.value && billingClient.isReady) resolveEntitlementIfUnresolved()
             }
         }
     }
@@ -476,11 +480,36 @@ class PlayBillingRepository @Inject constructor(
         }
     }
 
+    /**
+     * A connection can succeed when nothing is left to query entitlement over it: an attempt
+     * abandoned by every waiter, answering after the resolve ladder has exhausted its rungs -
+     * which on a slow cold start is quick, since each later `startConnection` is refused
+     * synchronously while the client is still connecting - or a fresh connection made later by a
+     * plan load, which only asks for offers (#119). `connect()` runs its ladder once per process,
+     * so without this `statusResolved` stayed false for the session and a paying subscriber was
+     * refused cloud sync. A running ladder queries after its own connect, hence `resolving`.
+     */
+    private fun resolveEntitlementIfUnresolved() {
+        if (_statusResolved.value || resolving.get()) return
+        appScope.launch {
+            try {
+                if (withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() } != true) {
+                    Log.w(TAG, "entitlement query after a late connection did not resolve")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "entitlement query after a late connection threw: $e")
+            }
+        }
+    }
+
     private fun startConnection(pending: CompletableDeferred<PurchaseFailure?>) {
         billingClient.startConnection(object : BillingClientStateListener {
             override fun onBillingSetupFinished(result: BillingResult) {
                 if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                     pending.complete(null)
+                    resolveEntitlementIfUnresolved()
                 } else {
                     pending.complete(
                         connectionFailed("setup: ${result.responseCode} ${result.debugMessage}")
