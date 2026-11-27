@@ -544,16 +544,18 @@ class PlayBillingRepositoryTest {
     fun `an answer arriving after the query bound still resolves an unresolved session`() =
         runTest(StandardTestDispatcher()) {
             every { client.isReady } returns true
-            val listener = slot<PurchasesResponseListener>()
-            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } returns Unit
+            val listeners = mutableListOf<PurchasesResponseListener>()
+            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listeners)) } returns Unit
             val repository = createRepository()
             repository.refreshEntitlement()
             runCurrent()
             advanceTimeBy(25_000)
             runCurrent()
             assertEquals(false, repository.statusResolved.value)
+            // No connection was deferred to the refresh, so its failure must not fire a second query.
+            assertEquals(1, listeners.size)
 
-            listener.captured.onQueryPurchasesResponse(okResult(), listOf(purchase(acknowledged = true)))
+            listeners.first().onQueryPurchasesResponse(okResult(), listOf(purchase(acknowledged = true)))
 
             assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
             assertEquals(true, repository.statusResolved.value)
@@ -563,15 +565,15 @@ class PlayBillingRepositoryTest {
     fun `a late refusal does not resolve an unresolved session`() =
         runTest(StandardTestDispatcher()) {
             every { client.isReady } returns true
-            val listener = slot<PurchasesResponseListener>()
-            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } returns Unit
+            val listeners = mutableListOf<PurchasesResponseListener>()
+            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listeners)) } returns Unit
             val repository = createRepository()
             repository.refreshEntitlement()
             runCurrent()
             advanceTimeBy(25_000)
             runCurrent()
 
-            listener.captured.onQueryPurchasesResponse(
+            listeners.first().onQueryPurchasesResponse(
                 result(BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE),
                 emptyList()
             )

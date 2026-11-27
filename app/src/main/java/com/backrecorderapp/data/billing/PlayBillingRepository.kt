@@ -123,6 +123,9 @@ class PlayBillingRepository @Inject constructor(
     /** True while the launch-time resolve ladder or a [refreshEntitlement] is running. */
     private val resolving = AtomicBoolean(false)
 
+    /** Set when [resolveEntitlementIfUnresolved] deferred a connection to the read holding [resolving]. */
+    private val connectionDeferred = AtomicBoolean(false)
+
     override fun connect() {
         // One entitlement read at a time, the ladder and a resume refresh alike - two would race
         // each other's connection attempts for no gain.
@@ -162,8 +165,13 @@ class PlayBillingRepository @Inject constructor(
         resolving.set(false)
         // A connection that came up during the read's last attempt - its OK racing that attempt's
         // timeout, or landing on the main thread before the flag above cleared - was skipped by
-        // resolveEntitlementIfUnresolved on the promise that the running read would query.
-        if (!_statusResolved.value && billingClient.isReady) resolveEntitlementIfUnresolved()
+        // resolveEntitlementIfUnresolved on the promise that the running read would query. Only
+        // then: a read whose own query failed must not fire a second one on every onStart.
+        // Each side writes its flag before reading the other's, so a callback racing this
+        // release is queried at least once, at worst twice.
+        if (connectionDeferred.getAndSet(false) && !_statusResolved.value && billingClient.isReady) {
+            resolveEntitlementIfUnresolved()
+        }
     }
 
     /**
@@ -518,7 +526,10 @@ class PlayBillingRepository @Inject constructor(
      * refused cloud sync. A running ladder queries after its own connect, hence `resolving`.
      */
     private fun resolveEntitlementIfUnresolved() {
-        if (_statusResolved.value || resolving.get()) return
+        if (_statusResolved.value) return
+        connectionDeferred.set(true)
+        if (resolving.get()) return
+        connectionDeferred.set(false)
         appScope.launch {
             try {
                 if (withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() } != true) {
