@@ -444,6 +444,99 @@ class PlayBillingRepositoryTest {
             assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
         }
 
+    /** #88: entitlement used to be read once per process, so this stayed FREE until a restart. */
+    @Test
+    fun `a subscription bought outside the app is picked up on refresh`() = runTest {
+        every { client.isReady } returns true
+        stubQueryPurchases()
+        val repository = createRepository()
+        repository.connect()
+        runCurrent()
+        assertEquals(SubscriptionStatus.FREE, repository.subscriptionStatus.value)
+
+        stubQueryPurchases(purchase(acknowledged = true))
+        repository.refreshEntitlement()
+        runCurrent()
+
+        assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        assertEquals(true, repository.statusResolved.value)
+    }
+
+    @Test
+    fun `a subscription that lapsed outside the app is dropped on refresh`() = runTest {
+        every { client.isReady } returns true
+        stubQueryPurchases(purchase(acknowledged = true))
+        val repository = createRepository()
+        repository.connect()
+        runCurrent()
+        assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+
+        stubQueryPurchases()
+        repository.refreshEntitlement()
+        runCurrent()
+
+        assertEquals(SubscriptionStatus.FREE, repository.subscriptionStatus.value)
+        assertEquals(true, repository.statusResolved.value)
+    }
+
+    @Test
+    fun `a refresh Play refuses keeps the last entitlement`() = runTest {
+        every { client.isReady } returns true
+        stubQueryPurchases(purchase(acknowledged = true))
+        val repository = createRepository()
+        repository.connect()
+        runCurrent()
+
+        val listener = slot<PurchasesResponseListener>()
+        every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } answers {
+            listener.captured.onQueryPurchasesResponse(
+                result(BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE),
+                emptyList()
+            )
+        }
+        repository.refreshEntitlement()
+        runCurrent()
+
+        assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        assertEquals(true, repository.statusResolved.value)
+    }
+
+    @Test
+    fun `a refresh while the launch ladder runs does not open a second connection`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val repository = createRepository()
+            repository.connect()
+            runCurrent()
+
+            repository.refreshEntitlement()
+            runCurrent()
+
+            verify(exactly = 1) { client.startConnection(any()) }
+        }
+
+    /**
+     * The purchase query had no bound of its own, so one Play never answered would hold the
+     * single-flight guard for the rest of the process and every later refresh would be dropped.
+     */
+    @Test
+    fun `a query Play never answers does not block later refreshes`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            val repository = createRepository()
+            repository.refreshEntitlement()
+            runCurrent()
+
+            advanceTimeBy(25_000)
+            runCurrent()
+            stubQueryPurchases(purchase(acknowledged = true))
+            repository.refreshEntitlement()
+            runCurrent()
+
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+            assertEquals(true, repository.statusResolved.value)
+        }
+
     /**
      * The binding can drop between the `isReady` check and the product query - the client
      * reports ready right up to the moment it dies, so no check closes that window.

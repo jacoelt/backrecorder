@@ -120,13 +120,12 @@ class PlayBillingRepository @Inject constructor(
     /** Purchase tokens with an acknowledgement already on its way to Play. */
     private val acknowledging: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
-    /** True while the launch-time resolve ladder is running. */
+    /** True while the launch-time resolve ladder or a [refreshEntitlement] is running. */
     private val resolving = AtomicBoolean(false)
 
     override fun connect() {
-        // One ladder of retries at a time. connect() is called once at launch today, but a
-        // second caller must not start a competing one - two ladders would race each other's
-        // connection attempts for no gain.
+        // One entitlement read at a time, the ladder and a resume refresh alike - two would race
+        // each other's connection attempts for no gain.
         if (!resolving.compareAndSet(false, true)) return
 
         appScope.launch {
@@ -151,6 +150,18 @@ class PlayBillingRepository @Inject constructor(
         }
     }
 
+    override fun refreshEntitlement() {
+        if (!resolving.compareAndSet(false, true)) return
+
+        appScope.launch {
+            try {
+                if (!resolveEntitlement()) Log.w(TAG, "entitlement refresh unanswered; keeping the last one")
+            } finally {
+                resolving.set(false)
+            }
+        }
+    }
+
     /**
      * One connect-and-query attempt, true once entitlement is known.
      *
@@ -166,7 +177,12 @@ class PlayBillingRepository @Inject constructor(
             return false
         }
         if (outcome.failure != null) return false
-        return queryPurchasesResolving()
+        // Bounded like the connect: an unanswered query would hold [resolving] for the life of
+        // the process, and every later refresh would be dropped against it.
+        return withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() } ?: run {
+            Log.w(TAG, "queryPurchases got no answer within ${PREPARE_TIMEOUT_MS}ms")
+            false
+        }
     }
 
     /** Wraps a nullable failure so a timeout stays distinguishable from success. */

@@ -101,6 +101,8 @@ class FakeBillingRepository @Inject constructor() : BillingRepository {
 
     override fun queryPurchases() = Unit
 
+    override fun refreshEntitlement() = Unit
+
     override suspend fun loadSubscriptionPlans(): PlanQuery =
         nextLoadFails?.let { failure ->
             nextLoadFails = null
