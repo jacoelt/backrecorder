@@ -627,9 +627,43 @@ class PlayBillingRepositoryTest {
             assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
         }
 
-    /** The watcher is bounded: an attempt Play never answers must not hold a coroutine forever. */
+    /**
+     * The other road to #119: every rung refused quickly, so the ladder is over before Play is
+     * back. A later plan load then connects normally but only asks for offers.
+     */
     @Test
-    fun `an abandoned connection is watched for a bounded time only`() =
+    fun `a connection made after the resolve ladder gave up resolves entitlement`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            var playIsBack = false
+            every { client.startConnection(any()) } answers {
+                val code = if (playIsBack) {
+                    BillingClient.BillingResponseCode.OK
+                } else {
+                    BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE
+                }
+                firstArg<BillingClientStateListener>().onBillingSetupFinished(result(code))
+            }
+            stubQueryPurchases(purchase(acknowledged = true))
+            stubProductQuery(premiumProduct())
+
+            val repository = createRepository()
+            repository.connect()
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals(false, repository.statusResolved.value)
+
+            playIsBack = true
+            val load = async { repository.loadSubscriptionPlans() }
+            runCurrent()
+
+            assertTrue(load.await() is PlanQuery.Available)
+            assertEquals(true, repository.statusResolved.value)
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        }
+
+    @Test
+    fun `a late connection that fails does not query entitlement`() =
         runTest(StandardTestDispatcher()) {
             every { client.isReady } returns false
             val listener = slot<BillingClientStateListener>()
@@ -642,13 +676,36 @@ class PlayBillingRepositoryTest {
             advanceTimeBy(21_000)
             assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, abandoned.await())
 
-            advanceTimeBy(6 * 60_000L)
-            every { client.isReady } returns true
-            listener.captured.onBillingSetupFinished(okResult())
+            listener.captured.onBillingSetupFinished(result(BillingClient.BillingResponseCode.BILLING_UNAVAILABLE))
             runCurrent()
 
             assertEquals(false, repository.statusResolved.value)
             verify(exactly = 0) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
+        }
+
+    @Test
+    fun `a late connection does not query again once entitlement is resolved`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            every { client.startConnection(capture(listener)) } answers { }
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            val abandoned = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            advanceTimeBy(21_000)
+            assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, abandoned.await())
+
+            repository.onPurchasesUpdated(okResult(), listOf(purchase(acknowledged = true)))
+            runCurrent()
+            assertEquals(true, repository.statusResolved.value)
+            verify(exactly = 1) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
+
+            listener.captured.onBillingSetupFinished(okResult())
+            runCurrent()
+
+            verify(exactly = 1) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
         }
 
     /**

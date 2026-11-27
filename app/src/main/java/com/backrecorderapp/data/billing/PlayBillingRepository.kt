@@ -81,13 +81,6 @@ class PlayBillingRepository @Inject constructor(
 
         /** Delay before the second resolve attempt; doubled each time after that. */
         private const val RESOLVE_BACKOFF_START_MS = 2_000L
-
-        /**
-         * How long an abandoned connection attempt is still watched for a late success. Well past
-         * the ladder's own span (five 20s rungs plus 30s of backoff), since a Play slow enough to
-         * outlast the ladder is the case being covered.
-         */
-        private const val LATE_CONNECTION_WATCH_MS = 5 * 60_000L
     }
 
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
@@ -478,36 +471,33 @@ class PlayBillingRepository @Inject constructor(
                 // of the slot is still needed, or every later caller would join a deferred
                 // nothing will ever complete; anyone still awaiting this one is bounded by their
                 // own budget and gets the real answer if Play does come back.
-                if (connection.compareAndSet(attempt, null) && !attempt.isCompleted) {
-                    resolveIfLateConnectionSucceeds(attempt)
-                }
+                connection.compareAndSet(attempt, null)
             }
         }
     }
 
     /**
-     * An abandoned attempt can still succeed after every waiter has gone - and with Play slow to
-     * bind on a cold start, after the resolve ladder has exhausted its rungs, since each later
-     * `startConnection` is refused synchronously while the client is still connecting (#119).
-     * `connect()` runs its ladder once per process, so without this nothing would ever query and
-     * `statusResolved` would stay false for the session, refusing a paying subscriber cloud sync.
-     *
-     * Bounded, or an attempt Play never answers would leak a coroutine per abandonment. The body
-     * is wrapped because [appScope] has no exception handler.
+     * A connection can succeed when nothing is left to query entitlement over it: an attempt
+     * abandoned by every waiter, answering after the resolve ladder has exhausted its rungs -
+     * which on a slow cold start is quick, since each later `startConnection` is refused
+     * synchronously while the client is still connecting - or a fresh connection made later by a
+     * plan load, which only asks for offers (#119). `connect()` runs its ladder once per process,
+     * so without this `statusResolved` stayed false for the session and a paying subscriber was
+     * refused cloud sync. Hooked on Play's own callback rather than on a watcher of the abandoned
+     * attempt, so there is no coroutine to bound and no timing window between a caller's timeout
+     * and its unpublish. A running ladder queries after its own connect, hence `resolving`.
      */
-    private fun resolveIfLateConnectionSucceeds(attempt: CompletableDeferred<PurchaseFailure?>) {
+    private fun resolveEntitlementIfUnresolved() {
+        if (_statusResolved.value || resolving.get()) return
         appScope.launch {
             try {
-                val connected = withTimeoutOrNull(LATE_CONNECTION_WATCH_MS) {
-                    attempt.await() == null
-                } ?: false
-                if (connected && !_statusResolved.value) {
-                    withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() }
+                if (withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() } != true) {
+                    Log.w(TAG, "entitlement query after a late connection did not resolve")
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "late connection query threw: $e")
+                Log.w(TAG, "entitlement query after a late connection threw: $e")
             }
         }
     }
@@ -517,6 +507,7 @@ class PlayBillingRepository @Inject constructor(
             override fun onBillingSetupFinished(result: BillingResult) {
                 if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                     pending.complete(null)
+                    resolveEntitlementIfUnresolved()
                 } else {
                     pending.complete(
                         connectionFailed("setup: ${result.responseCode} ${result.debugMessage}")
