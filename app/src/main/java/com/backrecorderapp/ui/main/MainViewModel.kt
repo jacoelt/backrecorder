@@ -172,6 +172,13 @@ class MainViewModel @Inject constructor(
 
     private var purchaseGeneration = 0
 
+    /**
+     * The claim [requestSave] took for a picker that has not answered yet. Held across the picker
+     * so a second tap - here or on a relaunched screen - cannot open another, and handed to the
+     * coordinator when the picker returns a destination.
+     */
+    private var pendingSaveClaim: SaveClaim? = null
+
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
 
@@ -407,13 +414,6 @@ class MainViewModel @Inject constructor(
             }
         }
     }
-
-    /**
-     * The claim [requestSave] took for a picker that has not answered yet. Held across the picker
-     * so a second tap - here or on a relaunched screen - cannot open another, and handed to the
-     * coordinator when the picker returns a destination.
-     */
-    private var pendingSaveClaim: SaveClaim? = null
 
     fun onSavePickerLaunched() {
         _uiState.value = _uiState.value.copy(launchSavePicker = false)

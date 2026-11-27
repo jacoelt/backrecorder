@@ -416,6 +416,41 @@ class MainViewModelSaveTest {
     }
 
     @Test
+    fun `the claim taken at the tap carries through the picker into the save (issue 111)`() = runTest {
+        val uri = mockk<Uri>()
+        givenSaveablePickerFlow()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Success
+
+        val viewModel = openScreen()
+        viewModel.requestSave()
+        advanceUntilIdle()
+        viewModel.onSavePickerLaunched()
+        assertNull("the claim is held while the picker is open", saveCoordinator.tryClaim())
+
+        viewModel.saveRecording(uri)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { saveRecordingUseCase.execute(any(), any(), uri) }
+        verify(exactly = 0) { DocumentsContract.deleteDocument(any(), any()) }
+        assertEquals("Recording saved successfully", viewModel.uiState.value.successMessage)
+    }
+
+    @Test
+    fun `a save the gate refuses gives the claim back (issue 111)`() = runTest {
+        coEvery { segmentManager.getSegmentsInRange(any(), any()) } returns listOf(mockk<SegmentEntity>(relaxed = true))
+        coEvery { subscriptionGate.checkSaveAccess(any(), any()) } returns
+            GateResult.Blocked(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+
+        val viewModel = buildViewModel()
+        viewModel.requestSave()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.uiState.value.showUpgradeDialog)
+        assertFalse(viewModel.uiState.value.launchSavePicker)
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
+    @Test
     fun `cancelling the picker frees Save for the next tap (issue 111)`() = runTest {
         givenSaveablePickerFlow()
 
