@@ -62,8 +62,9 @@ class SaveRecordingUseCase @Inject constructor(
     }
 
     /**
-     * Trimming, [concatenateM4aFiles] and the SAF copy are seconds of blocking work and must not
-     * run on the caller's thread, which is the main one for the view model (issue #93).
+     * Trimming, [concatenateM4aFiles] and the SAF copy are seconds of blocking work and must stay
+     * off the caller's thread whoever calls (issue #93); in production that is [SaveCoordinator]
+     * on the application scope (#111).
      * `withContext` resumes the caller on its own dispatcher, so no caller needs a hop back.
      */
     suspend fun execute(startTime: Long, endTime: Long, outputUri: Uri): SaveResult =

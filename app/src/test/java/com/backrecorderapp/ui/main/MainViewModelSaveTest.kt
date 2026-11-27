@@ -390,6 +390,26 @@ class MainViewModelSaveTest {
         assertNotNull(saveCoordinator.tryClaim())
     }
 
+    /** The slot belongs to one claim, not to "someone": a stale claim can neither free nor reuse it. */
+    @Test
+    fun `a finished claim cannot free or start a save in the next claim's slot (issue 111)`() = runTest {
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns SaveResult.Success
+
+        val first = saveCoordinator.tryClaim()!!
+        assertTrue(saveCoordinator.save(first, 0L, 1L, mockk()))
+        advanceUntilIdle()
+
+        val second = saveCoordinator.tryClaim()!!
+        assertNull("an unstarted claim holds the slot, as it does across the picker", saveCoordinator.tryClaim())
+
+        saveCoordinator.release(first)
+        assertNull(saveCoordinator.tryClaim())
+        assertFalse(saveCoordinator.save(first, 0L, 1L, mockk()))
+
+        saveCoordinator.release(second)
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
     @Test
     fun `a notification that cannot be posted still leaves the failure for the next screen`() =
         runTest {
