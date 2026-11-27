@@ -203,7 +203,15 @@ class PlayBillingRepository @Inject constructor(
     /** The same query, awaited: true when Play answered and entitlement is now resolved. */
     private suspend fun queryPurchasesResolving(): Boolean = suspendCancellableCoroutine { cont ->
         billingClient.queryPurchasesAsync(purchasesParams()) { result, purchasesList ->
-            if (!cont.isActive) return@queryPurchasesAsync
+            if (!cont.isActive) {
+                // Past its bound, but still the only answer an unresolved session has: dropping
+                // it would leave a paying subscriber refused sync whenever Play is slow to start.
+                // Once resolved, a late answer may be staler than the one already applied.
+                if (result.responseCode == BillingClient.BillingResponseCode.OK && !_statusResolved.value) {
+                    updateSubscriptionStatus(purchasesList)
+                }
+                return@queryPurchasesAsync
+            }
             if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                 updateSubscriptionStatus(purchasesList)
                 cont.resume(true)

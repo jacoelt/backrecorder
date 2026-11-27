@@ -539,6 +539,47 @@ class PlayBillingRepositoryTest {
             assertEquals(true, repository.statusResolved.value)
         }
 
+    /** Bounding the query must not cost an unresolved session the only answer Play gave it. */
+    @Test
+    fun `an answer arriving after the query bound still resolves an unresolved session`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            val listener = slot<PurchasesResponseListener>()
+            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } returns Unit
+            val repository = createRepository()
+            repository.refreshEntitlement()
+            runCurrent()
+            advanceTimeBy(25_000)
+            runCurrent()
+            assertEquals(false, repository.statusResolved.value)
+
+            listener.captured.onQueryPurchasesResponse(okResult(), listOf(purchase(acknowledged = true)))
+
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+            assertEquals(true, repository.statusResolved.value)
+        }
+
+    @Test
+    fun `a late answer does not overwrite entitlement already resolved`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns true
+            val listener = slot<PurchasesResponseListener>()
+            every { client.queryPurchasesAsync(any<QueryPurchasesParams>(), capture(listener)) } returns Unit
+            val repository = createRepository()
+            repository.refreshEntitlement()
+            runCurrent()
+            advanceTimeBy(25_000)
+            runCurrent()
+            val late = listener.captured
+            stubQueryPurchases(purchase(acknowledged = true))
+            repository.refreshEntitlement()
+            runCurrent()
+
+            late.onQueryPurchasesResponse(okResult(), emptyList())
+
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        }
+
     /**
      * The binding can drop between the `isReady` check and the product query - the client
      * reports ready right up to the moment it dies, so no check closes that window.
