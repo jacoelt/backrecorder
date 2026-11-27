@@ -591,6 +591,67 @@ class PlayBillingRepositoryTest {
         }
 
     /**
+     * #119: Play binding slowly on a cold start. The first attempt hangs; every later one is
+     * refused synchronously because the client is still connecting, so the ladder exhausts its
+     * rungs in about a minute. When the first attempt's callback finally lands nobody is
+     * awaiting it - and without a watcher `statusResolved` stayed false for the process, so a
+     * paying subscriber got no cloud sync until they restarted the app.
+     */
+    @Test
+    fun `a connection that succeeds after the resolve ladder gave up still resolves entitlement`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listeners = mutableListOf<BillingClientStateListener>()
+            every { client.startConnection(any()) } answers {
+                val listener = firstArg<BillingClientStateListener>()
+                listeners += listener
+                if (listeners.size > 1) {
+                    listener.onBillingSetupFinished(result(BillingClient.BillingResponseCode.DEVELOPER_ERROR))
+                }
+            }
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            repository.connect()
+            runCurrent()
+            advanceTimeBy(55_000)
+            runCurrent()
+            verify { Log.w(any(), match<String> { it.startsWith("entitlement unresolved") }) }
+            assertEquals(false, repository.statusResolved.value)
+
+            every { client.isReady } returns true
+            listeners.first().onBillingSetupFinished(okResult())
+            runCurrent()
+
+            assertEquals(true, repository.statusResolved.value)
+            assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
+        }
+
+    /** The watcher is bounded: an attempt Play never answers must not hold a coroutine forever. */
+    @Test
+    fun `an abandoned connection is watched for a bounded time only`() =
+        runTest(StandardTestDispatcher()) {
+            every { client.isReady } returns false
+            val listener = slot<BillingClientStateListener>()
+            every { client.startConnection(capture(listener)) } answers { }
+            stubQueryPurchases(purchase(acknowledged = true))
+
+            val repository = createRepository()
+            val abandoned = async { repository.launchPurchaseFlow(activity, monthlyPlan) }
+            runCurrent()
+            advanceTimeBy(21_000)
+            assertEquals(PurchaseFailure.BILLING_UNAVAILABLE, abandoned.await())
+
+            advanceTimeBy(6 * 60_000L)
+            every { client.isReady } returns true
+            listener.captured.onBillingSetupFinished(okResult())
+            runCurrent()
+
+            assertEquals(false, repository.statusResolved.value)
+            verify(exactly = 0) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
+        }
+
+    /**
      * A connection that fails after its starter gave up is still refusing whoever stayed on it,
      * and `Log.w` is the only evidence a release build keeps (#107). An earlier version of #78
      * silenced this by asking whether the attempt was still published — which is false in exactly

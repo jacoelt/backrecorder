@@ -81,6 +81,13 @@ class PlayBillingRepository @Inject constructor(
 
         /** Delay before the second resolve attempt; doubled each time after that. */
         private const val RESOLVE_BACKOFF_START_MS = 2_000L
+
+        /**
+         * How long an abandoned connection attempt is still watched for a late success. Well past
+         * the ladder's own span (five 20s rungs plus 30s of backoff), since a Play slow enough to
+         * outlast the ladder is the case being covered.
+         */
+        private const val LATE_CONNECTION_WATCH_MS = 5 * 60_000L
     }
 
     private val _subscriptionStatus = MutableStateFlow(SubscriptionStatus.FREE)
@@ -471,7 +478,36 @@ class PlayBillingRepository @Inject constructor(
                 // of the slot is still needed, or every later caller would join a deferred
                 // nothing will ever complete; anyone still awaiting this one is bounded by their
                 // own budget and gets the real answer if Play does come back.
-                connection.compareAndSet(attempt, null)
+                if (connection.compareAndSet(attempt, null) && !attempt.isCompleted) {
+                    resolveIfLateConnectionSucceeds(attempt)
+                }
+            }
+        }
+    }
+
+    /**
+     * An abandoned attempt can still succeed after every waiter has gone - and with Play slow to
+     * bind on a cold start, after the resolve ladder has exhausted its rungs, since each later
+     * `startConnection` is refused synchronously while the client is still connecting (#119).
+     * `connect()` runs its ladder once per process, so without this nothing would ever query and
+     * `statusResolved` would stay false for the session, refusing a paying subscriber cloud sync.
+     *
+     * Bounded, or an attempt Play never answers would leak a coroutine per abandonment. The body
+     * is wrapped because [appScope] has no exception handler.
+     */
+    private fun resolveIfLateConnectionSucceeds(attempt: CompletableDeferred<PurchaseFailure?>) {
+        appScope.launch {
+            try {
+                val connected = withTimeoutOrNull(LATE_CONNECTION_WATCH_MS) {
+                    attempt.await() == null
+                } ?: false
+                if (connected && !_statusResolved.value) {
+                    withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "late connection query threw: $e")
             }
         }
     }
