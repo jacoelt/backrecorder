@@ -432,7 +432,9 @@ class MainViewModel @Inject constructor(
      * Hands the picker's destination to [SaveCoordinator], which runs the save on the application
      * scope and owns its outcome; see that class and CLAUDE.md's #111 bullet. With no claim of its
      * own - the picker answered into a fresh view model after a process death - this asks for one,
-     * and a refusal deletes the file the picker created rather than leave it empty.
+     * and a refusal deletes the file the picker created rather than leave it empty. That path does
+     * not restore the selection: the range saved there is the fresh state's, not the one the user
+     * picked (#135).
      */
     fun saveRecording(outputUri: Uri) {
         val claim = pendingSaveClaim ?: saveCoordinator.tryClaim()

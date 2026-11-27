@@ -147,7 +147,7 @@ class SaveCoordinator @Inject constructor(
      */
     private fun publish(outcome: SaveOutcome) {
         outcomeChannel.trySend(outcome)
-        if (outcome == SaveOutcome.Saved || observers.get() > 0) return
+        if (outcome !is SaveOutcome.Failed || observers.get() > 0) return
         try {
             failureNotifier.notifySaveFailed()
         } catch (e: Exception) {

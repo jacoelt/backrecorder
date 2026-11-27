@@ -362,6 +362,35 @@ class MainViewModelSaveTest {
     }
 
     @Test
+    fun `an upgrade-required outcome nobody watched is not notified as a failure`() = runTest {
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } returns
+            SaveResult.UpgradeRequired(BlockReason.SAVE_RANGE_EXCEEDS_FREE_LIMIT)
+
+        buildViewModel().saveRecording(mockk())
+        advanceUntilIdle()
+
+        verify(exactly = 0) { failureNotifier.notifySaveFailed() }
+    }
+
+    /** The view model nulls its claim before handing it over, so only a direct call reaches this. */
+    @Test
+    fun `giving back a claim whose save has started keeps the slot held (issue 111)`() = runTest {
+        val save = CompletableDeferred<SaveResult>()
+        coEvery { saveRecordingUseCase.execute(any(), any(), any()) } coAnswers { save.await() }
+
+        val claim = saveCoordinator.tryClaim()!!
+        assertTrue(saveCoordinator.save(claim, 0L, 1L, mockk()))
+        saveCoordinator.release(claim)
+
+        assertNull(saveCoordinator.tryClaim())
+        assertFalse("a started claim cannot start a second save", saveCoordinator.save(claim, 0L, 1L, mockk()))
+
+        save.complete(SaveResult.Success)
+        advanceUntilIdle()
+        assertNotNull(saveCoordinator.tryClaim())
+    }
+
+    @Test
     fun `a notification that cannot be posted still leaves the failure for the next screen`() =
         runTest {
             every { failureNotifier.notifySaveFailed() } throws RuntimeException("no channel")
