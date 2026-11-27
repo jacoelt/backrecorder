@@ -502,9 +502,11 @@ class PlayBillingRepositoryTest {
     }
 
     @Test
-    fun `a refresh while the launch ladder runs does not open a second connection`() =
+    fun `a refresh while the launch ladder runs does not issue a second query`() =
         runTest(StandardTestDispatcher()) {
-            every { client.isReady } returns false
+            // Held on the query rather than the connect: an unguarded refresh would join a
+            // pending connection and look single-flighted without being so.
+            every { client.isReady } returns true
             val repository = createRepository()
             repository.connect()
             runCurrent()
@@ -512,7 +514,7 @@ class PlayBillingRepositoryTest {
             repository.refreshEntitlement()
             runCurrent()
 
-            verify(exactly = 1) { client.startConnection(any()) }
+            verify(exactly = 1) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
         }
 
     /**
