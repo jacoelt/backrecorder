@@ -7,6 +7,8 @@ import com.backrecorderapp.data.cloud.DriveAccountIdentityResolver
 import com.backrecorderapp.data.cloud.DriveServiceFactory
 import com.backrecorderapp.data.cloud.SystemUploadFailureNotifier
 import com.backrecorderapp.data.cloud.UploadFailureNotifier
+import com.backrecorderapp.notification.SaveFailureNotifier
+import com.backrecorderapp.notification.SystemSaveFailureNotifier
 import com.backrecorderapp.data.db.AppDatabase
 import com.backrecorderapp.data.db.SegmentDao
 import com.backrecorderapp.domain.RecordingFlusher
@@ -76,6 +78,12 @@ object AppModule {
     fun provideUploadFailureNotifier(
         notifier: SystemUploadFailureNotifier
     ): UploadFailureNotifier = notifier
+
+    @Provides
+    @Singleton
+    fun provideSaveFailureNotifier(
+        notifier: SystemSaveFailureNotifier
+    ): SaveFailureNotifier = notifier
 
     @Provides
     @Singleton

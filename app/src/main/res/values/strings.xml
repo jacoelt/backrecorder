@@ -111,4 +111,8 @@
     <string name="cloud_saved_upload_failed_title">Upload to Drive Failed</string>
     <string name="cloud_saved_upload_failed">“%1$s” was saved on this device but could not be uploaded to Google Drive.</string>
     <string name="cloud_saved_upload_failed_generic">A saved recording could not be uploaded to Google Drive.</string>
+
+    <!-- Save -->
+    <string name="save_failed_title">Recording Not Saved</string>
+    <string name="save_failed_text">A recording could not be saved. Open Back Recorder to try again.</string>
 </resources>

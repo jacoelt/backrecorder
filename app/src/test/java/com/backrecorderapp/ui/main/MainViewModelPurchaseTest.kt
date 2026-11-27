@@ -16,6 +16,7 @@ import com.backrecorderapp.domain.GateResult
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
+import com.backrecorderapp.domain.SaveCoordinator
 import com.backrecorderapp.domain.SaveRecordingUseCase
 import com.backrecorderapp.domain.SubscriptionGate
 import io.mockk.coEvery
@@ -23,7 +24,9 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -115,13 +118,18 @@ class MainViewModelPurchaseTest {
         context,
         segmentManager,
         waveformRepository,
-        saveRecordingUseCase,
+        SaveCoordinator(
+            context,
+            saveRecordingUseCase,
+            mockk(relaxed = true),
+            CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher()),
+            UnconfinedTestDispatcher()
+        ),
         appPreferences,
         cloudSyncManager,
         savedRecordingUploader,
         billingRepository,
-        subscriptionGate,
-        UnconfinedTestDispatcher()
+        subscriptionGate
     )
 
     @Test

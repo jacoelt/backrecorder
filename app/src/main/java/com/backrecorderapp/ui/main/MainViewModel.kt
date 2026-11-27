@@ -3,8 +3,6 @@ package com.backrecorderapp.ui.main
 import android.app.Activity
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.backrecorderapp.data.billing.BillingRepository
@@ -14,11 +12,11 @@ import com.backrecorderapp.data.db.SegmentEntity
 import com.backrecorderapp.data.preferences.AppPreferences
 import com.backrecorderapp.data.segment.SegmentManager
 import com.backrecorderapp.data.waveform.WaveformRepository
-import com.backrecorderapp.di.IoDispatcher
 import com.backrecorderapp.domain.BlockReason
 import com.backrecorderapp.domain.GateResult
-import com.backrecorderapp.domain.SaveRecordingUseCase
-import com.backrecorderapp.domain.SaveResult
+import com.backrecorderapp.domain.SaveClaim
+import com.backrecorderapp.domain.SaveCoordinator
+import com.backrecorderapp.domain.SaveOutcome
 import com.backrecorderapp.domain.SubscriptionGate
 import com.backrecorderapp.data.billing.PlanQuery
 import com.backrecorderapp.data.billing.PurchaseFailure
@@ -27,9 +25,6 @@ import com.backrecorderapp.data.billing.SubscriptionPlans
 import com.backrecorderapp.service.RecordingService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,11 +33,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
-
-private const val TAG = "MainViewModel"
 
 private const val MINUTE_MS = 60_000L
 
@@ -131,13 +123,12 @@ class MainViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val segmentManager: SegmentManager,
     private val waveformRepository: WaveformRepository,
-    private val saveRecordingUseCase: SaveRecordingUseCase,
+    private val saveCoordinator: SaveCoordinator,
     private val appPreferences: AppPreferences,
     private val cloudSyncManager: CloudSyncManager,
     private val savedRecordingUploader: SavedRecordingUploader,
     private val billingRepository: BillingRepository,
-    private val subscriptionGate: SubscriptionGate,
-    @IoDispatcher private val ioDispatcher: CoroutineDispatcher
+    private val subscriptionGate: SubscriptionGate
 ) : ViewModel() {
 
     /**
@@ -188,6 +179,29 @@ class MainViewModel @Inject constructor(
         observeSegments()
         observeRecoveryMessages()
         observeCloudUploadFailures()
+        observeSave()
+    }
+
+    private fun observeSave() {
+        viewModelScope.launch {
+            saveCoordinator.saving.collect { saving ->
+                _uiState.value = _uiState.value.copy(saveInProgress = saving)
+            }
+        }
+        viewModelScope.launch {
+            saveCoordinator.outcomes.collect { outcome ->
+                _uiState.value = when (outcome) {
+                    SaveOutcome.Saved -> _uiState.value.copy(
+                        successMessage = "Recording saved successfully"
+                    )
+                    is SaveOutcome.UpgradeRequired -> _uiState.value.copy(
+                        showUpgradeDialog = true,
+                        upgradeReason = outcome.reason
+                    )
+                    is SaveOutcome.Failed -> _uiState.value.copy(errorMessage = outcome.message)
+                }
+            }
+        }
     }
 
     private fun observeSegments() {
@@ -324,93 +338,103 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The claim is taken here, synchronously, before anything suspends: the picker creates its
+     * 0-byte file the moment it returns a URI, so refusing after that point leaves exactly the
+     * empty recording #23 exists to prevent, and a claim taken only once the picker answered let
+     * a double tap put two coroutines past the guard and open two pickers back to back (#111).
+     * It is process-wide, so a save left running by an earlier instance of this screen refuses
+     * too.
+     */
     fun requestSave() {
-        // The in-flight guard belongs here, not only on [saveRecording]: the picker creates its
-        // 0-byte file the moment it returns a URI, so refusing a save after that point would
-        // leave exactly the empty recording issue #23 exists to prevent. It covers a tap made
-        // while a save is running, not two taps before the first picker returns - `saveInProgress`
-        // is not set until then, which is part of #111.
-        if (_uiState.value.saveInProgress) return
+        if (pendingSaveClaim != null) return
+        val claim = saveCoordinator.tryClaim() ?: return
+        pendingSaveClaim = claim
         viewModelScope.launch {
-            // Read once for the *inputs* below, but never written back wholesale: the calls in
-            // this function suspend, and `state.copy(...)` would restore every field as of this
-            // line - undoing anything that changed meanwhile. That is how a billing flag got
-            // stuck: an upgrade's `finally` cleared `plansLoading` while this coroutine was in
-            // the segment query, and the write below put it back to true for the life of the
-            // view model, leaving the Upgrade button a permanently disabled spinner. Every write
-            // here goes through the *current* value instead.
-            val state = _uiState.value
+            var pickerRequested = false
+            try {
+                // Read once for the *inputs* below, but never written back wholesale: the calls in
+                // this function suspend, and `state.copy(...)` would restore every field as of this
+                // line - undoing anything that changed meanwhile. That is how a billing flag got
+                // stuck: an upgrade's `finally` cleared `plansLoading` while this coroutine was in
+                // the segment query, and the write below put it back to true for the life of the
+                // view model, leaving the Upgrade button a permanently disabled spinner. Every
+                // write here goes through the *current* value instead.
+                val state = _uiState.value
 
-            // Preflight: never launch the SAF picker if the selection has no
-            // recorded data — SAF creates a 0-byte file as soon as the picker
-            // returns a URI, and the save would then fail on an empty selection
-            // leaving that empty file behind (issue #23).
-            val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
-                System.currentTimeMillis()
-            } else {
-                state.selectionEndTime
-            }
-            val segments = segmentManager.getSegmentsInRange(state.selectionStartTime, endTime)
-            if (segments.isEmpty()) {
-                _uiState.value = _uiState.value.copy(
-                    errorMessage = "No recorded data found for the selected time range"
-                )
-                return@launch
-            }
-
-            val gateResult = subscriptionGate.checkSaveAccess(
-                state.selectionStartTime,
-                state.selectionEndTime
-            )
-            when (gateResult) {
-                is GateResult.Allowed -> {
-                    _uiState.value = _uiState.value.copy(launchSavePicker = true)
+                // Preflight: never launch the SAF picker if the selection has no
+                // recorded data — SAF creates a 0-byte file as soon as the picker
+                // returns a URI, and the save would then fail on an empty selection
+                // leaving that empty file behind (issue #23).
+                val endTime = if (state.isRecording && state.selectionEndTime >= state.bufferEndTime) {
+                    System.currentTimeMillis()
+                } else {
+                    state.selectionEndTime
                 }
-                is GateResult.Blocked -> {
+                val segments = segmentManager.getSegmentsInRange(state.selectionStartTime, endTime)
+                if (segments.isEmpty()) {
                     _uiState.value = _uiState.value.copy(
-                        showUpgradeDialog = true,
-                        upgradeReason = gateResult.reason
+                        errorMessage = "No recorded data found for the selected time range"
                     )
+                    return@launch
                 }
+
+                val gateResult = subscriptionGate.checkSaveAccess(
+                    state.selectionStartTime,
+                    state.selectionEndTime
+                )
+                when (gateResult) {
+                    is GateResult.Allowed -> {
+                        pickerRequested = true
+                        _uiState.value = _uiState.value.copy(launchSavePicker = true)
+                    }
+                    is GateResult.Blocked -> {
+                        _uiState.value = _uiState.value.copy(
+                            showUpgradeDialog = true,
+                            upgradeReason = gateResult.reason
+                        )
+                    }
+                }
+            } finally {
+                if (!pickerRequested) releasePendingSaveClaim()
             }
         }
     }
 
-    /** The destination the running save is writing to, so a refused one never deletes it. */
-    private var inFlightOutputUri: Uri? = null
+    /**
+     * The claim [requestSave] took for a picker that has not answered yet. Held across the picker
+     * so a second tap - here or on a relaunched screen - cannot open another, and handed to the
+     * coordinator when the picker returns a destination.
+     */
+    private var pendingSaveClaim: SaveClaim? = null
 
     fun onSavePickerLaunched() {
         _uiState.value = _uiState.value.copy(launchSavePicker = false)
     }
 
+    fun onSavePickerCancelled() {
+        releasePendingSaveClaim()
+    }
+
+    private fun releasePendingSaveClaim() {
+        pendingSaveClaim?.let(saveCoordinator::release)
+        pendingSaveClaim = null
+    }
+
     /**
-     * Everything here exists because the save suspends since #93; before that it blocked this
-     * thread from the tap to the result, which made each case unreachable rather than impossible.
-     * The reasoning is in CLAUDE.md's #93 bullet; the three decisions are:
-     *
-     * [requestSave] carries the guard that matters, since it runs before the picker exists. This
-     * one only covers a picker result already on its way, and deletes that result's file.
-     *
-     * The flag is claimed synchronously and cleared in an unconditional `finally`, because
-     * `getSegmentsInRange` and `checkSaveAccess` sit outside the use case's own `try` and a flag
-     * left set makes Save a permanently disabled spinner (#74).
-     *
-     * `NonCancellable` keeps the save and its cleanup together: a cancelled scope would otherwise
-     * strand the picker's empty file, which is #23 reopened.
+     * Hands the picker's destination to [SaveCoordinator], which runs the save on the application
+     * scope and owns its outcome; see that class and CLAUDE.md's #111 bullet. With no claim of its
+     * own - the picker answered into a fresh view model after a process death - this asks for one,
+     * and a refusal deletes the file the picker created rather than leave it empty.
      */
     fun saveRecording(outputUri: Uri) {
-        if (_uiState.value.saveInProgress) {
-            // Never the file the running save is writing: both pickers are opened with the same
-            // suggested name, and a provider that overwrites rather than uniquifies hands back
-            // the same document - deleting it would destroy the recording instead of a stray.
-            if (outputUri != inFlightOutputUri) {
-                viewModelScope.launch { withContext(NonCancellable) { deleteOutputUri(outputUri) } }
-            }
+        val claim = pendingSaveClaim ?: saveCoordinator.tryClaim()
+        pendingSaveClaim = null
+        if (claim == null) {
+            saveCoordinator.discardPickerResult(outputUri)
             return
         }
         val state = _uiState.value
-        inFlightOutputUri = outputUri
-        _uiState.value = state.copy(saveInProgress = true, errorMessage = null, successMessage = null)
 
         // When recording is active and the selection end is at the buffer edge,
         // snap to current wall-clock time so the in-progress segment is included.
@@ -422,65 +446,16 @@ class MainViewModel @Inject constructor(
             state.selectionEndTime
         }
 
-        viewModelScope.launch {
-            withContext(NonCancellable) {
-                try {
-                    val result = saveRecordingUseCase.execute(
-                        startTime = state.selectionStartTime,
-                        endTime = endTime,
-                        outputUri = outputUri
-                    )
-
-                    when (result) {
-                        is SaveResult.Success -> {
-                            _uiState.value = _uiState.value.copy(
-                                successMessage = "Recording saved successfully"
-                            )
-                        }
-                        is SaveResult.UpgradeRequired -> {
-                            deleteOutputUri(outputUri)
-                            _uiState.value = _uiState.value.copy(
-                                showUpgradeDialog = true,
-                                upgradeReason = result.reason
-                            )
-                        }
-                        is SaveResult.Error -> {
-                            deleteOutputUri(outputUri)
-                            _uiState.value = _uiState.value.copy(errorMessage = result.message)
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // The only handler for a throw out of `checkSaveAccess` or
-                    // `getSegmentsInRange`, which sit outside the use case's own `try`. Logged
-                    // because a release build keeps nothing below `Log.w`, and reported with a
-                    // fixed message because raw SQLite or DataStore text means nothing to the
-                    // person reading the snackbar.
-                    Log.e(TAG, "Save failed", e)
-                    deleteOutputUri(outputUri)
-                    _uiState.value = _uiState.value.copy(
-                        errorMessage = "Could not save the recording"
-                    )
-                } finally {
-                    inFlightOutputUri = null
-                    _uiState.value = _uiState.value.copy(saveInProgress = false)
-                }
-            }
+        _uiState.value = state.copy(errorMessage = null, successMessage = null)
+        if (!saveCoordinator.save(claim, state.selectionStartTime, endTime, outputUri)) {
+            saveCoordinator.release(claim)
+            saveCoordinator.discardPickerResult(outputUri)
         }
     }
 
-    // SAF creates a 0-byte destination file as soon as the picker returns a URI.
-    // If the save fails for any reason, delete that empty file so we never leave
-    // empty recordings on the user's storage (issue #23). The delete is a binder call into
-    // whatever provider the user picked - possibly a cloud-backed one - so it goes off the main
-    // thread with the rest of the save path (#93).
-    private suspend fun deleteOutputUri(uri: Uri) = withContext(ioDispatcher) {
-        try {
-            DocumentsContract.deleteDocument(context.contentResolver, uri)
-        } catch (_: Exception) {
-            // Best-effort cleanup; ignore if the provider rejects deletion.
-        }
+    override fun onCleared() {
+        // Only a claim whose picker never answered; a save already running keeps its slot.
+        releasePendingSaveClaim()
     }
 
     /**

@@ -109,7 +109,7 @@ fun MainScreen(
     val saveLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("audio/mp4")
     ) { uri ->
-        uri?.let { viewModel.saveRecording(it) }
+        if (uri != null) viewModel.saveRecording(uri) else viewModel.onSavePickerCancelled()
     }
 
     // Show snackbar for messages
