@@ -120,13 +120,15 @@ class PlayBillingRepository @Inject constructor(
     /** Purchase tokens with an acknowledgement already on its way to Play. */
     private val acknowledging: MutableSet<String> = Collections.synchronizedSet(mutableSetOf())
 
-    /** True while the launch-time resolve ladder is running. */
+    /** True while the launch-time resolve ladder or a [refreshEntitlement] is running. */
     private val resolving = AtomicBoolean(false)
 
+    /** Set when [resolveEntitlementIfUnresolved] deferred a connection to the read holding [resolving]. */
+    private val connectionDeferred = AtomicBoolean(false)
+
     override fun connect() {
-        // One ladder of retries at a time. connect() is called once at launch today, but a
-        // second caller must not start a competing one - two ladders would race each other's
-        // connection attempts for no gain.
+        // One entitlement read at a time, the ladder and a resume refresh alike - two would race
+        // each other's connection attempts for no gain.
         if (!resolving.compareAndSet(false, true)) return
 
         appScope.launch {
@@ -142,12 +144,33 @@ class PlayBillingRepository @Inject constructor(
                 }
                 Log.w(TAG, "entitlement unresolved after $RESOLVE_ATTEMPTS attempts")
             } finally {
-                resolving.set(false)
-                // A connection that came up on the last rung - its OK racing the rung's timeout,
-                // or landing on the main thread before the flag above cleared - was skipped by
-                // resolveEntitlementIfUnresolved on the promise that a later rung would query.
-                if (!_statusResolved.value && billingClient.isReady) resolveEntitlementIfUnresolved()
+                releaseResolving()
             }
+        }
+    }
+
+    override fun refreshEntitlement() {
+        if (!resolving.compareAndSet(false, true)) return
+
+        appScope.launch {
+            try {
+                if (!resolveEntitlement()) Log.w(TAG, "entitlement refresh unanswered; keeping the last one")
+            } finally {
+                releaseResolving()
+            }
+        }
+    }
+
+    private fun releaseResolving() {
+        resolving.set(false)
+        // A connection that came up during the read's last attempt - its OK racing that attempt's
+        // timeout, or landing on the main thread before the flag above cleared - was skipped by
+        // resolveEntitlementIfUnresolved on the promise that the running read would query. Only
+        // then: a read whose own query failed must not fire a second one on every onStart.
+        // Each side writes its flag before reading the other's, so a callback racing this
+        // release is queried at least once, at worst twice.
+        if (connectionDeferred.getAndSet(false) && !_statusResolved.value && billingClient.isReady) {
+            resolveEntitlementIfUnresolved()
         }
     }
 
@@ -166,7 +189,12 @@ class PlayBillingRepository @Inject constructor(
             return false
         }
         if (outcome.failure != null) return false
-        return queryPurchasesResolving()
+        // Bounded like the connect: an unanswered query would hold [resolving] for the life of
+        // the process, and every later refresh would be dropped against it.
+        return withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() } ?: run {
+            Log.w(TAG, "queryPurchases got no answer within ${PREPARE_TIMEOUT_MS}ms")
+            false
+        }
     }
 
     /** Wraps a nullable failure so a timeout stays distinguishable from success. */
@@ -187,7 +215,15 @@ class PlayBillingRepository @Inject constructor(
     /** The same query, awaited: true when Play answered and entitlement is now resolved. */
     private suspend fun queryPurchasesResolving(): Boolean = suspendCancellableCoroutine { cont ->
         billingClient.queryPurchasesAsync(purchasesParams()) { result, purchasesList ->
-            if (!cont.isActive) return@queryPurchasesAsync
+            if (!cont.isActive) {
+                // Past its bound, but still the only answer an unresolved session has: dropping
+                // it would leave a paying subscriber refused sync whenever Play is slow to start.
+                // Once resolved, a late answer may be staler than the one already applied.
+                if (result.responseCode == BillingClient.BillingResponseCode.OK && !_statusResolved.value) {
+                    updateSubscriptionStatus(purchasesList)
+                }
+                return@queryPurchasesAsync
+            }
             if (result.responseCode == BillingClient.BillingResponseCode.OK) {
                 updateSubscriptionStatus(purchasesList)
                 cont.resume(true)
@@ -490,7 +526,10 @@ class PlayBillingRepository @Inject constructor(
      * refused cloud sync. A running ladder queries after its own connect, hence `resolving`.
      */
     private fun resolveEntitlementIfUnresolved() {
-        if (_statusResolved.value || resolving.get()) return
+        if (_statusResolved.value) return
+        connectionDeferred.set(true)
+        if (resolving.get()) return
+        connectionDeferred.set(false)
         appScope.launch {
             try {
                 if (withTimeoutOrNull(PREPARE_TIMEOUT_MS) { queryPurchasesResolving() } != true) {

@@ -74,6 +74,14 @@ interface BillingRepository {
     fun queryPurchases()
 
     /**
+     * Asks Play for entitlement again, so a subscription bought, restored or lapsed in the Play
+     * Store while the app was in the background is seen without a process restart (#88). A
+     * refresh that gets no answer leaves the last known entitlement in place, and one asked for
+     * while another read is already running is dropped rather than queued.
+     */
+    fun refreshEntitlement()
+
+    /**
      * Asks Play what this account can buy, so the chooser can show real prices before any sheet
      * opens. Separate from [launchPurchaseFlow] because the plan is the user's to choose.
      */
