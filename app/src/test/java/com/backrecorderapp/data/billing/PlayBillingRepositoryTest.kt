@@ -588,6 +588,7 @@ class PlayBillingRepositoryTest {
             assertEquals(true, repository.statusResolved.value)
             assertEquals(SubscriptionStatus.ACTIVE, repository.subscriptionStatus.value)
             assertEquals(1, attempts)
+            verify(exactly = 1) { client.queryPurchasesAsync(any<QueryPurchasesParams>(), any()) }
         }
 
     /**
